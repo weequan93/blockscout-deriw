@@ -9,6 +9,13 @@
 /*.ez
 /logs
 
+# ssl
+/docker-compose/proxy/ssl/dev.deriw.com/cert.pem
+/docker-compose/proxy/ssl/dev.deriw.com/chain.pem
+/docker-compose/proxy/ssl/dev.deriw.com/fullchain.pem
+/docker-compose/proxy/ssl/dev.deriw.com/privkey.pem
+
+
 # mix dialyzer artifacts
 /priv/plts
 
