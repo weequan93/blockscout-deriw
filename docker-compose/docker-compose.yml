@@ -5,11 +5,17 @@ services:
     extends:
       file: ./services/redis.yml
       service: redis-db
+    logging:
+      options:
+         max-size: 1g
 
   db-init:
     extends:
       file: ./services/db.yml
       service: db-init
+    logging:
+      options:
+         max-size: 1g
 
   db:
     depends_on:
@@ -18,6 +24,9 @@ services:
     extends:
       file: ./services/db.yml
       service: db
+    logging:
+      options:
+         max-size: 1g
 
   backend:
     depends_on:
@@ -45,16 +54,25 @@ services:
         ETHEREUM_JSONRPC_TRACE_URL: htts://rpc.dev.deriw.com/
         ETHEREUM_JSONRPC_WS_URL: wss://rpc.dev.eriw.com/ws
         CHAIN_ID: '44474237230'
+    logging:
+      options:
+         max-size: 1g
 
   visualizer:
     extends:
       file: ./services/visualizer.yml
       service: visualizer
+    logging:
+      options:
+         max-size: 1g
 
   sig-provider:
     extends:
       file: ./services/sig-provider.yml
       service: sig-provider
+    logging:
+      options:
+         max-size: 1g
 
   frontend:
     depends_on:
@@ -62,11 +80,17 @@ services:
     extends:
       file: ./services/frontend.yml
       service: frontend
+    logging:
+      options:
+         max-size: 1g
 
   stats-db-init:
     extends:
       file: ./services/stats.yml
       service: stats-db-init
+    logging:
+      options:
+         max-size: 1g
 
   stats-db:
     depends_on:
@@ -75,6 +99,9 @@ services:
     extends:
       file: ./services/stats.yml
       service: stats-db
+    logging:
+      options:
+         max-size: 1g
 
   stats:
     depends_on:
@@ -83,6 +110,9 @@ services:
     extends:
       file: ./services/stats.yml
       service: stats
+    logging:
+      options:
+         max-size: 1g
 
   user-ops-indexer:
     depends_on:
@@ -91,6 +121,9 @@ services:
     extends:
       file: ./services/user-ops-indexer.yml
       service: user-ops-indexer
+    logging:
+      options:
+         max-size: 1g
 
   proxy:
     depends_on:
@@ -100,3 +133,6 @@ services:
     extends:
       file: ./services/nginx.yml
       service: proxy
+    logging:
+      options:
+         max-size: 1g
