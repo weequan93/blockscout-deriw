@@ -40,7 +40,7 @@ server {
         proxy_cache_bypass    $http_upgrade;
     }
 
-    location /stats {
+    location /statsapi {
         proxy_pass            http://stats:8050/;
         proxy_http_version    1.1;
         proxy_set_header      Host "$host";
@@ -52,7 +52,7 @@ server {
         proxy_cache_bypass    $http_upgrade;
     }
 
-    location /visualizer {
+    location /visualizerapi {
         proxy_pass            http://visualizer:8050/;
         proxy_http_version    1.1;
         proxy_buffering       off;
