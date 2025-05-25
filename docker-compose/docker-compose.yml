@@ -39,7 +39,6 @@ services:
       context: ..
       dockerfile: ./docker/Dockerfile
       args:
-        CHAIN_TYPE: arbitrum
         CACHE_EXCHANGE_RATES_PERIOD: ""
         API_V1_READ_METHODS_DISABLED: "false"
         DISABLE_WEBAPP: "false"
@@ -51,10 +50,10 @@ services:
     links:
       - db:database
     environment:
-        ETHEREUM_JSONRPC_HTTP_URL: https://rpc.dev.deriw.com/
-        ETHEREUM_JSONRPC_TRACE_URL: htts://rpc.dev.deriw.com/
-        ETHEREUM_JSONRPC_WS_URL: wss://rpc.dev.eriw.com/ws
-        CHAIN_ID: '8449'
+        ETHEREUM_JSONRPC_HTTP_URL: https://rpc.prod.deriw.com/
+        ETHEREUM_JSONRPC_TRACE_URL: https://rpc.prod.deriw.com/
+        ETHEREUM_JSONRPC_WS_URL: ws://rpc.prod.deriw.com
+        CHAIN_ID: '2886'
     logging:
       options:
          max-size: 1g
