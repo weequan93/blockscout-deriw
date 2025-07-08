@@ -46,15 +46,16 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.L1Finalization do
   def monitor_lifecycle_transactions(
         %{config: %{l1_rpc: %{json_rpc_named_arguments: json_rpc_named_arguments}}} = _state
       ) do
+    log_info("L1Finalization monitor_lifecycle_transactions")
     {:ok, safe_block} =
       IndexerHelper.get_block_number_by_tag(
         "safe",
         json_rpc_named_arguments,
         Rpc.get_resend_attempts()
       )
-
+    log_info("L1Finalization monitor_lifecycle_transactions #{safe_block} safe block")
     lifecycle_transactions = Db.lifecycle_unfinalized_transactions(safe_block)
-
+    log_info("L1Finalization monitor_lifecycle_transactions #{length(lifecycle_transactions)} lifecycle transactions found")
     if length(lifecycle_transactions) > 0 do
       log_info("Discovered #{length(lifecycle_transactions)} lifecycle transaction to be finalized")
 

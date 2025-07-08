@@ -159,6 +159,7 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses do
           }
         } = state
       ) do
+    log_info("TrackingBatchesStatuses handle_info 9 sequencer_inbox ")
     %{outbox: outbox_address, sequencer_inbox: sequencer_inbox_address} =
       Rpc.get_contracts_for_rollup(
         l1_rollup_address,
@@ -178,7 +179,9 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses do
 
     {lowest_batch, missing_batches_end_batch} = Db.get_min_max_batch_numbers()
 
+    log_info("TrackingBatchesStatuses handle_info 9 check_new_batches ")
     Process.send(self(), :check_new_batches, [])
+    log_info("TrackingBatchesStatuses handle_info 9 check_new_batches end")
 
     new_state =
       state
@@ -228,10 +231,12 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses do
   #   the next iteration of new batch discovery.
   @impl GenServer
   def handle_info(:check_new_batches, state) do
+    log_info("TrackingBatchesStatuses handle_info 8 discover_new_batches ")
     {handle_duration, {:ok, end_block}} = :timer.tc(&NewBatches.discover_new_batches/1, [state])
 
+    log_info("TrackingBatchesStatuses handle_info 8 discover_new_batches end")
     Process.send(self(), :check_new_confirmations, [])
-
+    log_info("TrackingBatchesStatuses handle_info 8 check_new_confirmations")
     new_data =
       Map.merge(state.data, %{
         duration: increase_duration(state.data, handle_duration),
@@ -261,10 +266,12 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses do
   #   block for the next iteration of new confirmation discovery.
   @impl GenServer
   def handle_info(:check_new_confirmations, state) do
+    log_info("TrackingBatchesStatuses handle_info 7 discover_new_rollup_confirmation ")
     {handle_duration, {_, new_state}} = :timer.tc(&NewConfirmations.discover_new_rollup_confirmation/1, [state])
-
+    log_info("TrackingBatchesStatuses handle_info 7 discover_new_rollup_confirmation end")
     Process.send(self(), :check_new_executions, [])
 
+    log_info("TrackingBatchesStatuses handle_info 7 check_new_executions")
     new_data = Map.put(new_state.data, :duration, increase_duration(state.data, handle_duration))
 
     {:noreply, %{state | data: new_data}}
@@ -289,10 +296,13 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses do
   #   block for the next iteration of new message executions discovery.
   @impl GenServer
   def handle_info(:check_new_executions, state) do
+    log_info("TrackingBatchesStatuses handle_info 6 discover_new_l1_messages_executions ")
     {handle_duration, {:ok, end_block}} = :timer.tc(&NewL1Executions.discover_new_l1_messages_executions/1, [state])
 
+    log_info("TrackingBatchesStatuses handle_info 6 discover_new_l1_messages_executions end")
     Process.send(self(), :check_historical_batches, [])
 
+    log_info("TrackingBatchesStatuses handle_info 6 check_historical_batches")
     new_data =
       Map.merge(state.data, %{
         duration: increase_duration(state.data, handle_duration),
@@ -324,10 +334,11 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses do
   #   for the next iteration of historical batch discovery.
   @impl GenServer
   def handle_info(:check_historical_batches, state) do
+    log_info("TrackingBatchesStatuses handle_info 5 discover_historical_batches ")
     {handle_duration, {:ok, start_block}} = :timer.tc(&NewBatches.discover_historical_batches/1, [state])
-
+    log_info("TrackingBatchesStatuses handle_info 5 discover_historical_batches end")
     Process.send(self(), :check_missing_batches, [])
-
+    log_info("TrackingBatchesStatuses handle_info 5 check_missing_batches")
     new_data =
       Map.merge(state.data, %{
         duration: increase_duration(state.data, handle_duration),
@@ -361,6 +372,7 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses do
   #   for the next iteration of missing batches inspection.
   @impl GenServer
   def handle_info(:check_missing_batches, state) do
+    log_info("TrackingBatchesStatuses handle_info 4 inspect_for_missing_batches ")
     # At the moment of the very first fetcher running, no batches were found yet
     new_data =
       if is_nil(state.config.lowest_batch) do
@@ -373,7 +385,7 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses do
           missing_batches_end_batch: start_batch - 1
         })
       end
-
+    log_info("TrackingBatchesStatuses handle_info 4 inspect_for_missing_batches end")
     Process.send(self(), :check_historical_confirmations, [])
 
     {:noreply, %{state | data: new_data}}
@@ -399,11 +411,13 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses do
   #   end blocks for the next iteration of historical confirmations discovery.
   @impl GenServer
   def handle_info(:check_historical_confirmations, state) do
+    log_info("TrackingBatchesStatuses handle_info 3 discover_historical_rollup_confirmation ")
     {handle_duration, {_, new_state}} =
       :timer.tc(&NewConfirmations.discover_historical_rollup_confirmation/1, [state])
-
+    log_info("TrackingBatchesStatuses handle_info 3 discover_historical_rollup_confirmation end")
     Process.send(self(), :check_historical_executions, [])
 
+    log_info("TrackingBatchesStatuses handle_info 3 discover_historical_rollup_confirmation increase_duration")
     new_data = Map.put(new_state.data, :duration, increase_duration(state.data, handle_duration))
 
     {:noreply, %{state | data: new_data}}
@@ -429,11 +443,13 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses do
   #   the next iteration of historical executions.
   @impl GenServer
   def handle_info(:check_historical_executions, state) do
+    log_info("TrackingBatchesStatuses handle_info 2 discover_historical_l1_messages_executions ")
     {handle_duration, {:ok, start_block}} =
       :timer.tc(&NewL1Executions.discover_historical_l1_messages_executions/1, [state])
 
+      log_info("TrackingBatchesStatuses handle_info 2 discover_historical_l1_messages_executions end")
     Process.send(self(), :check_lifecycle_transactions_finalization, [])
-
+    log_info("TrackingBatchesStatuses handle_info 2 check_lifecycle_transactions_finalization ")
     new_data =
       Map.merge(state.data, %{
         duration: increase_duration(state.data, handle_duration),
@@ -462,6 +478,7 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses do
   # - `{:noreply, new_state}` where `new_state` is the updated state with the reset duration.
   @impl GenServer
   def handle_info(:check_lifecycle_transactions_finalization, state) do
+    log_info("TrackingBatchesStatuses handle_info 1 track_finalization ")
     {handle_duration, _} =
       if state.config.l1_rpc.track_finalization do
         :timer.tc(&L1Finalization.monitor_lifecycle_transactions/1, [state])
@@ -469,10 +486,13 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses do
         {0, nil}
       end
 
+    log_info("TrackingBatchesStatuses handle_info 1 track_finalization end")
     next_timeout = max(state.config.recheck_interval - div(increase_duration(state.data, handle_duration), 1000), 0)
 
+    log_info("TrackingBatchesStatuses handle_info 1 check_new_batches")
     Process.send_after(self(), :check_new_batches, next_timeout)
 
+    log_info("TrackingBatchesStatuses handle_info 1 check_new_batches end")
     new_data =
       Map.merge(state.data, %{
         duration: 0

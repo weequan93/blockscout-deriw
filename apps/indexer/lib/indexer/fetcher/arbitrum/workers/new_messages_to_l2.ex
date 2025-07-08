@@ -90,6 +90,7 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewMessagesToL2 do
           data: %{new_msg_to_l2_start_block: start_block}
         } = _state
       ) do
+    log_info("Discovering new messages from L1 to L2 starting from block #{start_block}")
     # Requesting the "latest" block instead of "safe" allows to get messages originated to L2
     # much earlier than they will be seen by the Arbitrum Sequencer.
     {:ok, latest_block} =
@@ -101,6 +102,7 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewMessagesToL2 do
 
     end_block = min(start_block + rpc_block_range - 1, latest_block)
 
+    log_info("Latest block on L1 is #{latest_block}, end block for discovery is #{end_block}")
     if start_block <= end_block do
       log_info("Block range for discovery new messages from L1: #{start_block}..#{end_block}")
 
@@ -113,6 +115,7 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewMessagesToL2 do
           chunk_size
         )
 
+      log_info("Discovered #{new_messages_amount} new messages from L1 to L2")
       if new_messages_amount > 0 do
         Publisher.broadcast(%{new_messages_to_arbitrum_amount: new_messages_amount}, :realtime)
       end
@@ -174,11 +177,13 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewMessagesToL2 do
           data: %{historical_msg_to_l2_end_block: end_block}
         } = _state
       ) do
+    log_info("Discovering historical messages from L1 to L2 up to block #{end_block}")
     if end_block >= l1_rollup_init_block do
       start_block = max(l1_rollup_init_block, end_block - rpc_block_range + 1)
 
       log_info("Block range for discovery historical messages from L1: #{start_block}..#{end_block}")
 
+      log_info("Latest block on L1 is #{end_block}, rollup initialization block is #{l1_rollup_init_block}")
       discover(
         bridge_address,
         start_block,
@@ -186,9 +191,10 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewMessagesToL2 do
         json_rpc_named_arguments,
         chunk_size
       )
-
+      log_info("Discovered historical messages from L1 to L2 in the block range #{start_block}..#{end_block}")
       {:ok, start_block}
     else
+      log_info("Historical messages discovery reached the rollup initialization block #{l1_rollup_init_block}, no discovery action was necessary")
       {:ok, l1_rollup_init_block}
     end
   end
@@ -211,7 +217,7 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewMessagesToL2 do
   # ## Returns
   # - amount of discovered messages
   defp discover(bridge_address, start_block, end_block, json_rpc_named_argument, chunk_size) do
-    logs =
+      log_info("Discovering new messages from L1 to L2 in the block range #{start_block}..#{end_block}")l
       get_logs_for_l1_to_l2_messages(
         start_block,
         end_block,
@@ -219,8 +225,9 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewMessagesToL2 do
         json_rpc_named_argument
       )
 
+    log_info("Processing discovered logs for L1-to-L2 messages")
     messages = get_messages_from_logs(logs, json_rpc_named_argument, chunk_size)
-
+    log_info("Found #{length(messages)} L1-to-L2 messages to be imported")
     unless messages == [] do
       log_info("Origins of #{length(messages)} L1-to-L2 messages will be imported")
     end
@@ -231,12 +238,14 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewMessagesToL2 do
         timeout: :infinity
       })
 
+    log_info("Imported #{length(messages)} L1-to-L2 messages into the database")
     length(messages)
   end
 
   # Retrieves logs representing the `MessageDelivered` events.
   defp get_logs_for_l1_to_l2_messages(start_block, end_block, bridge_address, json_rpc_named_arguments)
        when start_block <= end_block do
+    log_info("Retrieving logs for L1-to-L2 messages from block #{start_block} to #{end_block}")
     {:ok, logs} =
       IndexerHelper.get_logs(
         start_block,
@@ -246,10 +255,12 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewMessagesToL2 do
         json_rpc_named_arguments
       )
 
+    log_info("Retrieved #{length(logs)} logs for L1-to-L2 messages from block #{start_block} to #{end_block}")
     if length(logs) > 0 do
       log_debug("Found #{length(logs)} MessageDelivered logs")
     end
 
+    log_info("Processing logs for L1-to-L2 messages")
     logs
   end
 
@@ -281,11 +292,13 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewMessagesToL2 do
   defp get_messages_from_logs([], _, _), do: []
 
   defp get_messages_from_logs(logs, json_rpc_named_arguments, chunk_size) do
+    log_info("Parsing logs for L1-to-L2 messages")
     {messages, transactions_requests} = parse_logs_for_l1_to_l2_messages(logs)
-
+    log_info("Found #{length(messages)} L1-to-L2 messages to be processed")
     transactions_to_from =
       Rpc.execute_transactions_requests_and_get_from(transactions_requests, json_rpc_named_arguments, chunk_size)
 
+    log_info("Fetched 'from' addresses for #{map_size(transactions_to_from)} transactions related to L1-to-L2 messages")
     Enum.map(messages, fn msg ->
       Map.merge(msg, %{
         originator_address: transactions_to_from[msg.originating_transaction_hash],
@@ -311,6 +324,7 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewMessagesToL2 do
   #   - `transactions_requests`: A list of RPC request `eth_getTransactionByHash` structured to fetch
   #     additional data needed to finalize the message descriptions.
   defp parse_logs_for_l1_to_l2_messages(logs) do
+    log_info("Parsing logs for L1-to-L2 messages")
     {messages, transactions_requests} =
       logs
       |> Enum.reduce({[], %{}}, fn event, {messages, transactions_requests} ->
@@ -346,11 +360,13 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewMessagesToL2 do
         end
       end)
 
+    log_info("Parsed #{length(messages)} L1-to-L2 messages from logs")
     {messages, Map.values(transactions_requests)}
   end
 
   # Parses the `MessageDelivered` event to extract relevant message details.
   defp message_delivered_event_parse(event) do
+    log_info("Parsing MessageDelivered event data for message ID and type")
     [
       _inbox,
       kind,
@@ -359,9 +375,9 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewMessagesToL2 do
       _base_fee_l1,
       timestamp
     ] = decode_data(event["data"], @message_delivered_event_unindexed_params)
-
+    log_info("Extracted message kind: #{kind}, timestamp: #{timestamp}")
     message_index = quantity_to_integer(Enum.at(event["topics"], 1))
-
+    log_info("Extracted message index: #{message_index}")
     {message_index, kind, Timex.from_unix(timestamp)}
   end
 end

@@ -83,6 +83,7 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewL1Executions do
           data: %{new_executions_start_block: start_block}
         } = _state
       ) do
+    log_info("Discovering new L2-to-L1 messages executions starting from block: #{start_block}")
     # Requesting the "latest" block instead of "safe" allows to catch executions
     # without latency.
     {:ok, latest_block} =
@@ -93,12 +94,13 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewL1Executions do
       )
 
     end_block = min(start_block + l1_rpc_config.logs_block_range - 1, latest_block)
-
+    log_info("Latest L1 block number: #{latest_block}, end block for new executions discovery: #{end_block}")
     if start_block <= end_block do
       log_info("Block range for new l2-to-l1 messages executions discovery: #{start_block}..#{end_block}")
 
+      log_debug("Discovering new L2-to-L1 messages executions in range: #{start_block}..#{end_block}")
       discover(outbox_address, start_block, end_block, l1_rpc_config)
-
+      log_debug("New L2-to-L1 messages executions discovery completed for range: #{start_block}..#{end_block}")
       {:ok, end_block}
     else
       {:ok, start_block - 1}
@@ -155,12 +157,15 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewL1Executions do
           data: %{historical_executions_end_block: end_block}
         } = _state
       ) do
+    log_info("Discovering historical L2-to-L1 messages executions up to block: #{end_block}")
     if end_block >= l1_rollup_init_block do
       start_block = max(l1_rollup_init_block, end_block - l1_rpc_config.logs_block_range + 1)
 
       log_info("Block range for historical l2-to-l1 messages executions discovery: #{start_block}..#{end_block}")
 
+      log_debug("Discovering historical L2-to-L1 messages executions in range: #{start_block}..#{end_block}")
       discover(outbox_address, start_block, end_block, l1_rpc_config)
+      log_debug("Historical L2-to-L1 messages executions discovery completed for range: #{start_block}..#{end_block}")
 
       {:ok, start_block}
     else
@@ -191,6 +196,7 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewL1Executions do
   # ## Returns
   # - N/A
   defp discover(outbox_address, start_block, end_block, l1_rpc_config) do
+    log_info("Discovering new L2-to-L1 messages executions in range: #{start_block}..#{end_block}")
     logs =
       get_logs_for_new_executions(
         start_block,
@@ -199,8 +205,10 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewL1Executions do
         l1_rpc_config.json_rpc_named_arguments
       )
 
+    log_info("Found #{length(logs)} OutBoxTransactionExecuted logs")
     {lifecycle_transactions, executions} = get_executions_from_logs(logs, l1_rpc_config)
 
+    log_info("Found #{length(lifecycle_transactions)} lifecycle transactions and #{length(executions)} executions")
     unless executions == [] do
       log_info("Executions for #{length(executions)} L2 messages will be imported")
 
@@ -218,7 +226,7 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewL1Executions do
     # message is added to the database, it can be marked as relayed, considering
     # the execution transactions that have already been indexed.
     messages = get_relayed_messages()
-
+    log_info("Found #{length(messages)} unexecuted L2-to-L1 messages to be marked as completed")
     unless messages == [] do
       log_info("Marking #{length(messages)} l2-to-l1 messages as completed")
 
@@ -233,6 +241,7 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewL1Executions do
   # Retrieves logs representing `OutBoxTransactionExecuted` events between the specified blocks.
   defp get_logs_for_new_executions(start_block, end_block, outbox_address, json_rpc_named_arguments)
        when start_block <= end_block do
+    log_info("Fetching OutBoxTransactionExecuted logs from #{start_block} to #{end_block} for address: #{outbox_address}")
     {:ok, logs} =
       IndexerHelper.get_logs(
         start_block,
@@ -245,7 +254,7 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewL1Executions do
     if length(logs) > 0 do
       log_debug("Found #{length(logs)} OutBoxTransactionExecuted logs")
     end
-
+    log_info("Fetched #{length(logs)} OutBoxTransactionExecuted logs from L1")
     logs
   end
 
@@ -291,15 +300,18 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewL1Executions do
            track_finalization: track_finalization?
          } = _l1_rpc_config
        ) do
+    log_info("Processing #{length(logs)} OutBoxTransactionExecuted logs for new executions")
     {basics_executions, basic_lifecycle_transactions, blocks_requests} = parse_logs_for_new_executions(logs)
 
+    log_info("Found #{length(basics_executions)} new executions and #{map_size(basic_lifecycle_transactions)} lifecycle transactions")
     blocks_to_ts = Rpc.execute_blocks_requests_and_get_ts(blocks_requests, json_rpc_named_arguments, chunk_size)
-
+    log_info("Fetched timestamps for #{map_size(blocks_to_ts)} blocks")
     lifecycle_transactions =
       basic_lifecycle_transactions
       |> ArbitrumHelper.extend_lifecycle_transactions_with_ts_and_status(blocks_to_ts, track_finalization?)
       |> Db.get_indices_for_l1_transactions()
 
+    log_info("Extended lifecycle transactions with timestamps and statuses, found #{length(lifecycle_transactions)} unique transactions")
     executions =
       basics_executions
       |> Enum.reduce([], fn execution, updated_executions ->
@@ -311,6 +323,7 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewL1Executions do
         [updated | updated_executions]
       end)
 
+    log_info("Mapped executions to lifecycle transactions, found #{length(executions)} executions")
     {Map.values(lifecycle_transactions), executions}
   end
 
@@ -335,6 +348,7 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewL1Executions do
   #   - `blocks_requests`: A list of RPC requests for fetching block data where
   #     the executions occurred.
   defp parse_logs_for_new_executions(logs) do
+    log_info("Parsing logs for new executions from OutBoxTransactionExecuted events")
     {executions, lifecycle_transactions, blocks_requests} =
       logs
       |> Enum.reduce({[], %{}, %{}}, fn event, {executions, lifecycle_transactions, blocks_requests} ->
@@ -344,6 +358,7 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewL1Executions do
         l1_transaction_hash = Rpc.string_hash_to_bytes_hash(l1_transaction_hash_raw)
         l1_blk_num = quantity_to_integer(event["blockNumber"])
 
+        log_info("Processing OutBoxTransactionExecuted event for message ID: #{msg_id}, transaction hash: #{l1_transaction_hash_raw}, block number: #{l1_blk_num}")
         updated_executions = [
           %{
             message_id: msg_id,
@@ -366,18 +381,21 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewL1Executions do
             BlockByNumber.request(%{id: 0, number: l1_blk_num}, false, true)
           )
 
+          log_info("Found new execution for message ID ##{msg_id} in transaction #{l1_transaction_hash_raw} at block #{l1_blk_num}")
         log_debug("Execution for L2 message ##{msg_id} found in #{l1_transaction_hash_raw}")
 
         {updated_executions, updated_lifecycle_transactions, updated_blocks_requests}
       end)
 
+    log_info("Parsed #{length(executions)} new executions and #{map_size(lifecycle_transactions)} lifecycle transactions from logs")
     {executions, lifecycle_transactions, Map.values(blocks_requests)}
   end
 
   # Parses `OutBoxTransactionExecuted` event data to extract the transaction index parameter
   defp outbox_transaction_executed_event_parse(event) do
+    log_info("Parsing OutBoxTransactionExecuted event data for transaction index")
     [transaction_index] = decode_data(event["data"], @outbox_transaction_executed_unindexed_params)
-
+    log_info("Parsed transaction index: #{transaction_index}")
     transaction_index
   end
 
@@ -392,11 +410,14 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewL1Executions do
   # - A list of messages marked as completed, ready for database import.
   @spec get_relayed_messages() :: [Arbitrum.Message.to_import()]
   defp get_relayed_messages do
+    log_info("Retrieving unexecuted L2-to-L1 messages to be marked as completed")
     # Assuming that both catchup block fetcher and historical messages catchup fetcher
     # will check all discovered historical messages to be marked as executed it is not
     # needed to handle :initiated and :sent of historical messages here, only for
     # new messages discovered and changed their status from `:sent` to `:confirmed`
     confirmed_messages = Db.confirmed_l2_to_l1_messages()
+
+    log_info("Found #{length(confirmed_messages)} confirmed L2-to-L1 messages")
 
     if Enum.empty?(confirmed_messages) do
       []

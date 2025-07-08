@@ -148,6 +148,7 @@ defmodule Indexer.Fetcher.Arbitrum.MessagesToL2Matcher do
     # For next handling only the transactions with expired timeouts are needed.
     now = DateTime.to_unix(DateTime.utc_now(), :millisecond)
 
+    log_info("MessagesToL2Matcher run now = #{now}")
     {transactions, delayed_transactions} =
       transactions_with_timeouts
       |> Enum.reduce({[], []}, fn {timeout, transaction}, {transactions, delayed_transactions} ->
@@ -157,6 +158,7 @@ defmodule Indexer.Fetcher.Arbitrum.MessagesToL2Matcher do
           {[transaction | transactions], delayed_transactions}
         end
       end)
+    log_info("MessagesToL2Matcher run transactions = #{length(transactions)}, delayed_transactions = #{length(delayed_transactions)}")
 
     # Check if the request Id of transactions with expired timeouts matches hashed
     # ids of the uncompleted messages and update the transactions with the decoded
@@ -167,13 +169,16 @@ defmodule Indexer.Fetcher.Arbitrum.MessagesToL2Matcher do
     # - all matches were found in the cache, the cache is not updated
     # - all matches were found in the DB, the cache is updated
     # - some matches were found in the cache, but not all, the cache is not updated
+    log_info("MessagesToL2Matcher run update_transactions_with_hashed_ids")
     {updated?, handled_transactions, updated_cache} =
       update_transactions_with_hashed_ids(transactions, cached_uncompleted_messages_ids)
 
+    log_info("MessagesToL2Matcher run update_transactions_with_hashed_ids end #{updated?}, handled_transactions = #{length(handled_transactions)}, updated_cache = #{map_size(updated_cache)}")
     updated_state = %{state | uncompleted_messages: updated_cache}
 
     case {updated?, transactions == []} do
       {false, true} ->
+        log_info("MessagesToL2Matcher run delayed_transactions, updated_stat")
         # There were no transactions with expired timeouts, so counters of the transactions
         # updated and the transactions are scheduled for retry.
         {:retry, delayed_transactions, updated_state}
@@ -183,15 +188,19 @@ defmodule Indexer.Fetcher.Arbitrum.MessagesToL2Matcher do
         # for these transaction in the cache or the DB. Timeouts for such transactions
         # are re-initialized and they are added to the list with transactions with
         # updated counters.
+        log_info("MessagesToL2Matcher run initialize_timeouts")
         transactions_to_retry =
           delayed_transactions ++ initialize_timeouts(handled_transactions, now + state.recheck_interval)
 
         {:retry, transactions_to_retry, updated_state}
 
       {true, _} ->
+        log_info("MessagesToL2Matcher run filter_l1_to_l2_messages")
         {messages, transactions_to_retry_wo_timeouts} = MessagingUtils.filter_l1_to_l2_messages(handled_transactions)
 
+        log_info("MessagesToL2Matcher run filter_l1_to_l2_messages end")
         MessagingUtils.import_to_db(messages)
+        log_info("MessagesToL2Matcher run import_to_db end")
 
         if transactions_to_retry_wo_timeouts == [] and delayed_transactions == [] do
           {:ok, updated_state}
@@ -222,6 +231,7 @@ defmodule Indexer.Fetcher.Arbitrum.MessagesToL2Matcher do
   """
   @spec async_discover_match([min_transaction()]) :: :ok
   def async_discover_match(transactions_with_messages_from_l1) do
+    log_info("MessagesToL2Matcher async_discover_match ")
     # Do nothing in case if the indexing chain is not Arbitrum or the feature is disabled.
     if MessagesToL2MatcherSupervisor.disabled?() do
       :ok
@@ -242,6 +252,7 @@ defmodule Indexer.Fetcher.Arbitrum.MessagesToL2Matcher do
   # - Values are original message IDs as 256-bit hexadecimal strings.
   @spec get_hashed_ids_for_uncompleted_messages() :: %{binary() => binary()}
   defp get_hashed_ids_for_uncompleted_messages do
+    log_info("MessagesToL2Matcher get_hashed_ids_for_uncompleted_messages ")
     Db.get_uncompleted_l1_to_l2_messages_ids()
     |> Enum.reduce(%{}, fn id, acc ->
       Map.put(
@@ -283,11 +294,12 @@ defmodule Indexer.Fetcher.Arbitrum.MessagesToL2Matcher do
     # messages are being processed (by catchup block fetcher or by the missing
     # messages handler). Since amount of transactions provided to this function is limited
     # it OK to inspect the cache before making a DB request.
+    log_info("MessagesToL2Matcher update_transactions_with_hashed_ids ")
     case revise_transactions_with_hashed_ids(transactions, cached_uncompleted_messages_ids, true) do
       {_, false} ->
         # If no matches were found in the cache, try to fetch uncompleted messages from the DB.
         uncompleted_messages = get_hashed_ids_for_uncompleted_messages()
-
+        log_info("MessagesToL2Matcher update_transactions_with_hashed_ids #{map_size(uncompleted_messages)} uncompleted messages found in the DB")
         {updated_transactions, updated?} =
           revise_transactions_with_hashed_ids(transactions, uncompleted_messages, false)
 
@@ -319,6 +331,7 @@ defmodule Indexer.Fetcher.Arbitrum.MessagesToL2Matcher do
   @spec revise_transactions_with_hashed_ids([min_transaction()], %{binary() => binary()}, boolean()) ::
           {[min_transaction()], boolean()}
   defp revise_transactions_with_hashed_ids(transactions, uncompleted_messages, report?) do
+    log_info("MessagesToL2Matcher revise_transactions_with_hashed_ids transactions: #{length(transactions)}")
     transactions
     |> Enum.reduce({[], false}, fn transaction, {updated_transactions, updated?} ->
       if report?,

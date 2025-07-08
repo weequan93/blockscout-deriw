@@ -59,6 +59,7 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingMessagesOnL1 do
   def init(args) do
     Logger.metadata(fetcher: :arbitrum_bridge_l1)
 
+    log_info("TrackingMessagesOnL1 init 1}")
     config_common = Application.get_all_env(:indexer)[Indexer.Fetcher.Arbitrum]
     l1_rpc = config_common[:l1_rpc]
     l1_rpc_block_range = config_common[:l1_rpc_block_range]
@@ -70,7 +71,9 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingMessagesOnL1 do
     config_tracker = Application.get_all_env(:indexer)[__MODULE__]
     recheck_interval = config_tracker[:recheck_interval]
 
+    log_info("TrackingMessagesOnL1 init 1 Process send")
     Process.send(self(), :init_worker, [])
+    log_info("TrackingMessagesOnL1 init 1 Process send end")
 
     {:ok,
      %{
@@ -90,7 +93,9 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingMessagesOnL1 do
 
   @impl GenServer
   def handle_info({ref, _result}, state) do
+    log_info("TrackingMessagesOnL1 handle_info 2 Process demonitor")
     Process.demonitor(ref, [:flush])
+    log_info("TrackingMessagesOnL1 handle_info 2 Process demonitor end")
     {:noreply, state}
   end
 
@@ -122,12 +127,15 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingMessagesOnL1 do
     %{bridge: bridge_address} =
       Rpc.get_contracts_for_rollup(state.config.l1_rollup_address, :bridge, state.config.json_l1_rpc_named_arguments)
 
+    log_info("TrackingMessagesOnL1 handle_info 1 init_worker}")
     l1_start_block = Rpc.get_l1_start_block(state.config.l1_start_block, state.config.json_l1_rpc_named_arguments)
     new_msg_to_l2_start_block = Db.l1_block_to_discover_latest_message_to_l2(l1_start_block)
     historical_msg_to_l2_end_block = Db.l1_block_to_discover_earliest_message_to_l2(l1_start_block - 1)
 
+    log_info("TrackingMessagesOnL1 handle_info 1 Process send check_new_msgs_to_rollup")
     Process.send(self(), :check_new_msgs_to_rollup, [])
 
+    log_info("TrackingMessagesOnL1 handle_info 1 Process send check_new_msgs_to_rollup end")
     new_state =
       state
       |> Map.put(
@@ -145,6 +153,7 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingMessagesOnL1 do
         })
       )
 
+    log_info("TrackingMessagesOnL1 handle_info 1 #{inspect(new_state)}")
     {:noreply, new_state}
   end
 
@@ -168,19 +177,21 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingMessagesOnL1 do
   #   iteration.
   @impl GenServer
   def handle_info(:check_new_msgs_to_rollup, %{data: _} = state) do
+    log_info("TrackingMessagesOnL1 handle_info 3 NewMessagesToL2.discover_new_messages_to_l2/1")
     {handle_duration, {:ok, end_block}} =
       :timer.tc(&NewMessagesToL2.discover_new_messages_to_l2/1, [
         state
       ])
 
+    log_info("TrackingMessagesOnL1 handle_info 3 NewMessagesToL2.discover_new_messages_to_l2/1 end")
     Process.send(self(), :check_historical_msgs_to_rollup, [])
-
+    log_info("TrackingMessagesOnL1 handle_info 3 check_historical_msgs_to_rollup end")
     new_data =
       Map.merge(state.data, %{
         duration: increase_duration(state.data, handle_duration),
         new_msg_to_l2_start_block: end_block + 1
       })
-
+      log_info("TrackingMessagesOnL1 handle_info 3 increase_duration #{inspect(new_data)}")
     {:noreply, %{state | data: new_data}}
   end
 
@@ -203,21 +214,28 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingMessagesOnL1 do
   #   iteration is updated based on the results of the current iteration.
   @impl GenServer
   def handle_info(:check_historical_msgs_to_rollup, %{config: %{recheck_interval: _}, data: _} = state) do
+    log_info("TrackingMessagesOnL1 handle_info 4 discover_historical_messages_to_l2/1")
     {handle_duration, {:ok, start_block}} =
       :timer.tc(&NewMessagesToL2.discover_historical_messages_to_l2/1, [
         state
       ])
 
+    log_info("TrackingMessagesOnL1 handle_info 4 discover_historical_messages_to_l2/1 end")
+
     next_timeout = max(state.config.recheck_interval - div(increase_duration(state.data, handle_duration), 1000), 0)
 
+    log_info("TrackingMessagesOnL1 handle_info 4 check_new_msgs_to_rollup")
+
     Process.send_after(self(), :check_new_msgs_to_rollup, next_timeout)
+
+    log_info("TrackingMessagesOnL1 handle_info 4 check_new_msgs_to_rollup end")
 
     new_data =
       Map.merge(state.data, %{
         duration: 0,
         historical_msg_to_l2_end_block: start_block - 1
       })
-
+    log_info("TrackingMessagesOnL1 handle_info 4 historical_msg_to_l2_end_block #{inspect(new_data)}")
     {:noreply, %{state | data: new_data}}
   end
 end

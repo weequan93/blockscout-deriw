@@ -77,6 +77,7 @@ defmodule Indexer.Fetcher.Arbitrum.Messaging do
   @spec filter_l1_to_l2_messages([min_transaction()], boolean()) :: {[Message.to_import()], [min_transaction()]}
   def filter_l1_to_l2_messages(transactions, report \\ true)
       when is_list(transactions) and is_boolean(report) do
+    log_info("Messaging filter_l1_to_l2_messages  ")
     {transactions_with_proper_message_id, transactions_with_hashed_message_id} =
       transactions
       |> Enum.filter(fn transaction ->
@@ -85,12 +86,13 @@ defmodule Indexer.Fetcher.Arbitrum.Messaging do
       |> Enum.split_with(fn transaction ->
         plain_message_id?(transaction[:request_id])
       end)
-
+    log_info("Messaging filter_l1_to_l2_messages transactions_with_proper_message_id: #{transactions_with_proper_message_id}, transactions_with_hashed_message_id: #{transactions_with_hashed_message_id}")
     # Transform transactions with the plain message ID into messages
     messages =
       transactions_with_proper_message_id
       |> handle_filtered_l1_to_l2_messages()
 
+    log_info("Messaging filter_l1_to_l2_messages messages: #{length(messages)}")
     if report do
       if not (messages == []) do
         log_info("#{length(messages)} completions of L1-to-L2 messages will be imported")
@@ -124,12 +126,13 @@ defmodule Indexer.Fetcher.Arbitrum.Messaging do
   def filter_l2_to_l1_messages(logs) when is_list(logs) do
     arbsys_contract = Application.get_env(:indexer, __MODULE__)[:arbsys_contract]
 
+    log_info("Messaging filter_l2_to_l1_messages #{length(logs)} logs found")
     filtered_logs =
       logs
       |> Enum.filter(fn event ->
         event.address_hash == arbsys_contract and event.first_topic == Db.l2_to_l1_event()
       end)
-
+    log_info("Messaging filter_l2_to_l1_messages #{length(filtered_logs)} filtered_logs found")
     handle_filtered_l2_to_l1_messages(filtered_logs)
   end
 
@@ -193,13 +196,15 @@ defmodule Indexer.Fetcher.Arbitrum.Messaging do
 
   def handle_filtered_l2_to_l1_messages(filtered_logs, caller) when is_list(filtered_logs) do
     # Get values before the loop parsing the events to reduce number of DB requests
+    log_info("Messaging handle_filtered_l2_to_l1_messages #{length(filtered_logs)} filtered_logs found")
     highest_committed_block = Db.highest_committed_block(-1)
     highest_confirmed_block = Db.highest_confirmed_block(-1)
 
+    log_info("Messaging handle_filtered_l2_to_l1_messages highest_committed_block = #{highest_committed_block}, highest_confirmed_block = #{highest_confirmed_block}")
     messages_map =
       filtered_logs
       |> Enum.reduce(%{}, fn event, messages_acc ->
-        log_debug("L2 to L1 message #{event.transaction_hash} found")
+        log_info("L2 to L1 message #{event.transaction_hash} found")
 
         {message_id, caller, blocknum, timestamp} = l2_to_l1_event_parse(event)
 

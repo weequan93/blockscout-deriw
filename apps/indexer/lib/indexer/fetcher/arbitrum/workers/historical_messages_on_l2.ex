@@ -68,11 +68,13 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.HistoricalMessagesOnL2 do
   def discover_historical_messages_from_l2(end_block, state)
 
   def discover_historical_messages_from_l2(end_block, _) when is_nil(end_block) do
+    log_info("HistoricalMessagesOnL2 discove2r_historical_messages_from_l2 1")
     {:ok, nil}
   end
 
   def discover_historical_messages_from_l2(end_block, %{config: %{rollup_rpc: %{first_block: rollup_first_block}}})
       when is_integer(end_block) and end_block < rollup_first_block do
+    log_info("HistoricalMessagesOnL2 discove2r_historical_messages_from_l2 2")
     {:ok, rollup_first_block}
   end
 
@@ -86,10 +88,13 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.HistoricalMessagesOnL2 do
         } = _state
       )
       when is_integer(end_block) do
+    log_info("HistoricalMessagesOnL2 discover_historical_messages_from_l2 3")
     start_block = max(rollup_first_block, end_block - missed_messages_blocks_depth + 1)
-
+    log_info("HistoricalMessagesOnL2 discover_historical_messages_from_l2 3 #{start_block}..#{end_block}")
     if Db.indexed_blocks?(start_block, end_block) do
+      log_info("HistoricalMessagesOnL2 discover_historical_messages_from_l2 3 do_discover_historical_messages_from_l2")
       do_discover_historical_messages_from_l2(start_block, end_block)
+      log_info("HistoricalMessagesOnL2 discover_historical_messages_from_l2 3 do_discover_historical_messages_from_l2 end")
     else
       log_warning(
         "Not able to discover historical messages from L2, some blocks in #{start_block}..#{end_block} not indexed"
@@ -117,10 +122,11 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.HistoricalMessagesOnL2 do
   #   starting block number.
   @spec do_discover_historical_messages_from_l2(non_neg_integer(), non_neg_integer()) :: {:ok, non_neg_integer()}
   defp do_discover_historical_messages_from_l2(start_block, end_block) do
+    log_info("HistoricalMessagesOnL2 do_discover_historical_messages_from_l2 ")
     log_info("Block range for discovery historical messages from L2: #{start_block}..#{end_block}")
 
     logs = Db.logs_for_missed_messages_from_l2(start_block, end_block)
-
+    log_info("HistoricalMessagesOnL2 do_discover_historical_messages_from_l2 #{length(logs)} logs found")
     unless logs == [] do
       messages =
         logs
@@ -128,7 +134,7 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.HistoricalMessagesOnL2 do
 
       Messaging.import_to_db(messages)
     end
-
+    log_info("HistoricalMessagesOnL2 do_discover_historical_messages_from_l2 handle_filtered_l2_to_l1_messages end")
     {:ok, start_block}
   end
 
@@ -186,11 +192,13 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.HistoricalMessagesOnL2 do
   def discover_historical_messages_to_l2(end_block, state)
 
   def discover_historical_messages_to_l2(end_block, _) when is_nil(end_block) do
+    log_info("HistoricalMessagesOnL2 discover_historical_messages_to_l2 1")
     {:ok, nil}
   end
 
   def discover_historical_messages_to_l2(end_block, %{config: %{rollup_rpc: %{first_block: rollup_first_block}}})
       when is_integer(end_block) and end_block < rollup_first_block do
+    log_info("HistoricalMessagesOnL2 discover_historical_messages_to_l2 2")
     {:ok, rollup_first_block}
   end
 
@@ -199,11 +207,13 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.HistoricalMessagesOnL2 do
         %{config: %{missed_messages_blocks_depth: _, rollup_rpc: %{first_block: _}} = config} = _state
       )
       when is_integer(end_block) do
+    log_info("HistoricalMessagesOnL2 discover_historical_messages_to_l2 3")
     start_block = max(config.rollup_rpc.first_block, end_block - config.missed_messages_blocks_depth + 1)
-
+    log_info("HistoricalMessagesOnL2 discover_historical_messages_to_l2 3 #{start_block}..#{end_block}")
     # Although indexing blocks is not necessary to determine the completion of L1-to-L2 messages,
     # for database consistency, it is preferable to delay marking these messages as completed.
     if Db.indexed_blocks?(start_block, end_block) do
+      log_info("HistoricalMessagesOnL2 discover_historical_messages_to_l2 3 do_discover_historical_messages_to_l2")
       do_discover_historical_messages_to_l2(start_block, end_block, config)
     else
       log_warning(
@@ -257,10 +267,13 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.HistoricalMessagesOnL2 do
          end_block,
          %{rollup_rpc: %{chunk_size: chunk_size, json_rpc_named_arguments: json_rpc_named_arguments}} = _config
        ) do
+    log_info("HistoricalMessagesOnL2 do_discover_historical_messages_to_l2")
     log_info("Block range for discovery historical messages to L2: #{start_block}..#{end_block}")
 
     transactions = Db.transactions_for_missed_messages_to_l2(start_block, end_block)
     transactions_length = length(transactions)
+
+    log_info("HistoricalMessagesOnL2 do_discover_historical_messages_to_l2 #{transactions_length} transactions found")
 
     if transactions_length > 0 do
       log_debug("#{transactions_length} historical messages to L2 discovered")
@@ -285,7 +298,9 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.HistoricalMessagesOnL2 do
           {messages ++ messages_acc, transactions_with_hashed_message_id ++ transactions_acc}
         end)
 
+      log_info("HistoricalMessagesOnL2 do_discover_historical_messages_to_l2 handle_messages")
       handle_messages(messages)
+      log_info("HistoricalMessagesOnL2 do_discover_historical_messages_to_l2 handle_transactions_with_hashed_message_id")
       handle_transactions_with_hashed_message_id(transactions_for_further_handling)
     end
 
@@ -294,6 +309,7 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.HistoricalMessagesOnL2 do
 
   # Constructs a list of `eth_getTransactionByHash` requests for a given list of transaction hashes.
   defp build_transaction_requests(transaction_hashes) do
+    log_info("HistoricalMessagesOnL2 build_transaction_requests #{length(transaction_hashes)} transaction hashes")
     transaction_hashes
     |> Enum.reduce([], fn transaction_hash, requests_list ->
       [
@@ -326,6 +342,7 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.HistoricalMessagesOnL2 do
   # - `:ok`
   @spec handle_messages([Explorer.Chain.Arbitrum.Message.to_import()]) :: :ok
   defp handle_messages(messages) do
+    log_info("HistoricalMessagesOnL2 handle_messages #{length(messages)} transaction messages")
     log_info("#{length(messages)} completions of L1-to-L2 messages will be imported")
     Messaging.import_to_db(messages)
   end
@@ -364,6 +381,8 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.HistoricalMessagesOnL2 do
     log_info(
       "#{length(transactions_with_hashed_message_id)} completions of L1-to-L2 messages require message ID matching discovery"
     )
+
+    log_info("HistoricalMessagesOnL2 handle_transactions_with_hashed_message_id async_discover_match")
 
     ArbitrumMessagesToL2Matcher.async_discover_match(transactions_with_hashed_message_id)
   end
