@@ -51,6 +51,7 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses do
   alias Indexer.Fetcher.Arbitrum.Workers.{L1Finalization, NewBatches, NewConfirmations, NewL1Executions}
 
   import Indexer.Fetcher.Arbitrum.Utils.Helper, only: [increase_duration: 2]
+  import Indexer.Fetcher.Arbitrum.Utils.Logging, only: [log_info: 1]
 
   alias Indexer.Helper, as: IndexerHelper
   alias Indexer.Fetcher.Arbitrum.Utils.{Db, Rpc}
