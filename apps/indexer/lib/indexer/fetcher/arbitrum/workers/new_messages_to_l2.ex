@@ -218,7 +218,7 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewMessagesToL2 do
   # - amount of discovered messages
   defp discover(bridge_address, start_block, end_block, json_rpc_named_argument, chunk_size) do
       log_info("Discovering new messages from L1 to L2 in the block range #{start_block}..#{end_block}")
-      get_logs_for_l1_to_l2_messages(
+      logs = get_logs_for_l1_to_l2_messages(
         start_block,
         end_block,
         bridge_address,
