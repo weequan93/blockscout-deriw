@@ -32,6 +32,7 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingMessagesOnL1 do
   use Indexer.Fetcher
 
   import Indexer.Fetcher.Arbitrum.Utils.Helper, only: [increase_duration: 2]
+  import Indexer.Fetcher.Arbitrum.Utils.Logging, only: [log_info: 1]
 
   alias Indexer.Fetcher.Arbitrum.Workers.NewMessagesToL2
 
