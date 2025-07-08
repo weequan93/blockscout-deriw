@@ -125,6 +125,7 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingMessagesOnL1 do
         :init_worker,
         %{config: %{l1_rollup_address: _, json_l1_rpc_named_arguments: _, l1_start_block: _}, data: _} = state
       ) do
+    log_info("TrackingMessagesOnL1 handle_info 1 #{inspect(state)}")
     %{bridge: bridge_address} =
       Rpc.get_contracts_for_rollup(state.config.l1_rollup_address, :bridge, state.config.json_l1_rpc_named_arguments)
 
