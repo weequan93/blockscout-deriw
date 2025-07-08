@@ -59,7 +59,7 @@ defmodule Indexer.Fetcher.Arbitrum.RollupMessagesCatchup do
 
   import Indexer.Fetcher.Arbitrum.Utils.Helper, only: [increase_duration: 2]
 
-  import Indexer.Fetcher.Arbitrum.Utils.Logging, only: [log_warning: 1]
+  import Indexer.Fetcher.Arbitrum.Utils.Logging, only: [log_warning: 1, log_info: 1]
 
   alias Indexer.Fetcher.Arbitrum.Utils.Db
   alias Indexer.Fetcher.Arbitrum.Workers.HistoricalMessagesOnL2
