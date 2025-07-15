@@ -926,7 +926,7 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewBatches do
         )
       end)
 
-    log_info("NewBatches parse_logs_for_new_batches Found #{length(batches)} new batches")
+    # log_info("NewBatches parse_logs_for_new_batches Found #{length(batches)} new batches")
     {batches, transactions_requests, Map.values(blocks_requests), existing_commitment_transactions}
   end
 
