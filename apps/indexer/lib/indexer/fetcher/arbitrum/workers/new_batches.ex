@@ -936,7 +936,7 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewBatches do
     log_info("NewBatches sequencer_batch_delivered_event_parse Parsing SequencerBatchDelivered event")
     [_, batch_sequence_number, before_acc, after_acc] = event["topics"]
 
-    log_info("NewBatches sequencer_batch_delivered_event_parse Parsed batch sequence number: #{batch_sequence_number}, before accumulator: #{before_acc}, after accumulator: #{after_acc}")
+    log_info("NewBatches sequencer_batch_delivered_event_parse Parsed batch sequence number: , before accumulator:, after accumulator:")
     {quantity_to_integer(batch_sequence_number), before_acc, after_acc}
   end
 
