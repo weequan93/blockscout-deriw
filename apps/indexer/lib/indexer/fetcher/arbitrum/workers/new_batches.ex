@@ -778,7 +778,7 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewBatches do
     {batches, transactions_requests, blocks_requests, existing_commitment_transactions} =
       parse_logs_for_new_batches(logs, existing_batches)
 
-    log_info("NewBatches handle_batches_from_logs Found #{length(batches)} new batches")
+    log_info("NewBatches handle_batches_from_logs Found #{(batches)} new batches")
     blocks_to_ts = Rpc.execute_blocks_requests_and_get_ts(blocks_requests, json_rpc_named_arguments, chunk_size)
 
     log_info("NewBatches handle_batches_from_logs Found #{length(blocks_to_ts)} blocks with timestamps")
