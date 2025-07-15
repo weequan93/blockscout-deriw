@@ -94,6 +94,7 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.HistoricalMessagesOnL2 do
     if Db.indexed_blocks?(start_block, end_block) do
       log_info("HistoricalMessagesOnL2 discover_historical_messages_from_l2 3 do_discover_historical_messages_from_l2")
       do_discover_historical_messages_from_l2(start_block, end_block)
+      log_info("HistoricalMessagesOnL2 discover_historical_messages_from_l2 3 do_discover_historical_messages_from_l2 end")
     else
       log_warning(
         "Not able to discover historical messages from L2, some blocks in #{start_block}..#{end_block} not indexed"
