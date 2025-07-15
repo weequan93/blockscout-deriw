@@ -294,6 +294,8 @@ defmodule Indexer.Helper do
     processed_from_block = if is_integer(from_block), do: integer_to_quantity(from_block), else: from_block
     processed_to_block = if is_integer(to_block), do: integer_to_quantity(to_block), else: to_block
 
+    Logger.info("get_logs from_block: #{processed_from_block}, to_block: #{processed_to_block}, address: #{address}, topics: #{inspect(topics)}")
+
     req =
       request(%{
         id: id,
