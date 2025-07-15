@@ -996,7 +996,7 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewBatches do
          existing_batches,
          {batches, transactions_requests, blocks_requests, existing_commitment_transactions}
        ) do
-    log_info("NewBatches handle_new_batch_data Processing batch #{batch_num} with transaction hash #{transaction_hash_raw} in block #{blk_num}")
+    log_info("NewBatches handle_new_batch_data Processing batch  with transaction hash in block ")
     transaction_hash = Rpc.string_hash_to_bytes_hash(transaction_hash_raw)
 
     log_info("NewBatches handle_new_batch_data Transaction hash: #{transaction_hash}")
