@@ -806,15 +806,15 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewBatches do
     {blocks_to_import, rollup_transactions_to_import} =
       get_rollup_blocks_and_transactions(batches_to_import, rollup_rpc_config)
 
-    log_info("NewBatches handle_batches_from_logs Found #{length(blocks_to_import)} rollup blocks and #{length(rollup_transactions_to_import)} rollup transactions")
+    log_info("NewBatches handle_batches_from_logs Found rollup blocks and  rollup transactions")
     lifecycle_transactions =
       lifecycle_transactions_wo_indices
       |> Db.get_indices_for_l1_transactions()
 
-    log_info("NewBatches handle_batches_from_logs Found #{length(lifecycle_transactions)} lifecycle transactions with indices")
+    log_info("NewBatches handle_batches_from_logs Found lifecycle transactions with indices")
     transaction_counts_per_batch = batches_to_rollup_transactions_amounts(rollup_transactions_to_import)
 
-    log_info("NewBatches handle_batches_from_logs Found #{length(transaction_counts_per_batch)} transaction counts per batch")
+    log_info("NewBatches handle_batches_from_logs Found transaction counts per batch")
     batches_list_to_import =
       batches_to_import
       |> Map.values()
@@ -834,13 +834,13 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewBatches do
         ]
       end)
 
-    log_info("NewBatches handle_batches_from_logs Found #{length(batches_list_to_import)} batches to import")
+    log_info("NewBatches handle_batches_from_logs Found  batches to import")
     da_records =
       DataAvailabilityInfo.prepare_for_import(da_info, %{
         sequencer_inbox_address: sequencer_inbox_address,
         json_rpc_named_arguments: l1_rpc_config.json_rpc_named_arguments
       })
-    log_info("NewBatches handle_batches_from_logs Found #{length(da_records)} DA records to import")
+    log_info("NewBatches handle_batches_from_logs Found  DA records to import")
     # It is safe to not re-mark messages as committed for the batches that are already in the database
     committed_messages =
       if Enum.empty?(blocks_to_import) do
@@ -853,7 +853,7 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewBatches do
         |> get_committed_l2_to_l1_messages()
       end
 
-    log_info("NewBatches handle_batches_from_logs Found #{length(committed_messages)} committed messages to import")
+    log_info("NewBatches handle_batches_from_logs Found  committed messages to import")
     {batches_list_to_import, Map.values(lifecycle_transactions), Map.values(blocks_to_import),
      rollup_transactions_to_import, committed_messages, da_records}
   end
@@ -999,12 +999,12 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewBatches do
     log_info("NewBatches handle_new_batch_data Processing batch  with transaction hash in block ")
     transaction_hash = Rpc.string_hash_to_bytes_hash(transaction_hash_raw)
 
-    log_info("NewBatches handle_new_batch_data Transaction hash: #{transaction_hash}")
+    log_info("NewBatches handle_new_batch_data Transaction hash: ")
     {updated_batches, updated_transactions_requests, updated_existing_commitment_transactions} =
       if batch_num in existing_batches do
         {batches, transactions_requests, Map.put(existing_commitment_transactions, transaction_hash, blk_num)}
       else
-        log_info("New batch #{batch_num} found in #{transaction_hash_raw}")
+        log_info("New batch #{batch_num} found in ")
 
         updated_batches =
           Map.put(
@@ -1125,7 +1125,7 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewBatches do
         block_number = quantity_to_integer(resp["blockNumber"])
         transaction_hash = Rpc.string_hash_to_bytes_hash(resp["hash"])
 
-        log_info("NewBatches execute_transaction_requests_parse_transactions_calldata Processing transaction #{transaction_hash} in block #{block_number}")
+        log_info("NewBatches execute_transaction_requests_parse_transactions_calldata Processing transaction  in block #{block_number}")
         # Although they are called messages in the functions' ABI, in fact they are
         # rollup blocks
         {batch_num, prev_message_count, new_message_count, extra_data} =
@@ -1195,7 +1195,7 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewBatches do
   @spec add_sequencer_l2_batch_from_origin_calldata_parse(binary()) ::
           {non_neg_integer(), non_neg_integer() | nil, non_neg_integer() | nil, binary() | nil}
   defp add_sequencer_l2_batch_from_origin_calldata_parse(calldata) do
-    log_info("NewBatches add_sequencer_l2_batch_from_origin_calldata_parse Parsing calldata: #{calldata}")
+    log_info("NewBatches add_sequencer_l2_batch_from_origin_calldata_parse Parsing calldata:")
     case calldata do
       "0x8f111f3c" <> encoded_params ->
         # addSequencerL2BatchFromOrigin(uint256 sequenceNumber, bytes calldata data, uint256 afterDelayedMessagesRead, address gasRefunder, uint256 prevMessageCount, uint256 newMessageCount)
@@ -1394,7 +1394,7 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewBatches do
         }) ::
           %{binary() => Arbitrum.LifecycleTransaction.to_import()}
   defp update_lifecycle_transactions_for_new_blocks(existing_commitment_transactions, block_to_ts) do
-    log_info("NewBatches update_lifecycle_transactions_for_new_blocks Updating lifecycle transactions for new blocks #{length(existing_commitment_transactions)}")
+    log_info("NewBatches update_lifecycle_transactions_for_new_blocks Updating lifecycle transactions for new blocks")
     existing_commitment_transactions
     |> Map.keys()
     |> Db.lifecycle_transactions()
@@ -1402,7 +1402,7 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewBatches do
       block_number = existing_commitment_transactions[transaction.hash]
       ts = block_to_ts[block_number]
 
-      log_info("NewBatches update_lifecycle_transactions_for_new_blocks Processing transaction #{transaction.hash} with block number #{block_number} and timestamp #{ts}")
+      log_info("NewBatches update_lifecycle_transactions_for_new_blocks Processing transaction with block number #{block_number} and timestamp #{ts}")
       case ArbitrumHelper.compare_lifecycle_transaction_and_update(transaction, {block_number, ts}, "commitment") do
         {:updated, updated_transaction} ->
           Map.put(transactions, transaction.hash, updated_transaction)
@@ -1482,7 +1482,7 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewBatches do
 
       log_info("NewBatches get_rollup_blocks_and_transactions Recovered rollup blocks and transactions if necessary")
       log_info(
-        "Found #{length(Map.keys(blocks_to_import))} rollup blocks and #{length(transactions_to_import)} rollup transactions in DB"
+        "Found  rollup blocks and rollup transactions in DB"
       )
 
       {blocks_to_import, transactions_to_import}
@@ -1536,7 +1536,7 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewBatches do
   #   - A list of transactions, each associated with its respective rollup block
   #     and batch number, ready for database import.
   defp get_rollup_blocks_and_transactions_from_db(rollup_blocks_numbers, blocks_to_batches) do
-    log_info("NewBatches get_rollup_blocks_and_transactions_from_db Retrieving rollup blocks and transactions from DB for #{length(rollup_blocks_numbers)} blocks")
+    log_info("NewBatches get_rollup_blocks_and_transactions_from_db Retrieving rollup blocks and transactions from DB for  blocks")
 
     rollup_blocks_numbers
     |> Db.rollup_blocks()
@@ -1550,7 +1550,7 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewBatches do
           [%{transaction_hash: transaction.hash.bytes, batch_number: batch_num} | acc]
         end)
 
-      log_info("NewBatches get_rollup_blocks_and_transactions_from_db Updated transactions list for block number #{block.number} #{length(updated_transactions_list)}")
+      log_info("NewBatches get_rollup_blocks_and_transactions_from_db Updated transactions list for block number #{block.number} ")
       updated_blocks_map =
         blocks_map
         |> Map.put(block.number, %{
@@ -1559,7 +1559,7 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewBatches do
           confirmation_id: nil
         })
 
-      log_info("NewBatches get_rollup_blocks_and_transactions_from_db Updated blocks map for block number #{block.number} #{inspect(updated_blocks_map[block.number])}")
+      log_info("NewBatches get_rollup_blocks_and_transactions_from_db Updated blocks map for block number #{block.number} ")
       {updated_blocks_map, updated_transactions_list}
     end)
   end
