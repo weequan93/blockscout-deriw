@@ -203,7 +203,7 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewConfirmations do
     log_info("New confirmations discovery actual start block: #{actual_start_block}")
     end_block = min(start_block + l1_rpc_config.logs_block_range - 1, latest_block)
 
-    log_info("New confirmations discovery end block: #{end_block}")
+
     if actual_start_block <= end_block do
       log_info("Block range for new rollup confirmations discovery: #{actual_start_block}..#{end_block}")
 
