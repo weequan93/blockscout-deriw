@@ -26,6 +26,23 @@ config :block_scout_web, BlockScoutWeb.Endpoint,
     keyfile: System.get_env("KEYFILE") || "priv/cert/selfsigned_key.pem"
   ]
 
+config :block_scout_web, BlockScoutWeb.HealthEndpoint,
+  secret_key_base:
+    System.get_env("SECRET_KEY_BASE") || "RMgI4C1HSkxsEjdhtGMfwAHfyT6CKWXOgzCboJflfSm4jeAlic52io05KB6mqzc5",
+  http: [
+    port: port
+  ],
+  url: [
+    scheme: "http",
+    host: System.get_env("BLOCKSCOUT_HOST", "localhost")
+  ],
+  https: [
+    port: port + 1,
+    cipher_suite: :strong,
+    certfile: System.get_env("CERTFILE") || "priv/cert/selfsigned.pem",
+    keyfile: System.get_env("KEYFILE") || "priv/cert/selfsigned_key.pem"
+  ]
+
 ########################
 ### Ethereum JSONRPC ###
 ########################
@@ -113,7 +130,8 @@ for repo <- [
       Explorer.Repo.ZkSync,
       # Feature dependent repos
       Explorer.Repo.BridgedTokens,
-      Explorer.Repo.ShrunkInternalTransactions
+      Explorer.Repo.ShrunkInternalTransactions,
+      Explorer.Repo.Neon
     ] do
   config :explorer, repo,
     database: database,

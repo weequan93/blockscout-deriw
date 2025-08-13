@@ -33,10 +33,6 @@ defmodule BlockScoutWeb.API.V2.PolygonZkevmView do
       "acc_input_hash" => batch.acc_input_hash,
       "sequence_transaction_hash" => sequence_transaction_hash,
       "verify_transaction_hash" => verify_transaction_hash,
-      # todo: keep next line for compatibility with frontend and remove when new frontend is bound to `sequence_transaction_hash` property
-      "sequence_tx_hash" => sequence_transaction_hash,
-      # todo: keep next line for compatibility with frontend and remove when new frontend is bound to `verify_transaction_hash` property
-      "verify_tx_hash" => verify_transaction_hash,
       "state_root" => batch.state_root
     }
   end
@@ -159,13 +155,7 @@ defmodule BlockScoutWeb.API.V2.PolygonZkevmView do
         "number" => batch.number,
         "status" => batch_status(batch),
         "timestamp" => batch.timestamp,
-        "transaction_count" => batch.l2_transactions_count,
-        # todo: keep next line for compatibility with frontend and remove when new frontend is bound to `transaction_count` property
-        "tx_count" => batch.l2_transactions_count,
-        # todo: keep next line for compatibility with frontend and remove when new frontend is bound to `sequence_transaction_hash` property
-        "sequence_tx_hash" => sequence_transaction_hash,
-        # todo: keep next line for compatibility with frontend and remove when new frontend is bound to `verify_transaction_hash` property
-        "verify_tx_hash" => verify_transaction_hash,
+        "transactions_count" => batch.l2_transactions_count,
         "sequence_transaction_hash" => sequence_transaction_hash,
         "verify_transaction_hash" => verify_transaction_hash
       }

@@ -37,8 +37,8 @@ defmodule BlockScoutWeb.API.V2.WithdrawalController do
   def withdrawals_counters(conn, _params) do
     conn
     |> json(%{
-      withdrawal_count: Chain.count_withdrawals_from_cache(api?: true),
-      withdrawal_sum: Chain.sum_withdrawals_from_cache(api?: true)
+      withdrawals_count: Chain.count_withdrawals_from_cache(api?: true),
+      withdrawals_sum: Chain.sum_withdrawals_from_cache(api?: true)
     })
   end
 end

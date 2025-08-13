@@ -4,43 +4,23 @@ import Config
 |> Path.join()
 |> Code.eval_file()
 
-hackney_opts = ConfigHelper.hackney_options()
-timeout = ConfigHelper.timeout(1)
-
 config :explorer,
   json_rpc_named_arguments: [
     transport: EthereumJSONRPC.HTTP,
     transport_options: [
-      http: EthereumJSONRPC.HTTP.HTTPoison,
-      urls:
-        ConfigHelper.parse_urls_list("ETHEREUM_JSONRPC_HTTP_URLS", "ETHEREUM_JSONRPC_HTTP_URL", "http://localhost:8545"),
-      trace_urls:
-        ConfigHelper.parse_urls_list(
-          "ETHEREUM_JSONRPC_TRACE_URLS",
-          "ETHEREUM_JSONRPC_TRACE_URL",
-          "http://localhost:8545"
-        ),
-      eth_call_urls:
-        ConfigHelper.parse_urls_list(
-          "ETHEREUM_JSONRPC_ETH_CALL_URLS",
-          "ETHEREUM_JSONRPC_ETH_CALL_URL",
-          "http://localhost:8545"
-        ),
-      fallback_urls:
-        ConfigHelper.parse_urls_list("ETHEREUM_JSONRPC_FALLBACK_HTTP_URLS", "ETHEREUM_JSONRPC_FALLBACK_HTTP_URL"),
-      fallback_trace_urls:
-        ConfigHelper.parse_urls_list("ETHEREUM_JSONRPC_FALLBACK_TRACE_URLS", "ETHEREUM_JSONRPC_FALLBACK_TRACE_URL"),
-      fallback_eth_call_urls:
-        ConfigHelper.parse_urls_list(
-          "ETHEREUM_JSONRPC_FALLBACK_ETH_CALL_URLS",
-          "ETHEREUM_JSONRPC_FALLBACK_ETH_CALL_URL"
-        ),
+      http: EthereumJSONRPC.HTTP.Tesla,
+      urls: ConfigHelper.parse_urls_list(:http),
+      trace_urls: ConfigHelper.parse_urls_list(:trace),
+      eth_call_urls: ConfigHelper.parse_urls_list(:eth_call),
+      fallback_urls: ConfigHelper.parse_urls_list(:fallback_http),
+      fallback_trace_urls: ConfigHelper.parse_urls_list(:fallback_trace),
+      fallback_eth_call_urls: ConfigHelper.parse_urls_list(:fallback_eth_call),
       method_to_url: [
         eth_call: :eth_call,
         eth_getBalance: :trace,
         trace_replayTransaction: :trace
       ],
-      http_options: [recv_timeout: timeout, timeout: timeout, hackney: hackney_opts]
+      http_options: ConfigHelper.http_options(1)
     ],
     variant: EthereumJSONRPC.RSK
   ],

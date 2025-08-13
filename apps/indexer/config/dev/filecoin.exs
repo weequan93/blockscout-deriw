@@ -4,11 +4,8 @@ import Config
 |> Path.join()
 |> Code.eval_file()
 
-hackney_opts = ConfigHelper.hackney_options()
-timeout = ConfigHelper.timeout(1)
-
 config :indexer,
-  block_interval: ConfigHelper.parse_time_env_var("INDEXER_CATCHUP_BLOCK_INTERVAL", "5s"),
+  block_interval: ConfigHelper.parse_time_env_var("INDEXER_CATCHUP_BLOCK_INTERVAL", "0s"),
   json_rpc_named_arguments: [
     transport:
       if(System.get_env("ETHEREUM_JSONRPC_TRANSPORT", "http") == "http",
@@ -16,39 +13,18 @@ config :indexer,
         else: EthereumJSONRPC.IPC
       ),
     transport_options: [
-      http: EthereumJSONRPC.HTTP.HTTPoison,
-      urls:
-        ConfigHelper.parse_urls_list(
-          "ETHEREUM_JSONRPC_HTTP_URLS",
-          "ETHEREUM_JSONRPC_HTTP_URL",
-          "http://localhost:1234/rpc/v1"
-        ),
-      trace_urls:
-        ConfigHelper.parse_urls_list(
-          "ETHEREUM_JSONRPC_TRACE_URLS",
-          "ETHEREUM_JSONRPC_TRACE_URL",
-          "http://localhost:1234/rpc/v1"
-        ),
-      eth_call_urls:
-        ConfigHelper.parse_urls_list(
-          "ETHEREUM_JSONRPC_ETH_CALL_URLS",
-          "ETHEREUM_JSONRPC_ETH_CALL_URL",
-          "http://localhost:1234/rpc/v1"
-        ),
-      fallback_urls:
-        ConfigHelper.parse_urls_list("ETHEREUM_JSONRPC_FALLBACK_HTTP_URLS", "ETHEREUM_JSONRPC_FALLBACK_HTTP_URL"),
-      fallback_trace_urls:
-        ConfigHelper.parse_urls_list("ETHEREUM_JSONRPC_FALLBACK_TRACE_URLS", "ETHEREUM_JSONRPC_FALLBACK_TRACE_URL"),
-      fallback_eth_call_urls:
-        ConfigHelper.parse_urls_list(
-          "ETHEREUM_JSONRPC_FALLBACK_ETH_CALL_URLS",
-          "ETHEREUM_JSONRPC_FALLBACK_ETH_CALL_URL"
-        ),
+      http: EthereumJSONRPC.HTTP.Tesla,
+      urls: ConfigHelper.parse_urls_list(:http, "http://localhost:1234/rpc/v1"),
+      trace_urls: ConfigHelper.parse_urls_list(:trace, "http://localhost:1234/rpc/v1"),
+      eth_call_urls: ConfigHelper.parse_urls_list(:eth_call, "http://localhost:1234/rpc/v1"),
+      fallback_urls: ConfigHelper.parse_urls_list(:fallback_http),
+      fallback_trace_urls: ConfigHelper.parse_urls_list(:fallback_trace),
+      fallback_eth_call_urls: ConfigHelper.parse_urls_list(:fallback_eth_call),
       method_to_url: [
         eth_call: :eth_call,
         trace_block: :trace
       ],
-      http_options: [recv_timeout: timeout, timeout: timeout, hackney: hackney_opts]
+      http_options: ConfigHelper.http_options(1)
     ],
     variant: EthereumJSONRPC.Filecoin
   ],

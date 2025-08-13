@@ -9,12 +9,12 @@ defmodule Indexer.MixProject do
       config_path: "../../config/config.exs",
       deps: deps(),
       deps_path: "../../deps",
-      description: "Fetches block chain data from on-chain node for later reading with Explorer.",
-      elixir: "~> 1.13",
+      description: "Fetches blockchain data from on-chain node for later reading with Explorer.",
+      elixir: "~> 1.17",
       elixirc_paths: elixirc_paths(Mix.env()),
       lockfile: "../../mix.lock",
       start_permanent: Mix.env() == :prod,
-      version: "6.9.2",
+      version: "9.0.1",
       xref: [
         exclude: [
           Explorer.Chain.Optimism.Deposit,
@@ -52,7 +52,7 @@ defmodule Indexer.MixProject do
       # JSONRPC access to Nethermind for `Explorer.Indexer`
       {:ethereum_jsonrpc, in_umbrella: true},
       # Brotli compression/decompression
-      {:brotli, "~> 0.3.2"},
+      {:ex_brotli, "~> 0.5.0"},
       {:ex_keccak, "~> 0.7.5"},
       # RLP encoding
       {:ex_rlp, "~> 0.6.0"},
@@ -63,14 +63,16 @@ defmodule Indexer.MixProject do
       # Log errors and application output to separate files
       {:logger_file_backend, "~> 0.0.10"},
       # Mocking `EthereumJSONRPC.Transport`, so we avoid hitting real chains for local testing
-      {:mox, "~> 1.0"},
+      {:mox, "~> 1.1.0"},
       {:prometheus_ex, git: "https://github.com/lanodan/prometheus.ex", branch: "fix/elixir-1.14", override: true},
       # Tracing
       {:spandex, "~> 3.0"},
       # `:spandex` integration with Datadog
       {:spandex_datadog, "~> 1.0"},
       {:logger_json, "~> 5.1"},
-      {:varint, "~> 1.4"}
+      {:varint, "~> 1.4"},
+      {:utils, in_umbrella: true},
+      {:cachex, "~> 4.0"}
     ]
   end
 

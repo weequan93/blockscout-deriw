@@ -19,6 +19,16 @@ config :block_scout_web, BlockScoutWeb.Endpoint,
     host: System.get_env("BLOCKSCOUT_HOST") || "localhost"
   ]
 
+config :block_scout_web, BlockScoutWeb.HealthEndpoint,
+  secret_key_base: System.get_env("SECRET_KEY_BASE"),
+  check_origin: System.get_env("CHECK_ORIGIN", "false") == "true" || false,
+  http: [port: port],
+  url: [
+    scheme: System.get_env("BLOCKSCOUT_PROTOCOL") || "https",
+    port: port,
+    host: System.get_env("BLOCKSCOUT_HOST") || "localhost"
+  ]
+
 ########################
 ### Ethereum JSONRPC ###
 ########################
@@ -88,7 +98,8 @@ for repo <- [
       Explorer.Repo.Shibarium,
       Explorer.Repo.Stability,
       Explorer.Repo.Zilliqa,
-      Explorer.Repo.ZkSync
+      Explorer.Repo.ZkSync,
+      Explorer.Repo.Neon
     ] do
   config :explorer, repo,
     url: System.get_env("DATABASE_URL"),

@@ -165,24 +165,6 @@ defmodule BlockScoutWeb.SmartContractView do
     end)
   end
 
-  def binary_to_utf_string(item) do
-    case Integer.parse(to_string(item)) do
-      {item_integer, ""} ->
-        to_string(item_integer)
-
-      _ ->
-        if is_binary(item) do
-          add_0x(item)
-        else
-          to_string(item)
-        end
-    end
-  end
-
-  defp add_0x(item) do
-    "0x" <> Base.encode16(item, case: :lower)
-  end
-
   defp render_type_value(type, value, type) do
     "<div class=\"pl-3\"><i>(#{Helper.sanitize_input(type)})</i> : #{value}</div>"
   end

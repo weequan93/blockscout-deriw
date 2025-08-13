@@ -5,6 +5,8 @@ defmodule Indexer.Supervisor do
 
   use Supervisor
 
+  import Cachex.Spec
+
   alias Explorer.Chain.BridgedToken
 
   alias Indexer.{
@@ -21,8 +23,10 @@ defmodule Indexer.Supervisor do
   alias Indexer.Fetcher.Blackfort.Validator, as: ValidatorBlackfort
   alias Indexer.Fetcher.CoinBalance.Catchup, as: CoinBalanceCatchup
   alias Indexer.Fetcher.CoinBalance.Realtime, as: CoinBalanceRealtime
+  alias Indexer.Fetcher.MultichainSearchDb.BalancesExportQueue, as: MultichainSearchDbBalancesExportQueue
+  alias Indexer.Fetcher.MultichainSearchDb.MainExportQueue, as: MultichainSearchDbMainExportQueue
+  alias Indexer.Fetcher.MultichainSearchDb.TokenInfoExportQueue, as: MultichainSearchDbTokenInfoExportQueue
   alias Indexer.Fetcher.Stability.Validator, as: ValidatorStability
-  alias Indexer.Fetcher.TokenInstance.LegacySanitize, as: TokenInstanceLegacySanitize
   alias Indexer.Fetcher.TokenInstance.Realtime, as: TokenInstanceRealtime
   alias Indexer.Fetcher.TokenInstance.Retry, as: TokenInstanceRetry
   alias Indexer.Fetcher.TokenInstance.Sanitize, as: TokenInstanceSanitize
@@ -40,6 +44,7 @@ defmodule Indexer.Supervisor do
     RootstockData,
     Token,
     TokenBalance,
+    TokenCountersUpdater,
     TokenTotalSupplyUpdater,
     TokenUpdater,
     TransactionAction,
@@ -47,6 +52,7 @@ defmodule Indexer.Supervisor do
     Withdrawal
   }
 
+  alias Indexer.Fetcher.Arbitrum.DataBackfill, as: ArbitrumDataBackfill
   alias Indexer.Fetcher.Arbitrum.MessagesToL2Matcher, as: ArbitrumMessagesToL2Matcher
   alias Indexer.Fetcher.Arbitrum.RollupMessagesCatchup, as: ArbitrumRollupMessagesCatchup
   alias Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses, as: ArbitrumTrackingBatchesStatuses
@@ -54,10 +60,14 @@ defmodule Indexer.Supervisor do
   alias Indexer.Fetcher.ZkSync.BatchesStatusTracker, as: ZkSyncBatchesStatusTracker
   alias Indexer.Fetcher.ZkSync.TransactionBatch, as: ZkSyncTransactionBatch
 
+  alias Indexer.Migrator.RecoveryWETHTokenTransfers
+
   alias Indexer.Temporary.{
     UncatalogedTokenTransfers,
     UnclesWithoutIndex
   }
+
+  alias Indexer.Utils.EventNotificationsCleaner
 
   def child_spec([]) do
     child_spec([[]])
@@ -132,7 +142,6 @@ defmodule Indexer.Supervisor do
         {TokenInstanceRealtime.Supervisor, [[memory_monitor: memory_monitor]]},
         {TokenInstanceRetry.Supervisor, [[memory_monitor: memory_monitor]]},
         {TokenInstanceSanitize.Supervisor, [[memory_monitor: memory_monitor]]},
-        configure(TokenInstanceLegacySanitize, [[memory_monitor: memory_monitor]]),
         configure(TokenInstanceSanitizeERC721, [[memory_monitor: memory_monitor]]),
         configure(TokenInstanceSanitizeERC1155, [[memory_monitor: memory_monitor]]),
         configure(TransactionAction.Supervisor, [[memory_monitor: memory_monitor]]),
@@ -142,7 +151,12 @@ defmodule Indexer.Supervisor do
          [[json_rpc_named_arguments: json_rpc_named_arguments, memory_monitor: memory_monitor]]},
         {TokenUpdater.Supervisor,
          [[json_rpc_named_arguments: json_rpc_named_arguments, memory_monitor: memory_monitor]]},
+        {TokenCountersUpdater.Supervisor,
+         [[json_rpc_named_arguments: json_rpc_named_arguments, memory_monitor: memory_monitor]]},
         {ReplacedTransaction.Supervisor, [[memory_monitor: memory_monitor]]},
+        {MultichainSearchDbMainExportQueue.Supervisor, [[memory_monitor: memory_monitor]]},
+        {MultichainSearchDbBalancesExportQueue.Supervisor, [[memory_monitor: memory_monitor]]},
+        {MultichainSearchDbTokenInfoExportQueue.Supervisor, [[memory_monitor: memory_monitor]]},
         {Indexer.Fetcher.RollupL1ReorgMonitor.Supervisor, [[memory_monitor: memory_monitor]]},
         configure(
           Indexer.Fetcher.Optimism.TransactionBatch.Supervisor,
@@ -156,6 +170,26 @@ defmodule Indexer.Supervisor do
           [[memory_monitor: memory_monitor, json_rpc_named_arguments: json_rpc_named_arguments]]
         ),
         configure(Indexer.Fetcher.Optimism.WithdrawalEvent.Supervisor, [[memory_monitor: memory_monitor]]),
+        {
+          Indexer.Fetcher.Optimism.EIP1559ConfigUpdate.Supervisor,
+          [[memory_monitor: memory_monitor, json_rpc_named_arguments: json_rpc_named_arguments]]
+        },
+        {
+          Indexer.Fetcher.Optimism.Interop.Message.Supervisor,
+          [[memory_monitor: memory_monitor, json_rpc_named_arguments: json_rpc_named_arguments]]
+        },
+        {
+          Indexer.Fetcher.Optimism.Interop.MessageFailed.Supervisor,
+          [[memory_monitor: memory_monitor, json_rpc_named_arguments: json_rpc_named_arguments]]
+        },
+        {
+          Indexer.Fetcher.Optimism.Interop.MessageQueue.Supervisor,
+          [[memory_monitor: memory_monitor, json_rpc_named_arguments: json_rpc_named_arguments]]
+        },
+        {
+          Indexer.Fetcher.Optimism.Interop.MultichainExport.Supervisor,
+          [[memory_monitor: memory_monitor]]
+        },
         configure(Indexer.Fetcher.PolygonEdge.Deposit.Supervisor, [[memory_monitor: memory_monitor]]),
         configure(Indexer.Fetcher.PolygonEdge.DepositExecute.Supervisor, [
           [memory_monitor: memory_monitor, json_rpc_named_arguments: json_rpc_named_arguments]
@@ -208,21 +242,33 @@ defmodule Indexer.Supervisor do
           [json_rpc_named_arguments: json_rpc_named_arguments, memory_monitor: memory_monitor]
         ]),
         {ArbitrumMessagesToL2Matcher.Supervisor, [[memory_monitor: memory_monitor]]},
+        {ArbitrumDataBackfill.Supervisor,
+         [[json_rpc_named_arguments: json_rpc_named_arguments, memory_monitor: memory_monitor]]},
         configure(Indexer.Fetcher.Celo.ValidatorGroupVotes.Supervisor, [
           [json_rpc_named_arguments: json_rpc_named_arguments, memory_monitor: memory_monitor]
         ]),
         configure(Indexer.Fetcher.Celo.EpochBlockOperations.Supervisor, [
           [json_rpc_named_arguments: json_rpc_named_arguments, memory_monitor: memory_monitor]
         ]),
-        configure(Indexer.Fetcher.Filecoin.AddressInfo.Supervisor, [
-          [memory_monitor: memory_monitor]
-        ]),
+        {Indexer.Fetcher.Filecoin.AddressInfo.Supervisor,
+         [
+           [
+             json_rpc_named_arguments: json_rpc_named_arguments,
+             memory_monitor: memory_monitor
+           ]
+         ]},
+        {Indexer.Fetcher.Zilliqa.ScillaSmartContracts.Supervisor, [[memory_monitor: memory_monitor]]},
         {Indexer.Fetcher.Beacon.Blob.Supervisor, [[memory_monitor: memory_monitor]]},
+        {Indexer.Fetcher.SignedAuthorizationStatus.Supervisor,
+         [[json_rpc_named_arguments: json_rpc_named_arguments, memory_monitor: memory_monitor]]},
 
         # Out-of-band fetchers
         {EmptyBlocksSanitizer.Supervisor, [[json_rpc_named_arguments: json_rpc_named_arguments]]},
         {PendingTransactionsSanitizer, [[json_rpc_named_arguments: json_rpc_named_arguments]]},
         {TokenTotalSupplyUpdater, [[]]},
+
+        # Notifications cleaner
+        configure(EventNotificationsCleaner, [[]]),
 
         # Temporary workers
         {UncatalogedTokenTransfers.Supervisor, [[]]},
@@ -231,6 +277,7 @@ defmodule Indexer.Supervisor do
         {PendingOpsCleaner, [[], []]},
         {PendingBlockOperationsSanitizer, [[]]},
         {RootstockData.Supervisor, [[json_rpc_named_arguments: json_rpc_named_arguments]]},
+        configure(RecoveryWETHTokenTransfers, [[memory_monitor: memory_monitor]]),
 
         # Block fetchers
         configure(BlockRealtime.Supervisor, [
@@ -255,6 +302,7 @@ defmodule Indexer.Supervisor do
       |> maybe_add_block_reward_fetcher(
         {BlockReward.Supervisor, [[json_rpc_named_arguments: json_rpc_named_arguments, memory_monitor: memory_monitor]]}
       )
+      |> maybe_add_nft_media_handler_processes()
 
     Supervisor.init(
       all_fetchers,
@@ -309,6 +357,44 @@ defmodule Indexer.Supervisor do
 
       _ ->
         fetchers
+    end
+  end
+
+  defp maybe_add_nft_media_handler_processes(fetchers) do
+    base_children = [
+      Indexer.NFTMediaHandler.Queue,
+      {Cachex,
+       [
+         Application.get_env(:nft_media_handler, :cache_uniqueness_name),
+         [
+           hooks: [
+             hook(
+               module: Cachex.Limit.Scheduled,
+               args: {
+                 # setting cache max size
+                 Application.get_env(:nft_media_handler, :cache_uniqueness_max_size),
+                 # options for `Cachex.prune/3`
+                 [],
+                 # options for `Cachex.Limit.Scheduled`
+                 []
+               }
+             )
+           ]
+         ]
+       ]}
+    ]
+
+    children =
+      if Application.get_env(:nft_media_handler, Indexer.NFTMediaHandler.Backfiller)[:enabled?] do
+        [Indexer.NFTMediaHandler.Backfiller | base_children]
+      else
+        base_children
+      end
+
+    if Application.get_env(:nft_media_handler, :enabled?) && !Application.get_env(:nft_media_handler, :worker?) do
+      fetchers ++ children
+    else
+      fetchers
     end
   end
 

@@ -1,11 +1,13 @@
-if Application.compile_env(:explorer, :chain_type) == :filecoin do
-  defmodule BlockScoutWeb.API.V2.FilecoinView do
-    @moduledoc """
-    View functions for rendering Filecoin-related data in JSON format.
-    """
+defmodule BlockScoutWeb.API.V2.FilecoinView do
+  @moduledoc """
+  View functions for rendering Filecoin-related data in JSON format.
+  """
+  use Utils.CompileTimeEnvHelper, chain_type: [:explorer, :chain_type]
 
-    alias Explorer.Chain
-    alias Explorer.Chain.Address
+  if @chain_type == :filecoin do
+    # TODO: remove when https://github.com/elixir-lang/elixir/issues/13975 comes to elixir release
+    alias Explorer.Chain, warn: false
+    alias Explorer.Chain.Address, warn: false
 
     @api_true [api?: true]
 
@@ -91,15 +93,15 @@ if Application.compile_env(:explorer, :chain_type) == :filecoin do
     def preload_and_put_filecoin_robust_address_to_search_results(search_results) do
       addresses_map =
         search_results
-        |> Enum.map(& &1["address"])
+        |> Enum.map(& &1["address_hash"])
         |> Enum.reject(&is_nil/1)
         |> Chain.hashes_to_addresses(@api_true)
-        |> Enum.group_by(&to_string(&1.hash))
+        |> Enum.into(%{}, &{to_string(&1.hash), &1})
 
       search_results
       |> Enum.map(fn
-        %{"address" => address_hash} = result when not is_nil(address_hash) ->
-          address = addresses_map[String.downcase(address_hash)] |> List.first()
+        %{"address_hash" => address_hash} = result when not is_nil(address_hash) ->
+          address = addresses_map[String.downcase(address_hash)]
           put_filecoin_robust_address(result, %{address: address, field_prefix: nil})
 
         other ->
@@ -108,3 +110,5 @@ if Application.compile_env(:explorer, :chain_type) == :filecoin do
     end
   end
 end
+
+# end

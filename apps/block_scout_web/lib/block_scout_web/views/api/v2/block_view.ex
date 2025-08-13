@@ -1,10 +1,10 @@
 defmodule BlockScoutWeb.API.V2.BlockView do
   use BlockScoutWeb, :view
+  use Utils.CompileTimeEnvHelper, chain_type: [:explorer, :chain_type]
 
   alias BlockScoutWeb.BlockView
   alias BlockScoutWeb.API.V2.{ApiView, Helper}
   alias Explorer.Chain.Block
-  alias Explorer.Counters.BlockPriorityFeeCounter
 
   def render("message.json", assigns) do
     ApiView.render("message.json", assigns)
@@ -27,18 +27,28 @@ defmodule BlockScoutWeb.API.V2.BlockView do
     prepare_block(block, nil, false)
   end
 
-  def prepare_block(block, _conn, single_block? \\ false) do
-    burnt_fees = Block.burnt_fees(block.transactions, block.base_fee_per_gas)
-    priority_fee = block.base_fee_per_gas && BlockPriorityFeeCounter.fetch(block.hash)
+  def render("block_countdown.json", %{
+        current_block: current_block,
+        countdown_block: countdown_block,
+        remaining_blocks: remaining_blocks,
+        estimated_time_in_sec: estimated_time_in_sec
+      }) do
+    %{
+      current_block_number: current_block,
+      countdown_block_number: countdown_block,
+      remaining_blocks_count: remaining_blocks,
+      estimated_time_in_seconds: to_string(estimated_time_in_sec)
+    }
+  end
 
-    transaction_fees = Block.transaction_fees(block.transactions)
+  def prepare_block(block, _conn, single_block? \\ false) do
+    block = Block.aggregate_transactions(block)
 
     %{
       "height" => block.number,
       "timestamp" => block.timestamp,
-      "transaction_count" => count_transactions(block),
-      # todo: keep next line for compatibility with frontend and remove when new frontend is bound to `transaction_count` property
-      "tx_count" => count_transactions(block),
+      "transactions_count" => block.transactions_count,
+      "internal_transactions_count" => count_internal_transactions(block),
       "miner" => Helper.address_with_info(nil, block.miner, block.miner_hash, false),
       "size" => block.size,
       "hash" => block.hash,
@@ -49,19 +59,17 @@ defmodule BlockScoutWeb.API.V2.BlockView do
       "gas_limit" => block.gas_limit,
       "nonce" => block.nonce,
       "base_fee_per_gas" => block.base_fee_per_gas,
-      "burnt_fees" => burnt_fees,
-      "priority_fee" => priority_fee,
+      "burnt_fees" => block.burnt_fees,
+      "priority_fee" => block.priority_fees,
       # "extra_data" => "TODO",
       "uncles_hashes" => prepare_uncles(block.uncle_relations),
       # "state_root" => "TODO",
       "rewards" => prepare_rewards(block.rewards, block, single_block?),
       "gas_target_percentage" => Block.gas_target(block),
       "gas_used_percentage" => Block.gas_used_percentage(block),
-      "burnt_fees_percentage" => burnt_fees_percentage(burnt_fees, transaction_fees),
+      "burnt_fees_percentage" => burnt_fees_percentage(block.burnt_fees, block.transactions_fees),
       "type" => block |> BlockView.block_type() |> String.downcase(),
-      "transaction_fees" => transaction_fees,
-      # todo: keep next line for compatibility with frontend and remove when new frontend is bound to `transaction_fees` property
-      "tx_fees" => transaction_fees,
+      "transaction_fees" => block.transactions_fees,
       "withdrawals_count" => count_withdrawals(block)
     }
     |> chain_type_fields(block, single_block?)
@@ -97,13 +105,16 @@ defmodule BlockScoutWeb.API.V2.BlockView do
 
   def burnt_fees_percentage(_, _), do: nil
 
-  def count_transactions(%Block{transactions: transactions}) when is_list(transactions), do: Enum.count(transactions)
-  def count_transactions(_), do: nil
+  defp count_internal_transactions(%Block{internal_transactions: internal_transactions})
+       when is_list(internal_transactions),
+       do: Enum.count(internal_transactions)
 
-  def count_withdrawals(%Block{withdrawals: withdrawals}) when is_list(withdrawals), do: Enum.count(withdrawals)
-  def count_withdrawals(_), do: nil
+  defp count_internal_transactions(_), do: nil
 
-  case Application.compile_env(:explorer, :chain_type) do
+  defp count_withdrawals(%Block{withdrawals: withdrawals}) when is_list(withdrawals), do: Enum.count(withdrawals)
+  defp count_withdrawals(_), do: nil
+
+  case @chain_type do
     :rsk ->
       defp chain_type_fields(result, block, single_block?) do
         if single_block? do

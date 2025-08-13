@@ -1,17 +1,16 @@
 defmodule BlockScoutWeb.Account.API.V2.EmailController do
   use BlockScoutWeb, :controller
+  use Utils.CompileTimeEnvHelper, invalid_session_key: [:block_scout_web, :invalid_session_key]
 
   import BlockScoutWeb.Account.AuthController, only: [current_user: 1]
 
   alias BlockScoutWeb.AccessHelper
   alias BlockScoutWeb.Account.API.V2.AuthenticateController
   alias Explorer.Account.Identity
-  alias Explorer.{Helper, Repo}
+  alias Explorer.{Helper, HttpClient, Repo}
   alias Explorer.ThirdPartyIntegrations.Auth0
 
   require Logger
-
-  @invalid_session_key Application.compile_env(:block_scout_web, :invalid_session_key)
 
   action_fallback(BlockScoutWeb.Account.API.V2.FallbackController)
 
@@ -37,8 +36,8 @@ defmodule BlockScoutWeb.Account.API.V2.EmailController do
         "user_id" => user.uid
       }
 
-      case HTTPoison.post(url, Jason.encode!(body), headers, []) do
-        {:ok, %HTTPoison.Response{body: _body, status_code: 201}} ->
+      case HttpClient.post(url, Jason.encode!(body), headers) do
+        {:ok, %{body: _body, status_code: 201}} ->
           identity
           |> Identity.changeset(%{verification_email_sent_at: DateTime.utc_now()})
           |> Repo.account_repo().update()

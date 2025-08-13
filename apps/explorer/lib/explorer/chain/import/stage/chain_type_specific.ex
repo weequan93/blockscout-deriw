@@ -16,7 +16,9 @@ defmodule Explorer.Chain.Import.Stage.ChainTypeSpecific do
       Runner.Optimism.DisputeGames,
       Runner.Optimism.Deposits,
       Runner.Optimism.Withdrawals,
-      Runner.Optimism.WithdrawalEvents
+      Runner.Optimism.WithdrawalEvents,
+      Runner.Optimism.EIP1559ConfigUpdates,
+      Runner.Optimism.InteropMessages
     ],
     polygon_edge: [
       Runner.PolygonEdge.Deposits,
@@ -50,7 +52,8 @@ defmodule Explorer.Chain.Import.Stage.ChainTypeSpecific do
       Runner.Arbitrum.L1Batches,
       Runner.Arbitrum.BatchBlocks,
       Runner.Arbitrum.BatchTransactions,
-      Runner.Arbitrum.DaMultiPurposeRecords
+      Runner.Arbitrum.DaMultiPurposeRecords,
+      Runner.Arbitrum.BatchToDaBlobs
     ],
     scroll: [
       Runner.Scroll.BatchBundles,
@@ -60,6 +63,7 @@ defmodule Explorer.Chain.Import.Stage.ChainTypeSpecific do
     ],
     celo: [
       Runner.Celo.ValidatorGroupVotes,
+      Runner.Celo.Epochs,
       Runner.Celo.ElectionRewards,
       Runner.Celo.EpochRewards
     ],
@@ -67,6 +71,9 @@ defmodule Explorer.Chain.Import.Stage.ChainTypeSpecific do
       Runner.Zilliqa.AggregateQuorumCertificates,
       Runner.Zilliqa.NestedQuorumCertificates,
       Runner.Zilliqa.QuorumCertificates
+    ],
+    stability: [
+      Runner.Stability.Validators
     ]
   }
 

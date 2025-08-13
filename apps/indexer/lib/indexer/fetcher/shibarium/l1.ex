@@ -112,7 +112,7 @@ defmodule Indexer.Fetcher.Shibarium.L1 do
     env = Application.get_all_env(:indexer)[__MODULE__]
 
     with {:start_block_undefined, false} <- {:start_block_undefined, is_nil(env[:start_block])},
-         {:reorg_monitor_started, true} <- {:reorg_monitor_started, !is_nil(Process.whereis(RollupL1ReorgMonitor))},
+         _ <- RollupL1ReorgMonitor.wait_for_start(__MODULE__),
          rpc = env[:rpc],
          {:rpc_undefined, false} <- {:rpc_undefined, is_nil(rpc)},
          {:deposit_manager_address_is_valid, true} <-
@@ -162,10 +162,6 @@ defmodule Indexer.Fetcher.Shibarium.L1 do
     else
       {:start_block_undefined, true} ->
         # the process shouldn't start if the start block is not defined
-        {:stop, :normal, %{}}
-
-      {:reorg_monitor_started, false} ->
-        Logger.error("Cannot start this process as Indexer.Fetcher.RollupL1ReorgMonitor is not started.")
         {:stop, :normal, %{}}
 
       {:rpc_undefined, true} ->
@@ -350,9 +346,10 @@ defmodule Indexer.Fetcher.Shibarium.L1 do
   defp get_block_check_interval(json_rpc_named_arguments) do
     with {:ok, latest_block} <- Helper.get_block_number_by_tag("latest", json_rpc_named_arguments),
          first_block = max(latest_block - @block_check_interval_range_size, 1),
-         {:ok, first_block_timestamp} <- Helper.get_block_timestamp_by_number(first_block, json_rpc_named_arguments),
+         {:ok, first_block_timestamp} <-
+           Helper.get_block_timestamp_by_number_or_tag(first_block, json_rpc_named_arguments),
          {:ok, last_safe_block_timestamp} <-
-           Helper.get_block_timestamp_by_number(latest_block, json_rpc_named_arguments) do
+           Helper.get_block_timestamp_by_number_or_tag(latest_block, json_rpc_named_arguments) do
       block_check_interval =
         ceil((last_safe_block_timestamp - first_block_timestamp) / (latest_block - first_block) * 1000 / 2)
 
@@ -566,12 +563,12 @@ defmodule Indexer.Fetcher.Shibarium.L1 do
     [
       transport: EthereumJSONRPC.HTTP,
       transport_options: [
-        http: EthereumJSONRPC.HTTP.HTTPoison,
+        http: EthereumJSONRPC.HTTP.Tesla,
         urls: [rpc_url],
         http_options: [
           recv_timeout: :timer.minutes(10),
           timeout: :timer.minutes(10),
-          hackney: [pool: :ethereum_jsonrpc]
+          pool: :ethereum_jsonrpc
         ]
       ]
     ]

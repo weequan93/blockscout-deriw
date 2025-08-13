@@ -2,13 +2,15 @@ defmodule Explorer.Chain.Import.Runner.Transactions do
   @moduledoc """
   Bulk imports `t:Explorer.Chain.Transaction.t/0`.
   """
+  use Utils.CompileTimeEnvHelper, chain_type: [:explorer, :chain_type]
 
   require Ecto.Query
 
   import Ecto.Query, only: [from: 2]
 
   alias Ecto.{Multi, Repo}
-  alias Explorer.Chain.{Block, Hash, Import, Transaction}
+  alias EthereumJSONRPC.Utility.RangesHelper
+  alias Explorer.Chain.{Block, Hash, Import, PendingOperationsHelper, PendingTransactionOperation, Transaction}
   alias Explorer.Chain.Import.Runner.TokenTransfers
   alias Explorer.Prometheus.Instrumenter
   alias Explorer.Utility.MissingRangesManipulator
@@ -64,6 +66,16 @@ defmodule Explorer.Chain.Import.Runner.Transactions do
         :transactions
       )
     end)
+    |> Multi.run(:new_pending_transaction_operations, fn repo, %{transactions: transactions} ->
+      Instrumenter.block_import_stage_runner(
+        fn ->
+          new_pending_transaction_operations(repo, transactions, insert_options)
+        end,
+        :block_referencing,
+        :transactions,
+        :new_pending_transaction_operations
+      )
+    end)
   end
 
   @impl Import.Runner
@@ -107,8 +119,34 @@ defmodule Explorer.Chain.Import.Runner.Transactions do
     )
   end
 
+  defp new_pending_transaction_operations(repo, inserted_transactions, %{timeout: timeout, timestamps: timestamps}) do
+    case PendingOperationsHelper.pending_operations_type() do
+      "transactions" ->
+        sorted_pending_ops =
+          inserted_transactions
+          |> RangesHelper.filter_by_height_range(&RangesHelper.traceable_block_number?(&1.block_number))
+          |> Enum.reject(&is_nil(&1.block_number))
+          |> Enum.map(&%{transaction_hash: &1.hash})
+          |> Enum.sort()
+
+        Import.insert_changes_list(
+          repo,
+          sorted_pending_ops,
+          conflict_target: :transaction_hash,
+          on_conflict: :nothing,
+          for: PendingTransactionOperation,
+          returning: true,
+          timeout: timeout,
+          timestamps: timestamps
+        )
+
+      _other_type ->
+        {:ok, []}
+    end
+  end
+
   # todo: avoid code duplication
-  case Application.compile_env(:explorer, :chain_type) do
+  case @chain_type do
     :suave ->
       defp default_on_conflict do
         from(
