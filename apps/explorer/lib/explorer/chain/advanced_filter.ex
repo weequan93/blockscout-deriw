@@ -741,7 +741,7 @@ defmodule Explorer.Chain.AdvancedFilter do
   defp filter_transactions_by_methods(query, [_ | _] = methods) do
     prepared_methods = prepare_methods(methods)
 
-    query |> where([t], fragment("substring(? FOR 4)", t.input) in ^prepared_methods)
+    query |> where([t], t.method_id in ^prepared_methods)
   end
 
   defp filter_transactions_by_methods(query, _), do: query
@@ -751,7 +751,7 @@ defmodule Explorer.Chain.AdvancedFilter do
 
     fn query, unnested? ->
       query
-      |> where(fragment("substring(? FOR 4)", as(:transaction).input) in ^prepared_methods)
+      |> where(as(:transaction).method_id in ^prepared_methods)
       |> query_function.(unnested?)
     end
   end
