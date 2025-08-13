@@ -741,7 +741,7 @@ defmodule Explorer.Chain.AdvancedFilter do
   defp filter_transactions_by_methods(query, [_ | _] = methods) do
     prepared_methods = prepare_methods(methods)
 
-    query |> where([t], t.method_id in ^prepared_methods)
+    query |> where([t], as(:transaction).method_id  in ^prepared_methods)
   end
 
   defp filter_transactions_by_methods(query, _), do: query
