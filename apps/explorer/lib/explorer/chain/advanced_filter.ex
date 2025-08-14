@@ -113,7 +113,7 @@ defmodule Explorer.Chain.AdvancedFilter do
       options
       |> Keyword.put(:block_numbers_age, block_numbers_age)
       |> queries(paging_options)
-      |> Enum.map(queries, fn query ->
+      |> Enum.map(fn query ->
         sql = Ecto.Adapters.SQL.to_sql(:all, Chain.select_repo(options), query)
         Logger.error("SQL: #{inspect(sql)}")
         Task.async(fn -> Chain.select_repo(options).all(query, timeout: timeout) end)
