@@ -341,7 +341,12 @@ defmodule Explorer.Chain.AdvancedFilter do
         Logger.error("Last transaction_hash_query")
         repo = Chain.select_repo(options)
         Logger.error("Last repo")
-        transaction_hashes = repo.all(transaction_hash_query)
+        try do
+          transaction_hashes = repo.all(transaction_hash_query)
+          Logger.error("Last transaction_hashes: #{inspect(transaction_hashes)}")
+        rescue
+          e -> Logger.error("Error fetching transaction hashes: #{inspect(e)}")
+        end
         Logger.error("Last transaction_hashes")
 
         # Step 2: Query internal transactions using those hashes
