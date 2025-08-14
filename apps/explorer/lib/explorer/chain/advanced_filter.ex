@@ -87,14 +87,22 @@ defmodule Explorer.Chain.AdvancedFilter do
 
     # Set default :age if not present
     options =
-      if Keyword.get(options, :age) == nil do
-        latest_block = BlockGeneralReader.latest_block_number()
-        default_from = max(latest_block - 10_000, 0)
-        Logger.error("Default :age is set: from block #{default_from} (timestamp #{BlockGeneralReader.block_number_to_timestamp(default_from)})")
-        Keyword.put(options, :age, [from: BlockGeneralReader.block_number_to_timestamp(default_from)])
-      else
-        Logger.error("Custom :age provided: #{inspect(Keyword.get(options, :age))}")
-        options
+      case Keyword.get(options, :age) do
+        nil ->
+          # No :age provided, set default
+          latest_block = BlockGeneralReader.latest_block_number()
+          default_from = max(latest_block - 10_000, 0)
+          Logger.error("Default :age is set: from block #{default_from} (timestamp #{BlockGeneralReader.block_number_to_timestamp(default_from)})")
+          Keyword.put(options, :age, [from: BlockGeneralReader.block_number_to_timestamp(default_from)])
+        [from: nil, to: nil] ->
+          # :age provided but both nil, set default
+          latest_block = BlockGeneralReader.latest_block_number()
+          default_from = max(latest_block - 10_000, 0)
+          Logger.error("Default :age is set: from block #{default_from} (timestamp #{BlockGeneralReader.block_number_to_timestamp(default_from)})")
+          Keyword.put(options, :age, [from: BlockGeneralReader.block_number_to_timestamp(default_from)])
+        _ ->
+          Logger.error("Custom :age provided: #{inspect(Keyword.get(options, :age))}")
+          options
       end
     Logger.error("Last :age provided: #{inspect(Keyword.get(options, :age))}")
     paging_options = Keyword.get(options, :paging_options)
