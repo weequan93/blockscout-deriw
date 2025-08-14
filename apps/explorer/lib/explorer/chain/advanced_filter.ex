@@ -90,8 +90,10 @@ defmodule Explorer.Chain.AdvancedFilter do
       if Keyword.get(options, :age) == nil do
         latest_block = BlockGeneralReader.latest_block_number()
         default_from = max(latest_block - 10_000, 0)
+        Logger.error("Default :age is set: from block #{default_from} (timestamp #{BlockGeneralReader.block_number_to_timestamp(default_from)})")
         Keyword.put(options, :age, [from: BlockGeneralReader.block_number_to_timestamp(default_from)])
       else
+        Logger.error("Custom :age provided: #{inspect(Keyword.get(options, :age))}")
         options
       end
 
