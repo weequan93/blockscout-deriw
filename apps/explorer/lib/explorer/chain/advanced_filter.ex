@@ -84,6 +84,17 @@ defmodule Explorer.Chain.AdvancedFilter do
   @spec list(options()) :: [__MODULE__.t()]
   def list(options \\ []) do
     Logger.error("Entered list/2")
+
+    # Set default :age if not present
+    options =
+      if Keyword.get(options, :age) == nil do
+        latest_block = BlockGeneralReader.latest_block_number()
+        default_from = max(latest_block - 10_000, 0)
+        Keyword.put(options, :age, [from: BlockGeneralReader.block_number_to_timestamp(default_from)])
+      else
+        options
+      end
+
     paging_options = Keyword.get(options, :paging_options)
 
     timeout = :timer.seconds(600)# Keyword.get(options, :timeout, :timer.seconds(60))
