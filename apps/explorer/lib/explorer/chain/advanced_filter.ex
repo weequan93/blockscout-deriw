@@ -89,17 +89,17 @@ defmodule Explorer.Chain.AdvancedFilter do
     options =
       case Keyword.get(options, :age) do
         nil ->
-          # No :age provided, set default
-          latest_block = BlockGeneralReader.latest_block_number()
-          default_from = max(latest_block - 10_000, 0)
-          Logger.error("Default :age is set: from block #{default_from} (timestamp #{BlockGeneralReader.block_number_to_timestamp(default_from)})")
-          Keyword.put(options, :age, [from: BlockGeneralReader.block_number_to_timestamp(default_from)])
+          # No :age provided, set default to last 1 hour
+          now = DateTime.utc_now()
+          one_hour_ago = DateTime.add(now, -3600, :second)
+          Logger.error("Default :age is set: from #{one_hour_ago} to #{now}")
+          Keyword.put(options, :age, [from: one_hour_ago, to: now])
         [from: nil, to: nil] ->
-          # :age provided but both nil, set default
-          latest_block = BlockGeneralReader.latest_block_number()
-          default_from = max(latest_block - 10_000, 0)
-          Logger.error("Default :age is set: from block #{default_from} (timestamp #{BlockGeneralReader.block_number_to_timestamp(default_from)})")
-          Keyword.put(options, :age, [from: BlockGeneralReader.block_number_to_timestamp(default_from)])
+          # :age provided but both nil, set default to last 1 hour
+          now = DateTime.utc_now()
+          one_hour_ago = DateTime.add(now, -3600, :second)
+          Logger.error("Default :age is set: from #{one_hour_ago} to #{now}")
+          Keyword.put(options, :age, [from: one_hour_ago, to: now])
         _ ->
           Logger.error("Custom :age provided: #{inspect(Keyword.get(options, :age))}")
           options
