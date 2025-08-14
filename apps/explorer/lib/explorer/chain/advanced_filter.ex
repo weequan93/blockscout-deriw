@@ -757,6 +757,7 @@ defmodule Explorer.Chain.AdvancedFilter do
   defp filter_by_transaction_type(query_function, _), do: query_function
 
   defp filter_transactions_by_methods(query, [_ | _] = methods) do
+    Logger.info("Entered filter_transactions_by_methods/2 with methods: #{inspect(methods)}")
     prepared_methods = prepare_methods(methods)
 
     query |> where([t], as(:transaction).method_id  in ^prepared_methods)
@@ -765,6 +766,7 @@ defmodule Explorer.Chain.AdvancedFilter do
   defp filter_transactions_by_methods(query, _), do: query
 
   defp filter_token_transfers_by_methods(query_function, [_ | _] = methods) do
+    Logger.info("Entered filter_token_transfers_by_methods/2 with methods: #{inspect(methods)}")
     prepared_methods = prepare_methods(methods)
 
     fn query, unnested? ->
