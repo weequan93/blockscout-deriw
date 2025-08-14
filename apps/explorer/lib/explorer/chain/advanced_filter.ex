@@ -340,7 +340,7 @@ defmodule Explorer.Chain.AdvancedFilter do
             where: t.block_consensus == true,
             where: not is_nil(t.block_number) and not is_nil(t.index),
             order_by: [desc: t.block_number, desc: t.index],
-            limit: 100
+            limit: 1
           )
         transaction_hash_query =
           if from_block do
