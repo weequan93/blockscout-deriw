@@ -361,20 +361,42 @@ defmodule Explorer.Chain.AdvancedFilter do
   defp internal_transactions_query(paging_options, options) do
     query =
       if DenormalizationHelper.transactions_denormalization_finished?() do
-        from(internal_transaction in InternalTransaction,
-          as: :internal_transaction,
-          join: transaction in assoc(internal_transaction, :transaction),
-          as: :transaction,
-          where: transaction.block_consensus == true,
-          where:
-            (internal_transaction.type == :call and internal_transaction.index > 0) or
-              internal_transaction.type != :call,
-          order_by: [
-            desc: transaction.block_number,
-            desc: transaction.index,
-            desc: internal_transaction.index
-          ]
-        )
+        # from(internal_transaction in InternalTransaction,
+        #   as: :internal_transaction,
+        #   join: transaction in assoc(internal_transaction, :transaction),
+        #   as: :transaction,
+        #   where: transaction.block_consensus == true,
+        #   where:
+        #     (internal_transaction.type == :call and internal_transaction.index > 0) or
+        #       internal_transaction.type != :call,
+        #   order_by: [
+        #     desc: transaction.block_number,
+        #     desc: transaction.index,
+        #     desc: internal_transaction.index
+        #   ]
+        # )
+        transaction_hash_query =
+          from(t in Transaction,
+            select: t.hash,
+            where: t.block_consensus == true,
+            where: not is_nil(t.block_number) and not is_nil(t.index),
+            where:
+              ^filter_by_age(t, options) # You may need to adapt this to your age filter logic
+            # Add more filters as needed (methods, addresses, etc.)
+            order_by: [desc: t.block_number, desc: t.index],
+            limit: 1000 # You can adjust this batch size
+          )
+
+        repo = Chain.select_repo(options)
+        transaction_hashes = repo.all(transaction_hash_query)
+
+        # Step 2: Query internal transactions using those hashes
+        from(i0 in InternalTransaction,
+            as: :internal_transaction,
+            where: i0.transaction_hash in ^transaction_hashes,
+            where: (i0.type == :call and i0.index > 0) or i0.type != :call,
+            order_by: [desc: i0.block_number, desc: i0.transaction_index, desc: i0.index]
+          )
       else
         from(internal_transaction in InternalTransaction,
           as: :internal_transaction,
