@@ -318,14 +318,18 @@ defmodule Explorer.Chain.AdvancedFilter do
         #     desc: transaction.index
         #   ]
         # )
+
+        from_block = options[:block_numbers_age] && options[:block_numbers_age][:from]
+        to_block = options[:block_numbers_age] && options[:block_numbers_age][:to]
+
         transaction_hash_query =
           from(t in Transaction,
             select: t.hash,
             where: t.block_consensus == true,
             where: not is_nil(t.block_number) and not is_nil(t.index),
             where:
-              (is_nil(options[:block_numbers_age][:from]) or t.block_number >= ^options[:block_numbers_age][:from]) and
-              (is_nil(options[:block_numbers_age][:to]) or t.block_number <= ^options[:block_numbers_age][:to]),
+              (is_nil(from_block) or t.block_number >= ^from_block) and
+              (is_nil(to_block) or t.block_number <= ^to_block),
             # Add more filters as needed (methods, addresses, etc.)
             order_by: [desc: t.block_number, desc: t.index],
             limit: 1000 # batch size, adjust as needed
