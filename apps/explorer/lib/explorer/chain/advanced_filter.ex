@@ -318,9 +318,12 @@ defmodule Explorer.Chain.AdvancedFilter do
         #     desc: transaction.index
         #   ]
         # )
-
+        Logger.error("Last transactions_query:")
         from_block = options[:block_numbers_age] && options[:block_numbers_age][:from]
         to_block = options[:block_numbers_age] && options[:block_numbers_age][:to]
+
+        Logger.error("Last from_block: #{inspect(from_block)}")
+        Logger.error("Last to_block: #{inspect(to_block)}")
 
         transaction_hash_query =
           from(t in Transaction,
