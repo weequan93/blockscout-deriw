@@ -83,12 +83,13 @@ defmodule Explorer.Chain.AdvancedFilter do
 
   @spec list(options()) :: [__MODULE__.t()]
   def list(options \\ []) do
+    Logger.info("Entered list/2")
     paging_options = Keyword.get(options, :paging_options)
 
     timeout = Keyword.get(options, :timeout, :timer.seconds(60))
-
+    Logger.info("After list/2 timeout")
     age = Keyword.get(options, :age)
-
+    Logger.info("After list/2 age")
     block_numbers_age =
       [
         from:
@@ -107,11 +108,14 @@ defmodule Explorer.Chain.AdvancedFilter do
             )
       ]
 
+    Logger.info("After list/2 block_numbers_age")
     tasks =
       options
       |> Keyword.put(:block_numbers_age, block_numbers_age)
       |> queries(paging_options)
       |> Enum.map(fn query -> Task.async(fn -> Chain.select_repo(options).all(query, timeout: timeout) end) end)
+
+    Logger.info("After list/2 tasks")
 
     tasks
     |> Task.yield_many(timeout: timeout, on_timeout: :kill_task)
