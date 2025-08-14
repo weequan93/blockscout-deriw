@@ -338,8 +338,11 @@ defmodule Explorer.Chain.AdvancedFilter do
             limit: 1000 # batch size, adjust as needed
           )
 
+        Logger.error("Last transaction_hash_query")
         repo = Chain.select_repo(options)
+        Logger.error("Last repo")
         transaction_hashes = repo.all(transaction_hash_query)
+        Logger.error("Last transaction_hashes")
 
         # Step 2: Query internal transactions using those hashes
         query =
