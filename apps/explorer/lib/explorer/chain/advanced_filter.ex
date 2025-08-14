@@ -308,18 +308,43 @@ defmodule Explorer.Chain.AdvancedFilter do
   defp take_page_size(list, _), do: list
 
   defp transactions_query(paging_options, options) do
-    query =
+
       if DenormalizationHelper.transactions_denormalization_finished?() do
-        from(transaction in Transaction,
-          as: :transaction,
-          where: transaction.block_consensus == true,
-          order_by: [
-            desc: transaction.block_number,
-            desc: transaction.index
-          ]
-        )
+        # query = from(transaction in Transaction,
+        #   as: :transaction,
+        #   where: transaction.block_consensus == true,
+        #   order_by: [
+        #     desc: transaction.block_number,
+        #     desc: transaction.index
+        #   ]
+        # )
+        transaction_hash_query =
+          from(t in Transaction,
+            select: t.hash,
+            where: t.block_consensus == true,
+            where: not is_nil(t.block_number) and not is_nil(t.index),
+            where:
+              (is_nil(options[:block_numbers_age][:from]) or t.block_number >= ^options[:block_numbers_age][:from]) and
+              (is_nil(options[:block_numbers_age][:to]) or t.block_number <= ^options[:block_numbers_age][:to]),
+            # Add more filters as needed (methods, addresses, etc.)
+            order_by: [desc: t.block_number, desc: t.index],
+            limit: 1000 # batch size, adjust as needed
+          )
+
+        repo = Chain.select_repo(options)
+        transaction_hashes = repo.all(transaction_hash_query)
+
+        # Step 2: Query internal transactions using those hashes
+        query =
+          from(i0 in InternalTransaction,
+            where: i0.transaction_hash in ^transaction_hashes,
+            where: (i0.type == :call and i0.index > 0) or i0.type != :call,
+            order_by: [desc: i0.block_number, desc: i0.transaction_index, desc: i0.index]
+          )
+          |> limit_query(paging_options)
+          |> preload([:transaction])
       else
-        from(transaction in Transaction,
+        query = from(transaction in Transaction,
           as: :transaction,
           join: block in assoc(transaction, :block),
           as: :block,
@@ -329,16 +354,16 @@ defmodule Explorer.Chain.AdvancedFilter do
             desc: transaction.index
           ]
         )
-      end
 
-    query
-    |> page_transactions(paging_options)
-    |> limit_query(paging_options)
-    |> apply_transactions_filters(
-      options,
-      fn query -> query |> order_by([transaction], desc: transaction.block_number, desc: transaction.index) end
-    )
-    |> limit_query(paging_options)
+        query
+          |> page_transactions(paging_options)
+          |> limit_query(paging_options)
+          |> apply_transactions_filters(
+            options,
+            fn query -> query |> order_by([transaction], desc: transaction.block_number, desc: transaction.index) end
+          )
+          |> limit_query(paging_options)
+      end
   end
 
   defp page_transactions(query, %PagingOptions{
