@@ -319,8 +319,17 @@ defmodule Explorer.Chain.AdvancedFilter do
         #   ]
         # )
         Logger.error("Last transactions_query:")
-        from_block = options[:block_numbers_age] && options[:block_numbers_age][:from]
-        to_block = options[:block_numbers_age] && options[:block_numbers_age][:to]
+        from_block =
+          case options[:block_numbers_age] && options[:block_numbers_age][:from] do
+            {:ok, val} -> val
+            val -> val
+          end
+
+        to_block =
+          case options[:block_numbers_age] && options[:block_numbers_age][:to] do
+            {:ok, val} -> val
+            val -> val
+          end
 
         Logger.error("Last from_block: #{inspect(from_block)}")
         Logger.error("Last to_block: #{inspect(to_block)}")
