@@ -328,8 +328,8 @@ defmodule Explorer.Chain.AdvancedFilter do
             where: t.block_consensus == true,
             where: not is_nil(t.block_number) and not is_nil(t.index),
             where:
-              (is_nil(from_block) or t.block_number >= ^from_block) and
-              (is_nil(to_block) or t.block_number <= ^to_block),
+              (is_nil(^from_block) or t.block_number >= ^from_block) and
+              (is_nil(^to_block) or t.block_number <= ^to_block),
             # Add more filters as needed (methods, addresses, etc.)
             order_by: [desc: t.block_number, desc: t.index],
             limit: 1000 # batch size, adjust as needed
