@@ -83,13 +83,13 @@ defmodule Explorer.Chain.AdvancedFilter do
 
   @spec list(options()) :: [__MODULE__.t()]
   def list(options \\ []) do
-    Logger.info("Entered list/2")
+    Logger.error("Entered list/2")
     paging_options = Keyword.get(options, :paging_options)
 
     timeout = Keyword.get(options, :timeout, :timer.seconds(60))
-    Logger.info("After list/2 timeout")
+    Logger.error("After list/2 timeout")
     age = Keyword.get(options, :age)
-    Logger.info("After list/2 age")
+    Logger.error("After list/2 age")
     block_numbers_age =
       [
         from:
@@ -108,14 +108,14 @@ defmodule Explorer.Chain.AdvancedFilter do
             )
       ]
 
-    Logger.info("After list/2 block_numbers_age")
+    Logger.error("After list/2 block_numbers_age")
     tasks =
       options
       |> Keyword.put(:block_numbers_age, block_numbers_age)
       |> queries(paging_options)
       |> Enum.map(fn query -> Task.async(fn -> Chain.select_repo(options).all(query, timeout: timeout) end) end)
 
-    Logger.info("After list/2 tasks")
+    Logger.error("After list/2 tasks")
 
     tasks
     |> Task.yield_many(timeout: timeout, on_timeout: :kill_task)
@@ -762,7 +762,7 @@ defmodule Explorer.Chain.AdvancedFilter do
   defp filter_by_transaction_type(query_function, _), do: query_function
 
   defp filter_transactions_by_methods(query, [_ | _] = methods) do
-    Logger.info("Entered filter_transactions_by_methods/2 with methods: #{inspect(methods)}")
+    Logger.error("Entered filter_transactions_by_methods/2 with methods: #{inspect(methods)}")
     prepared_methods = prepare_methods(methods)
 
     query |> where([t], as(:transaction).method_id  in ^prepared_methods)
@@ -771,7 +771,7 @@ defmodule Explorer.Chain.AdvancedFilter do
   defp filter_transactions_by_methods(query, _), do: query
 
   defp filter_token_transfers_by_methods(query_function, [_ | _] = methods) do
-    Logger.info("Entered filter_token_transfers_by_methods/2 with methods: #{inspect(methods)}")
+    Logger.error("Entered filter_token_transfers_by_methods/2 with methods: #{inspect(methods)}")
     prepared_methods = prepare_methods(methods)
 
     fn query, unnested? ->
