@@ -339,13 +339,21 @@ defmodule Explorer.Chain.AdvancedFilter do
             select: t.hash,
             where: t.block_consensus == true,
             where: not is_nil(t.block_number) and not is_nil(t.index),
-            where:
-              (is_nil(^from_block) or t.block_number >= ^from_block) and
-              (is_nil(^to_block) or t.block_number <= ^to_block),
-            # Add more filters as needed (methods, addresses, etc.)
             order_by: [desc: t.block_number, desc: t.index],
-            limit: 1000 # batch size, adjust as needed
+            limit: 1000
           )
+        transaction_hash_query =
+          if from_block do
+            transaction_hash_query |> where([t], t.block_number >= ^from_block)
+          else
+            transaction_hash_query
+          end
+        transaction_hash_query =
+          if to_block do
+            transaction_hash_query |> where([t], t.block_number <= ^to_block)
+          else
+            transaction_hash_query
+          end
 
         Logger.error("Last transaction_hash_query")
         repo = Chain.select_repo(options)
