@@ -381,7 +381,7 @@ defmodule Explorer.Chain.AdvancedFilter do
             where: t.block_consensus == true,
             where: not is_nil(t.block_number) and not is_nil(t.index),
             where:
-              ^filter_by_age(t, options) # You may need to adapt this to your age filter logic
+              ^filter_by_age(t, options), # You may need to adapt this to your age filter logic
             # Add more filters as needed (methods, addresses, etc.)
             order_by: [desc: t.block_number, desc: t.index],
             limit: 1000 # You can adjust this batch size
