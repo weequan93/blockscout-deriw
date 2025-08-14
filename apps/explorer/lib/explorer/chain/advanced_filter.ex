@@ -96,7 +96,7 @@ defmodule Explorer.Chain.AdvancedFilter do
         Logger.error("Custom :age provided: #{inspect(Keyword.get(options, :age))}")
         options
       end
-
+    Logger.error("Last :age provided: #{inspect(Keyword.get(options, :age))}")
     paging_options = Keyword.get(options, :paging_options)
 
     timeout = :timer.seconds(600)# Keyword.get(options, :timeout, :timer.seconds(60))
