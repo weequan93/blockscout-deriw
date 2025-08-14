@@ -116,7 +116,13 @@ defmodule Explorer.Chain.AdvancedFilter do
       |> Enum.map(fn query ->
         sql = Ecto.Adapters.SQL.to_sql(:all, Chain.select_repo(options), query)
         Logger.error("SQL: #{inspect(sql)}")
-        Task.async(fn -> Chain.select_repo(options).all(query, timeout: timeout) end)
+        Task.async(fn ->
+          start_time = System.monotonic_time(:millisecond)
+          result = Chain.select_repo(options).all(query, timeout: timeout)
+          end_time = System.monotonic_time(:millisecond)
+          Logger.error("Query execution time: #{end_time - start_time} ms for SQL: #{inspect(sql)}")
+          result
+        end)
       end)
       # |> Enum.map(fn query -> Task.async(fn -> Chain.select_repo(options).all(query, timeout: timeout) end) end)
 
