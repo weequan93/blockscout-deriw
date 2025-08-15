@@ -445,7 +445,7 @@ defmodule Explorer.Chain.AdvancedFilter do
           Logger.error("Last from_block: #{inspect(from_block)}")
           Logger.error("Last to_block: #{inspect(to_block)}")
 
-          limit = options[:limit] || 100
+          limit = options[:limit] || 51
 
 
             transaction_hash_query =
