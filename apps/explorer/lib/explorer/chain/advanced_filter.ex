@@ -486,6 +486,8 @@ defmodule Explorer.Chain.AdvancedFilter do
                   # Step 2: Query internal transactions using those hashes
                   query =
                     from(i0 in InternalTransaction,
+                      where: i0.block_number >= ^from_block,
+                      where: i0.block_number <= ^to_block,
                       where: i0.transaction_hash in ^transaction_hashes,
                       where: (i0.type == :call and i0.index > 0) or i0.type != :call,
                       order_by: [desc: i0.block_number, desc: i0.transaction_index, desc: i0.index]
