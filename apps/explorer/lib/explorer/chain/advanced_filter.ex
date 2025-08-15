@@ -5,6 +5,7 @@ defmodule Explorer.Chain.AdvancedFilter do
 
   use Explorer.Schema
 
+  require Logger
   import Ecto.Query
   import Explorer.Chain.SmartContract.Proxy.Models.Implementation, only: [proxy_implementations_association: 0]
 
@@ -84,7 +85,24 @@ defmodule Explorer.Chain.AdvancedFilter do
   def list(options \\ []) do
     paging_options = Keyword.get(options, :paging_options)
 
-    timeout = Keyword.get(options, :timeout, :timer.seconds(60))
+    timeout = Keyword.get(options, :timeout, :timer.seconds(300))
+
+    # Set default :age if not present
+    options =
+      case Keyword.get(options, :age) do
+        nil ->
+          # No :age provided, set default to last 1 hour
+          now = DateTime.utc_now()
+          one_hour_ago = DateTime.add(now, -3600, :second)
+          Keyword.put(options, :age, [from: one_hour_ago, to: now])
+        [from: nil, to: nil] ->
+          # :age provided but both nil, set default to last 1 hour
+          now = DateTime.utc_now()
+          one_hour_ago = DateTime.add(now, -3600, :second)
+          Keyword.put(options, :age, [from: one_hour_ago, to: now])
+        _ ->
+          options
+      end
 
     age = Keyword.get(options, :age)
 
@@ -106,11 +124,22 @@ defmodule Explorer.Chain.AdvancedFilter do
             )
       ]
 
-    tasks =
-      options
-      |> Keyword.put(:block_numbers_age, block_numbers_age)
-      |> queries(paging_options)
-      |> Enum.map(fn query -> Task.async(fn -> Chain.select_repo(options).all(query, timeout: timeout) end) end)
+      tasks =
+        options
+        |> Keyword.put(:block_numbers_age, block_numbers_age)
+        |> queries(paging_options)
+        |> Enum.map(fn query ->
+          sql = Ecto.Adapters.SQL.to_sql(:all, Chain.select_repo(options), query)
+
+          Task.async(fn ->
+            start_time = System.monotonic_time(:millisecond)
+            result = Chain.select_repo(options).all(query, timeout: timeout)
+            end_time = System.monotonic_time(:millisecond)
+
+            result
+          end)
+        end)
+        # |> Enum.map(fn query -> Task.async(fn -> Chain.select_repo(options).all(query, timeout: timeout) end) end)
 
     tasks
     |> Task.yield_many(timeout: timeout, on_timeout: :kill_task)
@@ -139,7 +168,7 @@ defmodule Explorer.Chain.AdvancedFilter do
   defp queries(options, paging_options) do
     []
     |> maybe_add_transactions_queries(options, paging_options)
-    |> maybe_add_token_transfers_queries(options, paging_options)
+    # |> maybe_add_token_transfers_queries(options, paging_options)
   end
 
   defp maybe_add_transactions_queries(queries, options, paging_options) do
@@ -276,10 +305,10 @@ defmodule Explorer.Chain.AdvancedFilter do
         from(transaction in Transaction,
           as: :transaction,
           where: transaction.block_consensus == true,
-          order_by: [
-            desc: transaction.block_number,
-            desc: transaction.index
-          ]
+          # order_by: [
+          #   desc: transaction.block_number,
+          #   desc: transaction.index
+          # ]
         )
       else
         from(transaction in Transaction,
@@ -287,20 +316,22 @@ defmodule Explorer.Chain.AdvancedFilter do
           join: block in assoc(transaction, :block),
           as: :block,
           where: block.consensus == true,
-          order_by: [
-            desc: transaction.block_number,
-            desc: transaction.index
-          ]
+          # order_by: [
+          #   desc: transaction.block_number,
+          #   desc: transaction.index
+          # ]
         )
       end
 
     query
     |> page_transactions(paging_options)
-    |> limit_query(paging_options)
+    # |> order_by([transaction], desc: transaction.block_number, desc: transaction.index)
+    # |> limit_query(paging_options)
     |> apply_transactions_filters(
       options,
       fn query -> query |> order_by([transaction], desc: transaction.block_number, desc: transaction.index) end
     )
+    |> order_by([transaction], desc: transaction.block_number, desc: transaction.index)
     |> limit_query(paging_options)
   end
 
@@ -321,135 +352,157 @@ defmodule Explorer.Chain.AdvancedFilter do
 
   defp page_transactions(query, _), do: query
 
-  defp internal_transactions_query(paging_options, options) do
+  defp filtered_transaction_hashes(options, paging_options) do
+    # Build the transaction query with all transaction filters
     query =
       if DenormalizationHelper.transactions_denormalization_finished?() do
-        from(internal_transaction in InternalTransaction,
-          as: :internal_transaction,
-          join: transaction in assoc(internal_transaction, :transaction),
+        from(transaction in Transaction,
           as: :transaction,
           where: transaction.block_consensus == true,
-          where:
-            (internal_transaction.type == :call and internal_transaction.index > 0) or
-              internal_transaction.type != :call,
-          order_by: [
-            desc: transaction.block_number,
-            desc: transaction.index,
-            desc: internal_transaction.index
-          ]
+          # order_by: [desc: transaction.block_number, desc: transaction.index]
         )
       else
-        from(internal_transaction in InternalTransaction,
-          as: :internal_transaction,
-          join: transaction in assoc(internal_transaction, :transaction),
+        from(transaction in Transaction,
           as: :transaction,
-          join: block in assoc(internal_transaction, :block),
+          join: block in assoc(transaction, :block),
           as: :block,
           where: block.consensus == true,
-          where:
-            (internal_transaction.type == :call and internal_transaction.index > 0) or
-              internal_transaction.type != :call,
-          order_by: [
-            desc: transaction.block_number,
-            desc: transaction.index,
-            desc: internal_transaction.index
-          ]
+          # order_by: [desc: transaction.block_number, desc: transaction.index]
         )
       end
-
-    query
-    |> page_internal_transactions(paging_options)
-    |> limit_query(paging_options)
-    |> apply_transactions_filters(options, fn query ->
-      query
-      |> order_by([internal_transaction],
-        desc: internal_transaction.block_number,
-        desc: internal_transaction.transaction_index,
-        desc: internal_transaction.index
+      |> page_transactions(paging_options)
+      |> limit_query(paging_options)
+      |> apply_transactions_filters(
+        options,
+        fn query -> query |> order_by([t], desc: t.block_number, desc: t.index) end
       )
-    end)
-    |> limit_query(paging_options)
-    |> preload([:transaction])
+      |> limit_query(paging_options)
+
+    # Only select hashes
+    query = query
+    |> order_by([transaction], desc: transaction.block_number, desc: transaction.index)
+    |> select([transaction], transaction.hash)
+
+    sql = Ecto.Adapters.SQL.to_sql(:all, Chain.select_repo(options), query)
+
+    Chain.select_repo(options).all(query)
+  end
+
+  defp internal_transactions_query(paging_options, options) do
+    transaction_hashes =
+      filtered_transaction_hashes(options, paging_options)
+      |> Enum.take(50) # <-- Limit to first 50 hashes
+
+    hash_chunks = Enum.chunk_every(transaction_hashes, 4)
+
+    queries =
+      Enum.map(hash_chunks, fn chunk ->
+        base_query =
+          from it in InternalTransaction,
+            where: it.transaction_hash in ^chunk,
+            where: (it.type == :call and it.index > 0) or it.type != :call,
+            order_by: [desc: it.block_number, desc: it.transaction_index, desc: it.index],
+            limit: 51
+
+        # wrap each in subquery/1 before union
+        from x in subquery(base_query), select: x
+      end)
+
+    union_query =
+      case queries do
+          [first | rest] ->
+            Enum.reduce(rest, first, fn query, acc -> union_all(acc, ^query) end)
+
+          [] ->
+            from it in InternalTransaction, where: false
+      end
+
+    from(it in subquery(union_query))
+      |> page_internal_transactions(paging_options)
+      |> limit_query(paging_options)
+      |> preload([:transaction])
   end
 
   defp page_internal_transactions(query, %PagingOptions{
-         key: %{
-           block_number: block_number,
-           transaction_index: _transaction_index,
-           internal_transaction_index: nil
-         }
-       })
-       when block_number < 0 do
-    query |> where(false)
-  end
+    key: %{
+      block_number: block_number,
+      transaction_index: _transaction_index,
+      internal_transaction_index: nil
+    }
+  })
+  when block_number < 0 do
+query |> where(false)
+end
 
-  defp page_internal_transactions(query, %PagingOptions{
-         key: %{
-           block_number: block_number,
-           transaction_index: transaction_index,
-           internal_transaction_index: nil
-         }
-       })
-       when block_number > 0 and transaction_index <= 0 do
-    query |> where(as(:transaction).block_number < ^block_number)
-  end
+defp page_internal_transactions(query, %PagingOptions{
+    key: %{
+      block_number: block_number,
+      transaction_index: transaction_index,
+      internal_transaction_index: nil
+    }
+  })
+  when block_number > 0 and transaction_index <= 0 do
+query |> where([it], it.block_number < ^block_number)
+end
 
-  defp page_internal_transactions(query, %PagingOptions{
-         key: %{
-           block_number: 0,
-           transaction_index: 0,
-           internal_transaction_index: nil
-         }
-       }) do
-    query |> where(as(:transaction).block_number == 0 and as(:transaction).index == 0)
-  end
+defp page_internal_transactions(query, %PagingOptions{
+    key: %{
+      block_number: 0,
+      transaction_index: 0,
+      internal_transaction_index: nil
+    }
+  }) do
+query |> where([it], it.block_number == 0 and it.index == 0)
+end
 
-  defp page_internal_transactions(query, %PagingOptions{
-         key: %{
-           block_number: 0,
-           transaction_index: transaction_index,
-           internal_transaction_index: nil
-         }
-       }) do
-    query
-    |> where(as(:transaction).block_number == 0 and as(:transaction).index <= ^transaction_index)
-  end
+defp page_internal_transactions(query, %PagingOptions{
+    key: %{
+      block_number: 0,
+      transaction_index: transaction_index,
+      internal_transaction_index: nil
+    }
+  }) do
+query |> where([it], it.block_number == 0 and it.index <= ^transaction_index)
+end
 
-  defp page_internal_transactions(query, %PagingOptions{
-         key: %{
-           block_number: block_number,
-           transaction_index: transaction_index,
-           internal_transaction_index: nil
-         }
-       }) do
-    query
-    |> where(
-      as(:transaction).block_number < ^block_number or
-        (as(:transaction).block_number == ^block_number and as(:transaction).index <= ^transaction_index)
-    )
-  end
+defp page_internal_transactions(query, %PagingOptions{
+    key: %{
+      block_number: block_number,
+      transaction_index: transaction_index,
+      internal_transaction_index: nil
+    }
+  }) do
+query
+|> where(
+ [it],
+ it.block_number < ^block_number or
+   (it.block_number == ^block_number and it.index <= ^transaction_index)
+)
+end
 
-  defp page_internal_transactions(query, %PagingOptions{
-         key: %{
-           block_number: block_number,
-           transaction_index: transaction_index,
-           internal_transaction_index: it_index
-         }
-       }) do
-    dynamic_condition =
-      dynamic(
-        ^page_block_number_dynamic(:transaction, block_number) or
-          ^page_transaction_index_dynamic(block_number, transaction_index) or
-          ^page_it_index_dynamic(block_number, transaction_index, it_index)
-      )
+defp page_internal_transactions(query, %PagingOptions{
+    key: %{
+      block_number: block_number,
+      transaction_index: transaction_index,
+      internal_transaction_index: it_index
+    }
+  }) do
+dynamic_condition =
+ dynamic(
+   [it],
+   it.block_number < ^block_number or
+     (it.block_number == ^block_number and it.index <= ^transaction_index) or
+     (it.block_number == ^block_number and it.index == ^transaction_index and it.index < ^it_index)
+ )
 
-    query
-    |> where(^dynamic_condition)
-  end
+query
+|> where(^dynamic_condition)
+end
 
-  defp page_internal_transactions(query, _), do: query
+defp page_internal_transactions(query, _), do: query
 
   defp token_transfers_query(paging_options, options) do
+
     token_transfer_query =
       if DenormalizationHelper.transactions_denormalization_finished?() do
         from(token_transfer in TokenTransfer,
@@ -551,7 +604,7 @@ defmodule Explorer.Chain.AdvancedFilter do
        }) do
     fn query, unnested? ->
       query
-      |> where(as(:transaction).block_number == 0 and as(:transaction).index == 0)
+      |> where([token_transfer], token_transfer.block_number == 0 and token_transfer.index == 0)
       |> query_function.(unnested?)
     end
   end
@@ -566,10 +619,7 @@ defmodule Explorer.Chain.AdvancedFilter do
        }) do
     fn query, unnested? ->
       query
-      |> where(
-        [token_transfer],
-        token_transfer.block_number == 0 and as(:transaction).index < ^transaction_index
-      )
+      |> where([token_transfer], token_transfer.block_number == 0 and token_transfer.index < ^transaction_index)
       |> query_function.(unnested?)
     end
   end
@@ -584,11 +634,7 @@ defmodule Explorer.Chain.AdvancedFilter do
        }) do
     fn query, unnested? ->
       query
-      |> where(
-        [token_transfer],
-        token_transfer.block_number < ^block_number or
-          (token_transfer.block_number == ^block_number and as(:transaction).index <= ^transaction_index)
-      )
+      |> where([token_transfer], token_transfer.block_number < ^block_number or (token_transfer.block_number == ^block_number and token_transfer.index <= ^transaction_index))
       |> query_function.(unnested?)
     end
   end
@@ -641,7 +687,7 @@ defmodule Explorer.Chain.AdvancedFilter do
   defp page_token_transfers(query_function, _), do: query_function
 
   defp page_block_number_dynamic(binding, block_number) when block_number > 0 do
-    dynamic(as(^binding).block_number < ^block_number)
+    dynamic([t], t.block_number < ^block_number)
   end
 
   defp page_block_number_dynamic(_, _) do
@@ -675,12 +721,12 @@ defmodule Explorer.Chain.AdvancedFilter do
 
   defp page_tt_index_dynamic(binding, block_number, tt_index, tt_batch_index)
        when block_number >= 0 and tt_index > 0 and tt_batch_index > 1 do
-    dynamic(as(^binding).block_number == ^block_number and as(^binding).log_index <= ^tt_index)
+        dynamic([tt], tt.block_number == ^block_number and tt.log_index <= ^tt_index)
   end
 
   defp page_tt_index_dynamic(binding, block_number, tt_index, _tt_batch_index)
        when block_number >= 0 and tt_index > 0 do
-    dynamic(as(^binding).block_number == ^block_number and as(^binding).log_index < ^tt_index)
+        dynamic([tt], tt.block_number == ^block_number and tt.log_index <= ^tt_index)
   end
 
   defp page_tt_index_dynamic(_, _, _, _) do
@@ -713,7 +759,6 @@ defmodule Explorer.Chain.AdvancedFilter do
   defp apply_token_transfers_filters(query_function, options) do
     query_function
     |> filter_by_transaction_type(options[:transaction_types])
-    |> filter_token_transfers_by_methods(options[:methods])
     |> filter_token_transfers_by_age(options)
     |> filter_by_token(options[:token_contract_address_hashes])
     |> filter_token_transfers_by_addresses(
@@ -722,12 +767,12 @@ defmodule Explorer.Chain.AdvancedFilter do
       options[:address_relation]
     )
     |> filter_token_transfers_by_amount(options[:amount][:from], options[:amount][:to])
+    |> filter_token_transfers_by_methods(options[:methods])
   end
 
   defp apply_transactions_filters(query, options, order_by) do
     query
     |> filter_transactions_by_amount(options[:amount][:from], options[:amount][:to])
-    |> filter_transactions_by_methods(options[:methods])
     |> only_collated_transactions()
     |> filter_by_age(:transaction, options)
     |> filter_transactions_by_addresses(
@@ -736,10 +781,11 @@ defmodule Explorer.Chain.AdvancedFilter do
       options[:address_relation],
       order_by
     )
+    |> filter_transactions_by_methods(options[:methods])
   end
 
   defp only_collated_transactions(query) do
-    query |> where(not is_nil(as(:transaction).block_number) and not is_nil(as(:transaction).index))
+    query |> where([t], not is_nil(t.block_number) and not is_nil(t.index))
   end
 
   defp filter_by_transaction_type(query_function, [_ | _] = transaction_types) do
@@ -756,22 +802,51 @@ defmodule Explorer.Chain.AdvancedFilter do
 
   defp filter_by_transaction_type(query_function, _), do: query_function
 
+  defp filter_transactions_by_methods(query, [_] = methods) do
+    prepared_methods = prepare_methods(methods)
+    # Use '=' for single method_id for best index usage
+    query |> where([t], t.method_id == ^List.first(prepared_methods))
+  end
+
   defp filter_transactions_by_methods(query, [_ | _] = methods) do
-    Logger.info("Entered filter_transactions_by_methods/2 with methods: #{inspect(methods)}")
     prepared_methods = prepare_methods(methods)
 
-    query |> where([t], as(:transaction).method_id  in ^prepared_methods)
+    # Use UNION ALL for multiple method_ids
+    queries =
+      Enum.map(prepared_methods, fn method_id ->
+        query
+          |> where([t], t.method_id == ^method_id)
+          # |> order_by([t], desc: t.block_number, desc: t.index) # <-- add here for each branch
+          # |> limit(51)
+      end)
+
+    union_query =
+      case queries do
+        [first | rest] -> Enum.reduce(rest, first, fn q, acc -> union_all(acc, ^q) end)
+        [] -> query |> where(false)
+      end
+
+    from(t in subquery(union_query))
+
+    # final_query =
+    #   from(transaction in subquery(union_query),
+    #     order_by: [desc: transaction.block_number, desc: transaction.index]
+    #   )
+
+    # final_query
   end
 
   defp filter_transactions_by_methods(query, _), do: query
 
+  defp filter_transactions_by_methods(query, _), do: query
+
   defp filter_token_transfers_by_methods(query_function, [_ | _] = methods) do
-    Logger.info("Entered filter_token_transfers_by_methods/2 with methods: #{inspect(methods)}")
+
     prepared_methods = prepare_methods(methods)
 
     fn query, unnested? ->
       query
-      |> where(as(:transaction).method_id in ^prepared_methods)
+      |> where([token_transfer, transaction], transaction.method_id in ^prepared_methods)
       |> query_function.(unnested?)
     end
   end
@@ -807,29 +882,37 @@ defmodule Explorer.Chain.AdvancedFilter do
     filter_by_timestamp(query, timestamp, direction)
   end
 
-  defp filter_by_block_number(query, from, entity, :from) when not is_nil(from) do
-    query |> where(as(^entity).block_number >= ^from)
+  defp filter_by_block_number(query, from, :transaction, :from) when not is_nil(from) do
+    query |> where([t], t.block_number >= ^from)
   end
 
-  defp filter_by_block_number(query, to, entity, :to) when not is_nil(to) do
-    query |> where(as(^entity).block_number <= ^to)
+  defp filter_by_block_number(query, to, :transaction, :to) when not is_nil(to) do
+    query |> where([t], t.block_number <= ^to)
+  end
+
+  defp filter_by_block_number(query, from, :token_transfer, :from) when not is_nil(from) do
+    query |> where([tt], tt.block_number >= ^from)
+  end
+
+  defp filter_by_block_number(query, to, :token_transfer, :to) when not is_nil(to) do
+    query |> where([tt], tt.block_number <= ^to)
   end
 
   defp filter_by_block_number(query, _, _, _), do: query
 
   defp filter_by_timestamp(query, %DateTime{} = from, :from) do
     if DenormalizationHelper.transactions_denormalization_finished?() do
-      query |> where(as(:transaction).block_timestamp >= ^from)
+      query |> where([t], t.block_timestamp >= ^from)
     else
-      query |> where(as(:block).timestamp >= ^from)
+      query |> where([block], block.timestamp >= ^from)
     end
   end
 
   defp filter_by_timestamp(query, %DateTime{} = to, :to) do
     if DenormalizationHelper.transactions_denormalization_finished?() do
-      query |> where(as(:transaction).block_timestamp <= ^to)
+      query |> where([t], t.block_timestamp <= ^to)
     else
-      query |> where(as(:block).timestamp <= ^to)
+      query |> where([block], block.timestamp <= ^to)
     end
   end
 
