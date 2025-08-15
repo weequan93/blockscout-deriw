@@ -448,30 +448,52 @@ defmodule Explorer.Chain.AdvancedFilter do
           limit = options[:limit] || 51
 
 
-          transaction_subquery =
-            from(t in Transaction,
-              select: %{hash: t.hash},
-              where: t.block_consensus == true,
-              where: not is_nil(t.block_number) and not is_nil(t.index),
-              order_by: [desc: t.block_number, desc: t.index],
-              limit: ^limit
-            )
-            |> (fn query ->
-              query =
-                if from_block, do: query |> where([t], t.block_number >= ^from_block), else: query
-              if to_block, do: query |> where([t], t.block_number <= ^to_block), else: query
-            end).()
+            transaction_hash_query =
+              from(t in Transaction,
+                select: t.hash,
+                where: t.block_consensus == true,
+                where: not is_nil(t.block_number) and not is_nil(t.index),
+                order_by: [desc: t.block_number, desc: t.index],
+                limit: ^limit
+              )
+            transaction_hash_query =
+              if from_block do
+                transaction_hash_query |> where([t], t.block_number >= ^from_block)
+              else
+                transaction_hash_query
+              end
+            transaction_hash_query =
+              if to_block do
+                transaction_hash_query |> where([t], t.block_number <= ^to_block)
+              else
+                transaction_hash_query
+              end
 
-          # Step 2: Join internal transactions to the transaction subquery
-          query =
-            from(i0 in InternalTransaction,
-              join: t in subquery(transaction_subquery),
-              on: i0.transaction_hash == t.hash,
-              where: i0.type != :call or (i0.type == :call and i0.index > 0),
-              order_by: [desc: i0.block_number, desc: i0.transaction_index, desc: i0.index]
-            )
-            |> limit_query(paging_options)
-            |> preload([:transaction])
+              Logger.error("Last transaction_hash_query")
+              repo = Chain.select_repo(options)
+              Logger.error("Last repo")
+
+                transaction_hashes =
+                  try do
+                    repo.all(transaction_hash_query)
+                  rescue
+                    e ->
+                      Logger.error("Error fetching transaction hashes: #{inspect(e)}")
+                      []
+                  end
+                Logger.error("Last transaction_hashes")
+
+                  # Step 2: Query internal transactions using those hashes
+                  query =
+                    from(i0 in InternalTransaction,
+                      where: i0.block_number >= ^from_block,
+                      where: i0.block_number <= ^to_block,
+                      where: i0.transaction_hash in ^transaction_hashes,
+                      where: i0.type != :call or (i0.type == :call and i0.index > 0),
+                      order_by: [desc: i0.block_number, desc: i0.transaction_index, desc: i0.index]
+                    )
+                    |> limit_query(paging_options)
+                    # |> preload([:transaction])
 
 
 
