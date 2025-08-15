@@ -1751,36 +1751,30 @@ defmodule Explorer.Chain do
   end
 
   def last_db_internal_transaction_block_status do
-    # query =
-    #   from(it in InternalTransaction,
-    #     order_by: [desc: it.block_number],
-    #     limit: 1,
-    #     select: it.block_number
-    #   )
-
-    # latest_block_number = Repo.one(query)
-
-    # result =
-    #   from(block in Block,
-    #     where: block.number == ^latest_block_number,
-    #     select: {block.number, block.timestamp}
-    #   )
-
-    # result =
-    #   from(block in Block,
-    #     where: block.number == ^latest_block_number,
-    #     select: {block.number, block.timestamp}
-    #   )
-
     query =
       from(it in InternalTransaction,
-        join: block in assoc(it, :block),
-        select: {block.number, block.timestamp},
-        order_by: [desc: block.number],
-        limit: 1
+        order_by: [desc: it.block_number],
+        limit: 1,
+        select: it.block_number
       )
 
-      query
+    latest_block_number = Repo.one(query)
+
+    result =
+      from(block in Block,
+        where: block.number == ^latest_block_number,
+        select: {block.number, block.timestamp}
+      )
+
+    # query =
+    #   from(it in InternalTransaction,
+    #     join: block in assoc(it, :block),
+    #     select: {block.number, block.timestamp},
+    #     order_by: [desc: block.number],
+    #     limit: 1
+    #   )
+
+      result
     |> Repo.one()
     |> HealthHelper.block_status()
   end
