@@ -106,11 +106,23 @@ defmodule Explorer.Chain.AdvancedFilter do
             )
       ]
 
-    tasks =
-      options
-      |> Keyword.put(:block_numbers_age, block_numbers_age)
-      |> queries(paging_options)
-      |> Enum.map(fn query -> Task.async(fn -> Chain.select_repo(options).all(query, timeout: timeout) end) end)
+    Logger.error("After list/2 block_numbers_age")
+      tasks =
+        options
+        |> Keyword.put(:block_numbers_age, block_numbers_age)
+        |> queries(paging_options)
+        |> Enum.map(fn query ->
+          sql = Ecto.Adapters.SQL.to_sql(:all, Chain.select_repo(options), query)
+          Logger.error("SQL: #{inspect(sql)}")
+          Task.async(fn ->
+            start_time = System.monotonic_time(:millisecond)
+            result = Chain.select_repo(options).all(query, timeout: timeout)
+            end_time = System.monotonic_time(:millisecond)
+            Logger.error("Query execution time: #{end_time - start_time} ms for SQL: #{inspect(sql)}")
+            result
+          end)
+        end)
+        # |> Enum.map(fn query -> Task.async(fn -> Chain.select_repo(options).all(query, timeout: timeout) end) end)
 
     tasks
     |> Task.yield_many(timeout: timeout, on_timeout: :kill_task)
