@@ -650,6 +650,10 @@ defmodule Explorer.Chain do
   """
   @spec finished_indexing_internal_transactions?([api?]) :: boolean()
   def finished_indexing_internal_transactions?(options \\ []) do
+
+    Logger.error("internal_transactions_fetcher_running?: #{inspect(internal_transactions_fetcher_running?())}")
+    Logger.error("indexer_running?: #{inspect(indexer_running?())}")
+
     if indexer_running?() and internal_transactions_fetcher_running?() do
       json_rpc_named_arguments = Application.fetch_env!(:indexer, :json_rpc_named_arguments)
       variant = Keyword.fetch!(json_rpc_named_arguments, :variant)
