@@ -488,8 +488,8 @@ defmodule Explorer.Chain.AdvancedFilter do
                     from(i0 in InternalTransaction,
                       where: i0.block_number >= ^from_block,
                       where: i0.block_number <= ^to_block,
-                      where: i0.transaction_hash in ^transaction_hashes,
                       where: i0.type != :call or (i0.type == :call and i0.index > 0),
+                      where: i0.transaction_hash in ^transaction_hashes,
                       order_by: [desc: i0.block_number, desc: i0.transaction_index, desc: i0.index]
                     )
                     |> limit_query(paging_options)
