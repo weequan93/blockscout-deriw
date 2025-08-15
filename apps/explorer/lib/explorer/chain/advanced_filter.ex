@@ -334,13 +334,15 @@ defmodule Explorer.Chain.AdvancedFilter do
         Logger.error("Last from_block: #{inspect(from_block)}")
         Logger.error("Last to_block: #{inspect(to_block)}")
 
+        limit = options[:limit] || 100
+
         transaction_hash_query =
           from(t in Transaction,
             select: t.hash,
             where: t.block_consensus == true,
             where: not is_nil(t.block_number) and not is_nil(t.index),
             order_by: [desc: t.block_number, desc: t.index],
-            limit: 100
+            limit: ^limit
           )
         transaction_hash_query =
           if from_block do
