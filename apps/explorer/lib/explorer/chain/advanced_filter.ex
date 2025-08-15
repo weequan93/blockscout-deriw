@@ -426,24 +426,106 @@ defmodule Explorer.Chain.AdvancedFilter do
     #     |> preload([:transaction])
     # else
 
-    query =
+
       if DenormalizationHelper.transactions_denormalization_finished?() do
-        from(internal_transaction in InternalTransaction,
-          as: :internal_transaction,
-          join: transaction in assoc(internal_transaction, :transaction),
-          as: :transaction,
-          where: transaction.block_consensus == true,
-          where:
-            (internal_transaction.type == :call and internal_transaction.index > 0) or
-              internal_transaction.type != :call,
-          order_by: [
-            desc: transaction.block_number,
-            desc: transaction.index,
-            desc: internal_transaction.index
-          ]
-        )
+
+          Logger.error("Last transactions_query:")
+          from_block =
+            case options[:block_numbers_age] && options[:block_numbers_age][:from] do
+              {:ok, val} -> val
+              val -> val
+            end
+
+          to_block =
+            case options[:block_numbers_age] && options[:block_numbers_age][:to] do
+              {:ok, val} -> val
+              val -> val
+            end
+
+          Logger.error("Last from_block: #{inspect(from_block)}")
+          Logger.error("Last to_block: #{inspect(to_block)}")
+
+          limit = options[:limit] || 100
+
+
+            transaction_hash_query =
+              from(t in Transaction,
+                select: t.hash,
+                where: t.block_consensus == true,
+                where: not is_nil(t.block_number) and not is_nil(t.index),
+                order_by: [desc: t.block_number, desc: t.index],
+                limit: ^limit
+              )
+            transaction_hash_query =
+              if from_block do
+                transaction_hash_query |> where([t], t.block_number >= ^from_block)
+              else
+                transaction_hash_query
+              end
+            transaction_hash_query =
+              if to_block do
+                transaction_hash_query |> where([t], t.block_number <= ^to_block)
+              else
+                transaction_hash_query
+              end
+
+              Logger.error("Last transaction_hash_query")
+              repo = Chain.select_repo(options)
+              Logger.error("Last repo")
+
+                transaction_hashes =
+                  try do
+                    repo.all(transaction_hash_query)
+                  rescue
+                    e ->
+                      Logger.error("Error fetching transaction hashes: #{inspect(e)}")
+                      []
+                  end
+                Logger.error("Last transaction_hashes")
+
+                  # Step 2: Query internal transactions using those hashes
+                  query =
+                    from(i0 in InternalTransaction,
+                      where: i0.transaction_hash in ^transaction_hashes,
+                      where: (i0.type == :call and i0.index > 0) or i0.type != :call,
+                      order_by: [desc: i0.block_number, desc: i0.transaction_index, desc: i0.index]
+                    )
+                    |> limit_query(paging_options)
+                    |> preload([:transaction])
+
+
+
+
+        # query = from(internal_transaction in InternalTransaction,
+        #   as: :internal_transaction,
+        #   join: transaction in assoc(internal_transaction, :transaction),
+        #   as: :transaction,
+        #   where: transaction.block_consensus == true,
+        #   where:
+        #     (internal_transaction.type == :call and internal_transaction.index > 0) or
+        #       internal_transaction.type != :call,
+        #   order_by: [
+        #     desc: transaction.block_number,
+        #     desc: transaction.index,
+        #     desc: internal_transaction.index
+        #   ]
+        # )
+
+    #     query
+    # |> page_internal_transactions(paging_options)
+    # |> limit_query(paging_options)
+    # |> apply_transactions_filters(options, fn query ->
+    #   query
+    #   |> order_by([internal_transaction],
+    #     desc: internal_transaction.block_number,
+    #     desc: internal_transaction.transaction_index,
+    #     desc: internal_transaction.index
+    #   )
+    # end)
+    # |> limit_query(paging_options)
+    # |> preload([:transaction])
       else
-        from(internal_transaction in InternalTransaction,
+        query = from(internal_transaction in InternalTransaction,
           as: :internal_transaction,
           join: transaction in assoc(internal_transaction, :transaction),
           as: :transaction,
@@ -459,9 +541,8 @@ defmodule Explorer.Chain.AdvancedFilter do
             desc: internal_transaction.index
           ]
         )
-      end
 
-    query
+        query
     |> page_internal_transactions(paging_options)
     |> limit_query(paging_options)
     |> apply_transactions_filters(options, fn query ->
@@ -474,6 +555,9 @@ defmodule Explorer.Chain.AdvancedFilter do
     end)
     |> limit_query(paging_options)
     |> preload([:transaction])
+      end
+
+
   end
 
   defp page_internal_transactions(query, %PagingOptions{
