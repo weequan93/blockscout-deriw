@@ -85,7 +85,7 @@ defmodule Explorer.Chain.AdvancedFilter do
   def list(options \\ []) do
     paging_options = Keyword.get(options, :paging_options)
 
-    timeout = Keyword.get(options, :timeout, :timer.seconds(300))
+    timeout = :timer.seconds(300) #  Keyword.get(options, :timeout, :timer.seconds(300))
 
     # Set default :age if not present
     options =
@@ -130,12 +130,12 @@ defmodule Explorer.Chain.AdvancedFilter do
         |> queries(paging_options)
         |> Enum.map(fn query ->
           sql = Ecto.Adapters.SQL.to_sql(:all, Chain.select_repo(options), query)
-
+          Logger.error("Start AdvancedFilter SQL: #{inspect(sql)}")
           Task.async(fn ->
             start_time = System.monotonic_time(:millisecond)
             result = Chain.select_repo(options).all(query, timeout: timeout)
             end_time = System.monotonic_time(:millisecond)
-
+            Logger.error("AdvancedFilter query finished in #{end_time - start_time} ms\nSQL: #{inspect(sql)}")
             result
           end)
         end)
@@ -168,7 +168,7 @@ defmodule Explorer.Chain.AdvancedFilter do
   defp queries(options, paging_options) do
     []
     |> maybe_add_transactions_queries(options, paging_options)
-    # |> maybe_add_token_transfers_queries(options, paging_options)
+    |> maybe_add_token_transfers_queries(options, paging_options)
   end
 
   defp maybe_add_transactions_queries(queries, options, paging_options) do

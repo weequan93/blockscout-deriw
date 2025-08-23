@@ -658,19 +658,53 @@ defmodule Explorer.Chain.TokenTransfer do
   """
   @spec uncataloged_token_transfer_block_numbers :: {:ok, [non_neg_integer()]}
   def uncataloged_token_transfer_block_numbers do
-    query =
+    # 1. Get max block number from logs matching transfer topics
+    max_block_query =
       from(l in Log,
-        as: :log,
-        where:
-          l.first_topic == ^@constant or
-            l.first_topic == ^@erc1155_single_transfer_signature or
-            l.first_topic == ^@erc1155_batch_transfer_signature,
-        where: not exists(token_transfer_exists_query()),
-        select: l.block_number,
-        distinct: l.block_number
+        select: max(l.block_number)
       )
 
-    Repo.stream_reduce(query, [], &[&1 | &2])
+    max_block_number = Repo.one(max_block_query) || 0
+
+    require Logger
+
+    batch_size = 1000
+    acc = []
+
+    # 2. Loop over block numbers in batches, stop early if > 1000 found
+    for batch_start <- Stream.iterate(max_block_number, &(&1 - batch_size)), batch_start > 0, reduce: acc do
+      acc ->
+        batch_end = max(batch_start - batch_size + 1, 0)
+
+        query =
+          from(l in Log,
+            as: :log,
+            where:
+              (l.first_topic == ^@constant or
+               l.first_topic == ^@erc1155_single_transfer_signature or
+               l.first_topic == ^@erc1155_batch_transfer_signature) and
+              l.block_number <= ^batch_start and l.block_number >= ^batch_end,
+            where: not exists(token_transfer_exists_query()),
+            select: l.block_number,
+            distinct: l.block_number,
+            limit: ^batch_size
+          )
+
+        start_time = System.monotonic_time()
+        batch_block_numbers = Repo.all(query, timeout: 15_000)
+        duration_ms = System.convert_time_unit(System.monotonic_time() - start_time, :native, :millisecond)
+
+        Logger.info("Batch block range: #{batch_end}..#{batch_start}, found #{length(batch_block_numbers)} uncataloged block numbers, query duration: #{duration_ms}ms")
+
+        new_acc = batch_block_numbers ++ acc
+
+        if length(new_acc) > batch_size do
+          # 3. End early if more than 1000 block numbers found
+          Enum.take(new_acc, batch_size)
+        else
+          new_acc
+        end
+    end
   end
 
   # Builds a query to check if a token transfer exists for a given log. Handles
