@@ -363,6 +363,8 @@ defmodule Explorer.Chain.Import.Runner.Blocks do
 
   defp default_on_conflict do
     chain_type = Application.get_env(:explorer, :chain_type)
+    require Logger
+    Logger.error("Block import on_conflict chain_type: #{inspect(chain_type)}")
 
     base_fields = [
       consensus: dynamic(fragment("EXCLUDED.consensus")),
