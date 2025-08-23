@@ -85,7 +85,7 @@ defmodule Explorer.Chain.AdvancedFilter do
   def list(options \\ []) do
     paging_options = Keyword.get(options, :paging_options)
 
-    timeout = Keyword.get(options, :timeout, :timer.seconds(300))
+    timeout = :timer.seconds(300) #  Keyword.get(options, :timeout, :timer.seconds(300))
 
     # Set default :age if not present
     options =
