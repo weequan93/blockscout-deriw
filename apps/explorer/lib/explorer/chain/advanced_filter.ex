@@ -135,7 +135,7 @@ defmodule Explorer.Chain.AdvancedFilter do
             start_time = System.monotonic_time(:millisecond)
             result = Chain.select_repo(options).all(query, timeout: timeout)
             end_time = System.monotonic_time(:millisecond)
-            Logger.info("AdvancedFilter query finished in #{end_time - start_time} ms\nSQL: #{inspect(sql)}")
+            Logger.error("AdvancedFilter query finished in #{end_time - start_time} ms\nSQL: #{inspect(sql)}")
             result
           end)
         end)
