@@ -1742,8 +1742,7 @@ defmodule Explorer.Chain do
   end
 
   def internal_transactions_fetcher_running? do
-    not Application.get_env(:indexer, Indexer.Fetcher.InternalTransaction.Supervisor)[:disabled?] or
-      match?({:ok, _, _}, last_db_internal_transaction_block_status())
+    not Application.get_env(:indexer, Indexer.Fetcher.InternalTransaction.Supervisor)[:disabled?]
   end
 
   def last_db_internal_transaction_block_status do
