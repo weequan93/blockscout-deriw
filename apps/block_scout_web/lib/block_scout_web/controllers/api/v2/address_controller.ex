@@ -184,13 +184,36 @@ defmodule BlockScoutWeb.API.V2.AddressController do
 
           Logger.error("Returning address response with full data for: #{address_hash}")
 
-          conn
-          |> put_status(200)
-          |> render(:address, %{
-            address:
-              %Address{fully_preloaded_address | proxy_implementations: implementations}
-              |> maybe_preload_ens_to_address()
-          })
+          try do
+            Logger.error("Starting address rendering for: #{address_hash}")
+
+            result = conn
+            |> put_status(200)
+            |> render(:address, %{
+              address:
+                %Address{fully_preloaded_address | proxy_implementations: implementations}
+                |> maybe_preload_ens_to_address()
+            })
+
+            Logger.error("Address rendering completed successfully for: #{address_hash}")
+            result
+          rescue
+            e ->
+              Logger.error("Error during address rendering for #{address_hash}: #{inspect(e)}")
+              Logger.error("Error stacktrace: #{Exception.format_stacktrace(__STACKTRACE__)}")
+
+              # Return a minimal response to avoid complete failure
+              conn
+              |> put_status(500)
+              |> json(%{error: "Internal server error during address rendering"})
+          catch
+            :exit, reason ->
+              Logger.error("Process exit during address rendering for #{address_hash}: #{inspect(reason)}")
+
+              conn
+              |> put_status(500)
+              |> json(%{error: "Process timeout during address rendering"})
+          end
 
         _ ->
           Logger.error("Address not found in database, creating minimal address: #{address_hash}")
