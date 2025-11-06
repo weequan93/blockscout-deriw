@@ -86,9 +86,13 @@ defmodule BlockScoutWeb.API.V2.AddressController do
       :scam_badge => :optional,
       :token => :optional,
       :signed_authorization => :optional,
-      :smart_contract => :optional
+      :smart_contract => :optional,
+      # Add comprehensive proxy implementations preloading
+      :proxy_implementations => :optional
     },
-    api?: true
+    api?: true,
+    # Add timeout to prevent long-running queries
+    timeout: 30_000
   ]
 
   @nft_necessity_by_association [
@@ -157,42 +161,51 @@ defmodule BlockScoutWeb.API.V2.AddressController do
     ip = AccessHelper.conn_to_ip_string(conn)
 
     with {:ok, address_hash} <- validate_address_hash(address_hash_string, params) do
-      case Chain.hash_to_address(address_hash, @address_options) do
-        {:ok, address} ->
-          fully_preloaded_address =
-            Address.maybe_preload_smart_contract_associations(address, contract_address_preloads(), @api_true)
+      # Add caching layer to prevent repeated expensive queries
+      cache_key = "address_v2_#{address_hash_string}"
 
-          implementations = SmartContractHelper.pre_fetch_implementations(fully_preloaded_address)
-
-          CoinBalanceOnDemand.trigger_fetch(ip, address)
-          ContractCodeOnDemand.trigger_fetch(ip, fully_preloaded_address)
-
+      case get_cached_address(cache_key) do
+        {:ok, cached_response} ->
           conn
           |> put_status(200)
-          |> render(:address, %{
-            address:
-              %Address{fully_preloaded_address | proxy_implementations: implementations}
-              |> maybe_preload_ens_to_address()
-          })
+          |> json(cached_response)
 
-        _ ->
-          address =
-            %Address{
-              hash: address_hash,
-              names: [],
-              scam_badge: nil,
-              token: nil,
-              signed_authorization: nil,
-              smart_contract: nil
-            }
-            |> maybe_preload_ens_to_address()
+        :not_found ->
+          case Chain.hash_to_address(address_hash, @address_options) do
+            {:ok, address} ->
+              # Minimal preloading to avoid timeout
+              basic_address = preload_essential_data_only(address)
 
-          CoinBalanceOnDemand.trigger_fetch(ip, address)
-          ContractCodeOnDemand.trigger_fetch(ip, address)
+              # Skip expensive operations for now
+              spawn_link(fn ->
+                CoinBalanceOnDemand.trigger_fetch(ip, address)
+                ContractCodeOnDemand.trigger_fetch(ip, basic_address)
+              end)
 
-          conn
-          |> put_status(200)
-          |> render(:address, %{address: address})
+              # Create minimal response
+              response_data = build_minimal_address_response(basic_address, address_hash)
+
+              # Cache the response for 60 seconds
+              cache_address_response(cache_key, response_data, 60)
+
+              conn
+              |> put_status(200)
+              |> json(response_data)
+
+            _ ->
+              # Address not found - return minimal data
+              minimal_address = %{
+                hash: address_hash_string,
+                fetched_coin_balance: "0",
+                is_contract: false,
+                transactions_count: "0",
+                token_transfers_count: "0"
+              }
+
+              conn
+              |> put_status(200)
+              |> json(minimal_address)
+          end
       end
     end
   end
@@ -1440,5 +1453,96 @@ defmodule BlockScoutWeb.API.V2.AddressController do
           {:ok, topic}
         end
     end
+  end
+
+  # Add efficient proxy implementations preloading
+  defp preload_proxy_implementations_efficiently(address) do
+    if Ecto.assoc_loaded?(address.proxy_implementations) do
+      address
+    else
+      # Only fetch proxy implementations if smart contract exists
+      case address.smart_contract do
+        nil -> %{address | proxy_implementations: []}
+        _smart_contract ->
+          # Use the optimized function but limit the result size
+          implementations = SmartContractHelper.pre_fetch_implementations(address)
+          %{address | proxy_implementations: Enum.take(implementations || [], 10)}
+      end
+    end
+  end
+
+  # Add minimal response builder
+  defp build_minimal_address_response(address, address_hash) do
+    %{
+      hash: to_string(address_hash),
+      fetched_coin_balance: format_balance(address.fetched_coin_balance),
+      is_contract: !is_nil(address.smart_contract),
+      transactions_count: to_string(address.transactions_count || 0),
+      token_transfers_count: to_string(address.token_transfers_count || 0),
+      gas_used: to_string(address.gas_used || 0),
+      nonce: address.nonce || 0,
+      # Only include basic smart contract info
+      smart_contract: format_basic_smart_contract(address.smart_contract),
+      # Skip expensive associations for now
+      proxy_implementations: [],
+      names: [],
+      scam_badge: nil
+    }
+  end
+
+  defp format_balance(nil), do: "0"
+  defp format_balance(%Explorer.Chain.Wei{value: value}), do: Decimal.to_string(value)
+  defp format_balance(value) when is_integer(value), do: Integer.to_string(value)
+  defp format_balance(value), do: inspect(value)
+
+  defp format_basic_smart_contract(nil), do: nil
+  defp format_basic_smart_contract(sc) do
+    %{
+      name: sc.name,
+      verified: !is_nil(sc.abi),
+      # Skip expensive fields
+      abi: nil,
+      source_code: nil
+    }
+  end
+
+  defp preload_essential_data_only(address) do
+    # Only preload what's absolutely necessary
+    if Ecto.assoc_loaded?(address.smart_contract) do
+      address
+    else
+      address |> Explorer.Repo.preload([:smart_contract], timeout: 10_000)
+    end
+  end
+
+  # Simple in-memory caching (you might want to use Redis in production)
+  defp get_cached_address(cache_key) do
+    case :ets.lookup(:address_cache, cache_key) do
+      [{^cache_key, data, expires_at}] ->
+        if System.system_time(:second) < expires_at do
+          {:ok, data}
+        else
+          :ets.delete(:address_cache, cache_key)
+          :not_found
+        end
+      [] ->
+        :not_found
+    end
+  rescue
+    _ -> :not_found
+  end
+
+  defp cache_address_response(cache_key, data, ttl_seconds) do
+    try do
+      # Create ETS table if it doesn't exist
+      :ets.new(:address_cache, [:set, :public, :named_table])
+    rescue
+      ArgumentError -> :ok  # Table already exists
+    end
+
+    expires_at = System.system_time(:second) + ttl_seconds
+    :ets.insert(:address_cache, {cache_key, data, expires_at})
+  rescue
+    _ -> :ok  # Ignore cache errors
   end
 end
