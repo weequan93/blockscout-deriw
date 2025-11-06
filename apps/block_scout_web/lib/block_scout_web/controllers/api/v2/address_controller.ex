@@ -199,6 +199,9 @@ defmodule BlockScoutWeb.API.V2.AddressController do
             # Step 3: Actual view rendering
             Logger.error("Starting view rendering for address: #{address_hash}")
 
+            # Start query monitoring
+            monitor_id = Explorer.Debug.QueryMonitor.start_monitoring(address_hash)
+
             # Add timeout protection around rendering
             task = Task.async(fn ->
               conn
@@ -206,24 +209,41 @@ defmodule BlockScoutWeb.API.V2.AddressController do
               |> render(:address, %{address: address_with_ens})
             end)
 
-            case Task.yield(task, 30_000) || Task.shutdown(task) do
+            result = case Task.yield(task, 30_000) || Task.shutdown(task) do
               {:ok, result} ->
-                Logger.error("Address rendering completed successfully for: #{address_hash}")
+                elapsed = System.monotonic_time(:millisecond) - start_time
+                [{:count, total_queries}] = :ets.lookup(query_count, :count)
+                Logger.error("Address rendering completed successfully for: #{address_hash} (#{elapsed}ms, #{total_queries} queries)")
                 result
               nil ->
-                Logger.error("Address rendering timed out for: #{address_hash}, returning minimal response")
+                elapsed = System.monotonic_time(:millisecond) - start_time
+                [{:count, total_queries}] = :ets.lookup(query_count, :count)
+                Logger.error("Address rendering timed out for: #{address_hash} after #{elapsed}ms and #{total_queries} queries")
                 # Return minimal address data to avoid complete failure
+
+                balance_string = case address_with_ens.fetched_coin_balance do
+                  nil -> "0"
+                  %Explorer.Chain.Wei{value: value} -> Decimal.to_string(value)
+                  value when is_integer(value) -> Integer.to_string(value)
+                  value -> inspect(value)
+                end
+
                 conn
                 |> put_status(200)
                 |> json(%{
                   hash: to_string(address_hash),
-                  fetched_coin_balance: to_string(address_with_ens.fetched_coin_balance || 0),
+                  fetched_coin_balance: balance_string,
                   is_contract: !is_nil(address_with_ens.smart_contract),
                   implementation_name: nil,
                   proxy_implementations: implementations || [],
                   message: "Full address data unavailable due to timeout, showing minimal info"
                 })
             end
+
+            # Stop query monitoring
+            Explorer.Debug.QueryMonitor.stop_monitoring(monitor_id)
+
+            result
           rescue
             e ->
               Logger.error("Error during address rendering for #{address_hash}: #{inspect(e)}")
@@ -1509,6 +1529,21 @@ defmodule BlockScoutWeb.API.V2.AddressController do
 
     case topic do
       nil ->
+        {:ok, nil}
+
+      "" ->
+        {:ok, nil}
+
+      "null" ->
+        {:ok, nil}
+
+      _ ->
+        with {:format, {:ok, topic}} <- {:format, Chain.string_to_full_hash(topic)} do
+          {:ok, topic}
+        end
+    end
+  end
+end
         {:ok, nil}
 
       "" ->
