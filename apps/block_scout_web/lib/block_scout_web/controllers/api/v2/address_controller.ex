@@ -198,12 +198,32 @@ defmodule BlockScoutWeb.API.V2.AddressController do
 
             # Step 3: Actual view rendering
             Logger.error("Starting view rendering for address: #{address_hash}")
-            result = conn
-            |> put_status(200)
-            |> render(:address, %{address: address_with_ens})
 
-            Logger.error("Address rendering completed successfully for: #{address_hash}")
-            result
+            # Add timeout protection around rendering
+            task = Task.async(fn ->
+              conn
+              |> put_status(200)
+              |> render(:address, %{address: address_with_ens})
+            end)
+
+            case Task.yield(task, 30_000) || Task.shutdown(task) do
+              {:ok, result} ->
+                Logger.error("Address rendering completed successfully for: #{address_hash}")
+                result
+              nil ->
+                Logger.error("Address rendering timed out for: #{address_hash}, returning minimal response")
+                # Return minimal address data to avoid complete failure
+                conn
+                |> put_status(200)
+                |> json(%{
+                  hash: to_string(address_hash),
+                  fetched_coin_balance: to_string(address_with_ens.fetched_coin_balance || 0),
+                  is_contract: !is_nil(address_with_ens.smart_contract),
+                  implementation_name: nil,
+                  proxy_implementations: implementations || [],
+                  message: "Full address data unavailable due to timeout, showing minimal info"
+                })
+            end
           rescue
             e ->
               Logger.error("Error during address rendering for #{address_hash}: #{inspect(e)}")
