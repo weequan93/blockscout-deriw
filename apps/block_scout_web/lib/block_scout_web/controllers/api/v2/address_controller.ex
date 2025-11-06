@@ -154,18 +154,35 @@ defmodule BlockScoutWeb.API.V2.AddressController do
   """
   @spec address(Plug.Conn.t(), map()) :: {:format, :error} | {:restricted_access, true} | Plug.Conn.t()
   def address(conn, %{address_hash_param: address_hash_string} = params) do
+    require Logger
+    Logger.error("Address endpoint called with hash: #{address_hash_string}")
+
     ip = AccessHelper.conn_to_ip_string(conn)
+    Logger.error("Client IP: #{ip}")
 
     with {:ok, address_hash} <- validate_address_hash(address_hash_string, params) do
+      Logger.error("Address hash validation successful: #{address_hash}")
+
       case Chain.hash_to_address(address_hash, @address_options) do
         {:ok, address} ->
+          Logger.error("Address found in database: #{address_hash}")
+          Logger.error("Address details: fetched_coin_balance=#{address.fetched_coin_balance}, nonce=#{address.nonce}")
+
           fully_preloaded_address =
             Address.maybe_preload_smart_contract_associations(address, contract_address_preloads(), @api_true)
 
+          Logger.error("Smart contract associations preloaded")
+
           implementations = SmartContractHelper.pre_fetch_implementations(fully_preloaded_address)
+          Logger.error("Proxy implementations fetched: #{length(implementations || [])} implementations")
 
           CoinBalanceOnDemand.trigger_fetch(ip, address)
+          Logger.error("Coin balance on-demand fetch triggered")
+
           ContractCodeOnDemand.trigger_fetch(ip, fully_preloaded_address)
+          Logger.error("Contract code on-demand fetch triggered")
+
+          Logger.error("Returning address response with full data for: #{address_hash}")
 
           conn
           |> put_status(200)
@@ -176,6 +193,8 @@ defmodule BlockScoutWeb.API.V2.AddressController do
           })
 
         _ ->
+          Logger.error("Address not found in database, creating minimal address: #{address_hash}")
+
           address =
             %Address{
               hash: address_hash,
@@ -188,12 +207,25 @@ defmodule BlockScoutWeb.API.V2.AddressController do
             |> maybe_preload_ens_to_address()
 
           CoinBalanceOnDemand.trigger_fetch(ip, address)
+          Logger.error("Coin balance on-demand fetch triggered for new address")
+
           ContractCodeOnDemand.trigger_fetch(ip, address)
+          Logger.error("Contract code on-demand fetch triggered for new address")
+
+          Logger.error("Returning minimal address response for: #{address_hash}")
 
           conn
           |> put_status(200)
           |> render(:address, %{address: address})
       end
+    else
+      {:format, :error} ->
+        Logger.error("Invalid address hash format: #{address_hash_string}")
+        {:format, :error}
+
+      {:restricted_access, true} ->
+        Logger.error("Restricted access for address: #{address_hash_string}")
+        {:restricted_access, true}
     end
   end
 
