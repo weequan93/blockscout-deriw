@@ -388,39 +388,58 @@ defmodule Explorer.Chain.AdvancedFilter do
     Chain.select_repo(options).all(query)
   end
 
+  # Add this helper function to check if internal transactions indexing is enabled
+  defp internal_transactions_indexing_enabled? do
+    # Check if the internal transaction fetcher is enabled
+    case Application.get_env(:indexer, Indexer.Fetcher.InternalTransaction.Supervisor, []) do
+      config when is_list(config) ->
+        !Keyword.get(config, :disabled?, false)
+      _ ->
+        true  # Default to enabled if no config found
+    end
+  end
+
   defp internal_transactions_query(paging_options, options) do
-    transaction_hashes =
-      filtered_transaction_hashes(options, paging_options)
-      |> Enum.take(50) # <-- Limit to first 50 hashes
 
-    hash_chunks = Enum.chunk_every(transaction_hashes, 4)
+    if internal_transactions_indexing_enabled?() do
 
-    queries =
-      Enum.map(hash_chunks, fn chunk ->
-        base_query =
-          from it in InternalTransaction,
-            where: it.transaction_hash in ^chunk,
-            where: (it.type == :call and it.index > 0) or it.type != :call,
-            order_by: [desc: it.block_number, desc: it.transaction_index, desc: it.index],
-            limit: 51
+      transaction_hashes =
+        filtered_transaction_hashes(options, paging_options)
+        |> Enum.take(50) # <-- Limit to first 50 hashes
 
-        # wrap each in subquery/1 before union
-        from x in subquery(base_query), select: x
-      end)
+      hash_chunks = Enum.chunk_every(transaction_hashes, 4)
 
-    union_query =
-      case queries do
-          [first | rest] ->
-            Enum.reduce(rest, first, fn query, acc -> union_all(acc, ^query) end)
+      queries =
+        Enum.map(hash_chunks, fn chunk ->
+          base_query =
+            from it in InternalTransaction,
+              where: it.transaction_hash in ^chunk,
+              where: (it.type == :call and it.index > 0) or it.type != :call,
+              order_by: [desc: it.block_number, desc: it.transaction_index, desc: it.index],
+              limit: 51
 
-          [] ->
-            from it in InternalTransaction, where: false
-      end
+          # wrap each in subquery/1 before union
+          from x in subquery(base_query), select: x
+        end)
 
-    from(it in subquery(union_query))
-      |> page_internal_transactions(paging_options)
-      |> limit_query(paging_options)
-      |> preload([:transaction])
+      union_query =
+        case queries do
+            [first | rest] ->
+              Enum.reduce(rest, first, fn query, acc -> union_all(acc, ^query) end)
+
+            [] ->
+              from it in InternalTransaction, where: false
+        end
+
+      from(it in subquery(union_query))
+        |> page_internal_transactions(paging_options)
+        |> limit_query(paging_options)
+        |> preload([:transaction])
+
+    else
+      # Return empty query that will return no results
+      from(it in InternalTransaction, where: false)
+    end
   end
 
   defp page_internal_transactions(query, %PagingOptions{
