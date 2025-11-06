@@ -187,13 +187,20 @@ defmodule BlockScoutWeb.API.V2.AddressController do
           try do
             Logger.error("Starting address rendering for: #{address_hash}")
 
+            # Step 1: Prepare address with proxy implementations
+            Logger.error("Adding proxy implementations to address")
+            address_with_implementations = %Address{fully_preloaded_address | proxy_implementations: implementations}
+
+            # Step 2: ENS preloading (this might be the culprit)
+            Logger.error("Starting ENS preloading for address: #{address_hash}")
+            address_with_ens = maybe_preload_ens_to_address(address_with_implementations)
+            Logger.error("ENS preloading completed for address: #{address_hash}")
+
+            # Step 3: Actual view rendering
+            Logger.error("Starting view rendering for address: #{address_hash}")
             result = conn
             |> put_status(200)
-            |> render(:address, %{
-              address:
-                %Address{fully_preloaded_address | proxy_implementations: implementations}
-                |> maybe_preload_ens_to_address()
-            })
+            |> render(:address, %{address: address_with_ens})
 
             Logger.error("Address rendering completed successfully for: #{address_hash}")
             result
