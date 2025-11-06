@@ -5,7 +5,7 @@ defmodule Explorer.Repo.Migrations.AddMethodIdToTransactions do
   def up do
     execute("""
     ALTER TABLE transactions
-    ADD COLUMN method_id bytea GENERATED ALWAYS AS (substring(input FROM 1 FOR 4)) STORED
+    ADD COLUMN IF NOT EXISTS method_id bytea GENERATED ALWAYS AS (substring(input FROM 1 FOR 4)) STORED
     """)
     create(index(:transactions, :method_id))
   end
