@@ -199,8 +199,29 @@ defmodule BlockScoutWeb.API.V2.AddressController do
             # Step 3: Actual view rendering
             Logger.error("Starting view rendering for address: #{address_hash}")
 
-            # Start query monitoring
-            monitor_id = Explorer.Debug.QueryMonitor.start_monitoring(address_hash)
+            # Add SQL query monitoring
+            start_time = System.monotonic_time(:millisecond)
+            query_count = :ets.new(:query_counter, [:set, :public])
+            :ets.insert(query_count, {:count, 0})
+
+            # Attach telemetry handler for SQL queries
+            handler_id = "debug-sql-#{System.unique_integer()}"
+            :telemetry.attach(
+              handler_id,
+              [:explorer, :repo, :query],
+              fn event, measurements, metadata, config ->
+                :ets.update_counter(query_count, :count, 1)
+                [{:count, current_count}] = :ets.lookup(query_count, :count)
+
+                Logger.error("SQL Query ##{current_count} (#{measurements.total_time / 1_000_000}ms): #{inspect(metadata.query)}")
+
+                # Log slow queries immediately
+                if measurements.total_time > 5_000_000 do  # 5 seconds
+                  Logger.error("SLOW QUERY DETECTED: #{measurements.total_time / 1_000_000}ms - #{inspect(metadata.query)}")
+                end
+              end,
+              nil
+            )
 
             # Add timeout protection around rendering
             task = Task.async(fn ->
@@ -240,8 +261,9 @@ defmodule BlockScoutWeb.API.V2.AddressController do
                 })
             end
 
-            # Stop query monitoring
-            Explorer.Debug.QueryMonitor.stop_monitoring(monitor_id)
+            # Clean up telemetry and ETS
+            :telemetry.detach(handler_id)
+            :ets.delete(query_count)
 
             result
           rescue
@@ -1529,21 +1551,6 @@ defmodule BlockScoutWeb.API.V2.AddressController do
 
     case topic do
       nil ->
-        {:ok, nil}
-
-      "" ->
-        {:ok, nil}
-
-      "null" ->
-        {:ok, nil}
-
-      _ ->
-        with {:format, {:ok, topic}} <- {:format, Chain.string_to_full_hash(topic)} do
-          {:ok, topic}
-        end
-    end
-  end
-end
         {:ok, nil}
 
       "" ->
