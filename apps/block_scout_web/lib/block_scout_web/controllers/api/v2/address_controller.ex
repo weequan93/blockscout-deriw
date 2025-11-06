@@ -166,7 +166,7 @@ defmodule BlockScoutWeb.API.V2.AddressController do
       case Chain.hash_to_address(address_hash, @address_options) do
         {:ok, address} ->
           Logger.error("Address found in database: #{address_hash}")
-          Logger.error("Address details: fetched_coin_balance=#{address.fetched_coin_balance}, nonce=#{address.nonce}")
+          Logger.error("Address details: fetched_coin_balance=#{inspect(address.fetched_coin_balance)}, nonce=#{address.nonce}")
 
           fully_preloaded_address =
             Address.maybe_preload_smart_contract_associations(address, contract_address_preloads(), @api_true)
