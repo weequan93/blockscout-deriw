@@ -86,7 +86,9 @@ defmodule BlockScoutWeb.API.V2.AddressController do
       :scam_badge => :optional,
       :token => :optional,
       :signed_authorization => :optional,
-      :smart_contract => :optional
+      :smart_contract => :optional,
+      # Add comprehensive proxy implementations preloading
+      :proxy_implementations => :optional
     },
     api?: true
   ]
@@ -154,139 +156,37 @@ defmodule BlockScoutWeb.API.V2.AddressController do
   """
   @spec address(Plug.Conn.t(), map()) :: {:format, :error} | {:restricted_access, true} | Plug.Conn.t()
   def address(conn, %{address_hash_param: address_hash_string} = params) do
-    require Logger
-    Logger.error("Address endpoint called with hash: #{address_hash_string}")
-
     ip = AccessHelper.conn_to_ip_string(conn)
-    Logger.error("Client IP: #{ip}")
 
     with {:ok, address_hash} <- validate_address_hash(address_hash_string, params) do
-      Logger.error("Address hash validation successful: #{address_hash}")
-
       case Chain.hash_to_address(address_hash, @address_options) do
         {:ok, address} ->
-          Logger.error("Address found in database: #{address_hash}")
-          Logger.error("Address details: fetched_coin_balance=#{inspect(address.fetched_coin_balance)}, nonce=#{address.nonce}")
+          # Optimize: Preload everything in one go instead of multiple steps
+          fully_preloaded_address = 
+            address
+            |> Address.maybe_preload_smart_contract_associations(contract_address_preloads(), @api_true)
+            |> preload_proxy_implementations_efficiently()
+          
+          # Optimize: Get implementations from preloaded data instead of fetching again
+          implementations = fully_preloaded_address.proxy_implementations || []
+          
+          # Optimize: Trigger background fetches asynchronously without waiting
+          spawn_link(fn -> 
+            CoinBalanceOnDemand.trigger_fetch(ip, address)
+            ContractCodeOnDemand.trigger_fetch(ip, fully_preloaded_address)
+          end)
 
-          fully_preloaded_address =
-            Address.maybe_preload_smart_contract_associations(address, contract_address_preloads(), @api_true)
-
-          Logger.error("Smart contract associations preloaded")
-
-          implementations = SmartContractHelper.pre_fetch_implementations(fully_preloaded_address)
-          Logger.error("Proxy implementations fetched: #{length(implementations || [])} implementations")
-
-          CoinBalanceOnDemand.trigger_fetch(ip, address)
-          Logger.error("Coin balance on-demand fetch triggered")
-
-          ContractCodeOnDemand.trigger_fetch(ip, fully_preloaded_address)
-          Logger.error("Contract code on-demand fetch triggered")
-
-          Logger.error("Returning address response with full data for: #{address_hash}")
-
-          try do
-            Logger.error("Starting address rendering for: #{address_hash}")
-
-            # Step 1: Prepare address with proxy implementations
-            Logger.error("Adding proxy implementations to address")
-            address_with_implementations = %Address{fully_preloaded_address | proxy_implementations: implementations}
-
-            # Step 2: ENS preloading (this might be the culprit)
-            Logger.error("Starting ENS preloading for address: #{address_hash}")
-            address_with_ens = maybe_preload_ens_to_address(address_with_implementations)
-            Logger.error("ENS preloading completed for address: #{address_hash}")
-
-            # Step 3: Actual view rendering
-            Logger.error("Starting view rendering for address: #{address_hash}")
-
-            # Add SQL query monitoring
-            start_time = System.monotonic_time(:millisecond)
-            query_count = :ets.new(:query_counter, [:set, :public])
-            :ets.insert(query_count, {:count, 0})
-
-            # Attach telemetry handler for SQL queries
-            handler_id = "debug-sql-#{System.unique_integer()}"
-            :telemetry.attach(
-              handler_id,
-              [:explorer, :repo, :query],
-              fn event, measurements, metadata, config ->
-                :ets.update_counter(query_count, :count, 1)
-                [{:count, current_count}] = :ets.lookup(query_count, :count)
-
-                Logger.error("SQL Query ##{current_count} (#{measurements.total_time / 1_000_000}ms): #{inspect(metadata.query)}")
-
-                # Log slow queries immediately
-                if measurements.total_time > 5_000_000 do  # 5 seconds
-                  Logger.error("SLOW QUERY DETECTED: #{measurements.total_time / 1_000_000}ms - #{inspect(metadata.query)}")
-                end
-              end,
-              nil
-            )
-
-            # Add timeout protection around rendering
-            task = Task.async(fn ->
-              conn
-              |> put_status(200)
-              |> render(:address, %{address: address_with_ens})
-            end)
-
-            result = case Task.yield(task, 30_000) || Task.shutdown(task) do
-              {:ok, result} ->
-                elapsed = System.monotonic_time(:millisecond) - start_time
-                [{:count, total_queries}] = :ets.lookup(query_count, :count)
-                Logger.error("Address rendering completed successfully for: #{address_hash} (#{elapsed}ms, #{total_queries} queries)")
-                result
-              nil ->
-                elapsed = System.monotonic_time(:millisecond) - start_time
-                [{:count, total_queries}] = :ets.lookup(query_count, :count)
-                Logger.error("Address rendering timed out for: #{address_hash} after #{elapsed}ms and #{total_queries} queries")
-                # Return minimal address data to avoid complete failure
-
-                balance_string = case address_with_ens.fetched_coin_balance do
-                  nil -> "0"
-                  %Explorer.Chain.Wei{value: value} -> Decimal.to_string(value)
-                  value when is_integer(value) -> Integer.to_string(value)
-                  value -> inspect(value)
-                end
-
-                conn
-                |> put_status(200)
-                |> json(%{
-                  hash: to_string(address_hash),
-                  fetched_coin_balance: balance_string,
-                  is_contract: !is_nil(address_with_ens.smart_contract),
-                  implementation_name: nil,
-                  proxy_implementations: implementations || [],
-                  message: "Full address data unavailable due to timeout, showing minimal info"
-                })
-            end
-
-            # Clean up telemetry and ETS
-            :telemetry.detach(handler_id)
-            :ets.delete(query_count)
-
-            result
-          rescue
-            e ->
-              Logger.error("Error during address rendering for #{address_hash}: #{inspect(e)}")
-              Logger.error("Error stacktrace: #{Exception.format_stacktrace(__STACKTRACE__)}")
-
-              # Return a minimal response to avoid complete failure
-              conn
-              |> put_status(500)
-              |> json(%{error: "Internal server error during address rendering"})
-          catch
-            :exit, reason ->
-              Logger.error("Process exit during address rendering for #{address_hash}: #{inspect(reason)}")
-
-              conn
-              |> put_status(500)
-              |> json(%{error: "Process timeout during address rendering"})
+          # Optimize: Skip ENS preloading if not needed or make it optional
+          final_address = case Application.get_env(:block_scout_web, :ens_enabled, false) do
+            true -> maybe_preload_ens_to_address(fully_preloaded_address)
+            false -> fully_preloaded_address
           end
 
-        _ ->
-          Logger.error("Address not found in database, creating minimal address: #{address_hash}")
+          conn
+          |> put_status(200)
+          |> render(:address, %{address: final_address})
 
+        _ ->
           address =
             %Address{
               hash: address_hash,
@@ -299,25 +199,12 @@ defmodule BlockScoutWeb.API.V2.AddressController do
             |> maybe_preload_ens_to_address()
 
           CoinBalanceOnDemand.trigger_fetch(ip, address)
-          Logger.error("Coin balance on-demand fetch triggered for new address")
-
           ContractCodeOnDemand.trigger_fetch(ip, address)
-          Logger.error("Contract code on-demand fetch triggered for new address")
-
-          Logger.error("Returning minimal address response for: #{address_hash}")
 
           conn
           |> put_status(200)
           |> render(:address, %{address: address})
       end
-    else
-      {:format, :error} ->
-        Logger.error("Invalid address hash format: #{address_hash_string}")
-        {:format, :error}
-
-      {:restricted_access, true} ->
-        Logger.error("Restricted access for address: #{address_hash_string}")
-        {:restricted_access, true}
     end
   end
 
@@ -1563,6 +1450,22 @@ defmodule BlockScoutWeb.API.V2.AddressController do
         with {:format, {:ok, topic}} <- {:format, Chain.string_to_full_hash(topic)} do
           {:ok, topic}
         end
+    end
+  end
+
+  # Add efficient proxy implementations preloading
+  defp preload_proxy_implementations_efficiently(address) do
+    if Ecto.assoc_loaded?(address.proxy_implementations) do
+      address
+    else
+      # Only fetch proxy implementations if smart contract exists
+      case address.smart_contract do
+        nil -> %{address | proxy_implementations: []}
+        _smart_contract -> 
+          # Use the optimized function but limit the result size
+          implementations = SmartContractHelper.pre_fetch_implementations(address)
+          %{address | proxy_implementations: Enum.take(implementations || [], 10)}
+      end
     end
   end
 end
