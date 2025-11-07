@@ -270,10 +270,32 @@ defmodule BlockScoutWeb.API.V2.AddressController do
             Logger.error("Step 2: Preloading smart contract associations...")
             step_start = System.monotonic_time(:millisecond)
 
-            fully_preloaded_address =
-              address
-              |> Address.maybe_preload_smart_contract_associations(contract_address_preloads(), @api_true)
-              |> preload_proxy_implementations_efficiently()
+            fully_preloaded_address = try do
+              Logger.error("Step 2a: Starting Address.maybe_preload_smart_contract_associations...")
+              preload_result = Address.maybe_preload_smart_contract_associations(address, contract_address_preloads(), @api_true)
+              Logger.error("Step 2a: Completed Address.maybe_preload_smart_contract_associations")
+
+              Logger.error("Step 2b: Starting preload_proxy_implementations_efficiently...")
+              final_result = preload_proxy_implementations_efficiently(preload_result)
+              Logger.error("Step 2b: Completed preload_proxy_implementations_efficiently")
+
+              final_result
+            rescue
+              error ->
+                Logger.error("ERROR in Step 2: #{inspect(error)}")
+                Logger.error("ERROR stacktrace: #{inspect(__STACKTRACE__)}")
+
+                # Return the original address with minimal processing to continue
+                %{address | proxy_implementations: []}
+            catch
+              :exit, reason ->
+                Logger.error("EXIT in Step 2: #{inspect(reason)}")
+                %{address | proxy_implementations: []}
+
+              :throw, value ->
+                Logger.error("THROW in Step 2: #{inspect(value)}")
+                %{address | proxy_implementations: []}
+            end
 
             step_time = System.monotonic_time(:millisecond) - step_start
             queries_after_preload = safe_get_query_count_by_name(query_count_name)
@@ -1737,29 +1759,39 @@ defmodule BlockScoutWeb.API.V2.AddressController do
 
   # Simplified proxy implementations preloading to reduce queries
   defp preload_proxy_implementations_efficiently(address) do
+    Logger.error("preload_proxy_implementations_efficiently: Starting for address #{inspect(address.hash)}")
+    Logger.error("preload_proxy_implementations_efficiently: proxy_implementations loaded? #{Ecto.assoc_loaded?(address.proxy_implementations)}")
+    Logger.error("preload_proxy_implementations_efficiently: smart_contract present? #{!is_nil(address.smart_contract)}")
+
     if Ecto.assoc_loaded?(address.proxy_implementations) do
       # Even if loaded, limit the number to prevent view rendering issues
       limited_implementations = Enum.take(address.proxy_implementations || [], 5)
+      Logger.error("preload_proxy_implementations_efficiently: Already loaded, limiting to #{length(limited_implementations)} implementations")
       %{address | proxy_implementations: limited_implementations}
     else
       # Only fetch proxy implementations if smart contract exists
       case address.smart_contract do
-        nil -> %{address | proxy_implementations: []}
+        nil ->
+          Logger.error("preload_proxy_implementations_efficiently: No smart contract, returning empty implementations")
+          %{address | proxy_implementations: []}
         _smart_contract ->
+          Logger.error("preload_proxy_implementations_efficiently: Smart contract found, attempting to preload...")
           try do
             # Get only the most basic proxy implementations - no nested preloading
-            implementations =
-              address
-              |> Explorer.Repo.preload([:proxy_implementations], timeout: 5_000)  # Reduced timeout
+            Logger.error("preload_proxy_implementations_efficiently: Starting Explorer.Repo.preload...")
+            preloaded = Explorer.Repo.preload(address, [:proxy_implementations], timeout: 5_000)
+            Logger.error("preload_proxy_implementations_efficiently: Repo.preload completed")
+
+            implementations = preloaded
               |> Map.get(:proxy_implementations, [])
               |> Enum.take(3)  # Reduced to only 3 to limit queries
 
-            # Skip the expensive implementation_address preloading for now
-            # This was causing too many queries
+            Logger.error("preload_proxy_implementations_efficiently: Found #{length(implementations)} implementations")
             %{address | proxy_implementations: implementations}
           rescue
             error ->
-              Logger.error("Error preloading proxy implementations: #{inspect(error)}")
+              Logger.error("preload_proxy_implementations_efficiently: ERROR #{inspect(error)}")
+              Logger.error("preload_proxy_implementations_efficiently: ERROR stacktrace: #{inspect(__STACKTRACE__)}")
               %{address | proxy_implementations: []}
           end
       end
