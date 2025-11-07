@@ -66,6 +66,15 @@ defmodule Explorer.Chain.Address.Counters do
       other -> inspect(other)
     end
 
+    # Extract the binary bytes from the Hash struct for the database query
+    address_bytes = case address_hash do
+      %{bytes: bytes} -> bytes
+      binary when is_binary(binary) -> binary
+      other ->
+        Logger.error("check_if_logs_at_address: Unexpected address_hash format: #{inspect(other)}")
+        return false
+    end
+
     # Log the query start
     Logger.error("check_if_logs_at_address: Starting query for address #{address_hex}")
 
@@ -77,8 +86,8 @@ defmodule Explorer.Chain.Address.Counters do
     exists_start = System.monotonic_time(:millisecond)
 
     result = try do
-      # Use the exact same query structure you tested manually
-      case repo.query("SELECT EXISTS(SELECT 1 FROM logs WHERE address_hash = $1)", [address_hash], timeout: 5_000) do
+      # Use the exact same query structure you tested manually, with binary bytes
+      case repo.query("SELECT EXISTS(SELECT 1 FROM logs WHERE address_hash = $1)", [address_bytes], timeout: 5_000) do
         {:ok, %{rows: [[true]]}} -> true
         {:ok, %{rows: [[false]]}} -> false
         {:ok, other} ->
