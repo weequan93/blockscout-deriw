@@ -156,35 +156,128 @@ defmodule BlockScoutWeb.API.V2.AddressController do
   """
   @spec address(Plug.Conn.t(), map()) :: {:format, :error} | {:restricted_access, true} | Plug.Conn.t()
   def address(conn, %{address_hash_param: address_hash_string} = params) do
+    require Logger
+    Logger.error("=== ADDRESS ENDPOINT START: #{address_hash_string} ===")
+
     ip = AccessHelper.conn_to_ip_string(conn)
 
     with {:ok, address_hash} <- validate_address_hash(address_hash_string, params) do
-      case Chain.hash_to_address(address_hash, @address_options) do
-        {:ok, address} ->
-          # Optimize: Preload everything in one go instead of multiple steps
-          fully_preloaded_address = 
-            address
-            |> Address.maybe_preload_smart_contract_associations(contract_address_preloads(), @api_true)
-            |> preload_proxy_implementations_efficiently()
-          
-          # Optimize: Get implementations from preloaded data instead of fetching again
-          implementations = fully_preloaded_address.proxy_implementations || []
-          
-          # Optimize: Trigger background fetches asynchronously without waiting
-          spawn_link(fn -> 
-            CoinBalanceOnDemand.trigger_fetch(ip, address)
-            ContractCodeOnDemand.trigger_fetch(ip, fully_preloaded_address)
-          end)
+      # Start comprehensive query monitoring
+      start_time = System.monotonic_time(:millisecond)
+      query_count = :ets.new(:query_counter, [:set, :public])
+      :ets.insert(query_count, {:count, 0})
+      slow_queries = :ets.new(:slow_queries, [:bag, :public])
 
-          # Optimize: Skip ENS preloading if not needed or make it optional
-          final_address = case Application.get_env(:block_scout_web, :ens_enabled, false) do
-            true -> maybe_preload_ens_to_address(fully_preloaded_address)
-            false -> fully_preloaded_address
+      handler_id = "query_monitor_#{System.unique_integer()}"
+
+      :telemetry.attach(
+        handler_id,
+        [:explorer, :repo, :query],
+        fn _event, measurements, metadata, _config ->
+          :ets.update_counter(query_count, :count, 1)
+          [{:count, current_count}] = :ets.lookup(query_count, :count)
+
+          query_time_ms = measurements.total_time / 1_000_000
+          elapsed_ms = System.monotonic_time(:millisecond) - start_time
+
+          # Log every 50th query + all slow queries
+          if rem(current_count, 50) == 0 or query_time_ms > 1000 do
+            query_preview = metadata.query |> inspect() |> String.slice(0, 150)
+            Logger.error("Query ##{current_count} at +#{elapsed_ms}ms took #{Float.round(query_time_ms, 2)}ms: #{query_preview}...")
           end
 
-          conn
-          |> put_status(200)
-          |> render(:address, %{address: final_address})
+          # Track slow queries separately
+          if query_time_ms > 1000 do
+            :ets.insert(slow_queries, {current_count, query_time_ms, metadata.query})
+          end
+        end,
+        nil
+      )
+
+      try do
+        Logger.error("Step 1: Looking up address in database...")
+        step_start = System.monotonic_time(:millisecond)
+
+        case Chain.hash_to_address(address_hash, @address_options) do
+          {:ok, address} ->
+            step_time = System.monotonic_time(:millisecond) - step_start
+            [{:count, queries_after_lookup}] = :ets.lookup(query_count, :count)
+            Logger.error("Step 1 completed in #{step_time}ms with #{queries_after_lookup} queries")
+
+            Logger.error("Step 2: Preloading smart contract associations...")
+            step_start = System.monotonic_time(:millisecond)
+
+            fully_preloaded_address =
+              address
+              |> Address.maybe_preload_smart_contract_associations(contract_address_preloads(), @api_true)
+              |> preload_proxy_implementations_efficiently()
+
+            step_time = System.monotonic_time(:millisecond) - step_start
+            [{:count, queries_after_preload}] = :ets.lookup(query_count, :count)
+            Logger.error("Step 2 completed in #{step_time}ms with #{queries_after_preload - queries_after_lookup} new queries")
+
+            Logger.error("Step 3: Getting proxy implementations...")
+            step_start = System.monotonic_time(:millisecond)
+
+            implementations = fully_preloaded_address.proxy_implementations || []
+
+            step_time = System.monotonic_time(:millisecond) - step_start
+            [{:count, queries_after_impl}] = :ets.lookup(query_count, :count)
+            Logger.error("Step 3 completed in #{step_time}ms with #{queries_after_impl - queries_after_preload} new queries")
+
+            Logger.error("Step 4: Starting background fetchers...")
+            spawn_link(fn ->
+              CoinBalanceOnDemand.trigger_fetch(ip, address)
+              ContractCodeOnDemand.trigger_fetch(ip, fully_preloaded_address)
+            end)
+
+            Logger.error("Step 5: ENS preloading...")
+            step_start = System.monotonic_time(:millisecond)
+
+            final_address = case Application.get_env(:block_scout_web, :ens_enabled, false) do
+              true -> maybe_preload_ens_to_address(fully_preloaded_address)
+              false -> fully_preloaded_address
+            end
+
+            step_time = System.monotonic_time(:millisecond) - step_start
+            [{:count, queries_after_ens}] = :ets.lookup(query_count, :count)
+            Logger.error("Step 5 completed in #{step_time}ms with #{queries_after_ens - queries_after_impl} new queries")
+
+            Logger.error("Step 6: Starting view rendering...")
+            step_start = System.monotonic_time(:millisecond)
+
+            result = conn
+            |> put_status(200)
+            |> render(:address, %{address: final_address})
+
+            step_time = System.monotonic_time(:millisecond) - step_start
+            [{:count, total_queries}] = :ets.lookup(query_count, :count)
+            queries_during_render = total_queries - queries_after_ens
+            Logger.error("Step 6 completed in #{step_time}ms with #{queries_during_render} new queries")
+
+            # Summary
+            total_time = System.monotonic_time(:millisecond) - start_time
+            Logger.error("=== SUMMARY for #{address_hash_string} ===")
+            Logger.error("Total time: #{total_time}ms")
+            Logger.error("Total queries: #{total_queries}")
+            Logger.error("Queries breakdown:")
+            Logger.error("- Initial lookup: #{queries_after_lookup}")
+            Logger.error("- Smart contract preload: #{queries_after_preload - queries_after_lookup}")
+            Logger.error("- Proxy implementations: #{queries_after_impl - queries_after_preload}")
+            Logger.error("- ENS preloading: #{queries_after_ens - queries_after_impl}")
+            Logger.error("- View rendering: #{queries_during_render}")
+
+            # Log slow queries
+            slow_query_list = :ets.tab2list(slow_queries)
+            if length(slow_query_list) > 0 do
+              Logger.error("=== SLOW QUERIES (>1000ms) ===")
+              Enum.each(slow_query_list, fn {query_num, time_ms, query} ->
+                query_preview = query |> inspect() |> String.slice(0, 200)
+                Logger.error("Query ##{query_num}: #{Float.round(time_ms, 2)}ms - #{query_preview}...")
+              end)
+            end
+
+            result
 
         _ ->
           address =
@@ -1461,7 +1554,7 @@ defmodule BlockScoutWeb.API.V2.AddressController do
       # Only fetch proxy implementations if smart contract exists
       case address.smart_contract do
         nil -> %{address | proxy_implementations: []}
-        _smart_contract -> 
+        _smart_contract ->
           # Use the optimized function but limit the result size
           implementations = SmartContractHelper.pre_fetch_implementations(address)
           %{address | proxy_implementations: Enum.take(implementations || [], 10)}
