@@ -56,22 +56,30 @@ defmodule Explorer.Chain.Address.Counters do
 
     query = address_hash_to_logs_query(address_hash)
 
-    # Log the actual SQL query being executed
-    Logger.error("check_if_logs_at_address: Starting query for address #{address_hash}")
+    # Convert address hash to hex string for safe logging
+    address_hex = case address_hash do
+      %{bytes: bytes} -> "0x" <> Base.encode16(bytes, case: :lower)
+      binary when is_binary(binary) -> "0x" <> Base.encode16(binary, case: :lower)
+      other -> inspect(other)
+    end
 
-    # Convert query to SQL for logging
-    sql = case Ecto.Adapters.SQL.to_sql(:all, select_repo(options), query) do
-      {sql, params} ->
-        formatted_sql = String.replace(sql, ~r/\$\d+/, fn param_placeholder ->
-          param_index = param_placeholder |> String.slice(1..-1) |> String.to_integer()
-          param_value = Enum.at(params, param_index - 1)
-          "'#{param_value}'"
-        end)
-        Logger.error("check_if_logs_at_address: SQL query: #{formatted_sql}")
-        sql
-      _ ->
-        Logger.error("check_if_logs_at_address: Could not extract SQL")
-        "Unknown SQL"
+    # Log the query start
+    Logger.error("check_if_logs_at_address: Starting query for address #{address_hex}")
+
+    # Convert query to SQL for logging (with safe parameter handling)
+    try do
+      case Ecto.Adapters.SQL.to_sql(:all, select_repo(options), query) do
+        {sql, _params} ->
+          # Log just the SQL structure without potentially problematic parameter values
+          clean_sql = String.replace(sql, ~r/\$\d+/, "?")
+          Logger.error("check_if_logs_at_address: SQL query: #{clean_sql} [params: #{address_hex}]")
+
+        _ ->
+          Logger.error("check_if_logs_at_address: Could not extract SQL")
+      end
+    rescue
+      error ->
+        Logger.error("check_if_logs_at_address: Error extracting SQL: #{inspect(error)}")
     end
 
     # Execute the exists query and log timing
