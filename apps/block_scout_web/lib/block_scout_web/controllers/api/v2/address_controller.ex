@@ -174,21 +174,30 @@ defmodule BlockScoutWeb.API.V2.AddressController do
         handler_id,
         [:explorer, :repo, :query],
         fn _event, measurements, metadata, _config ->
-          :ets.update_counter(query_count, :count, 1)
-          [{:count, current_count}] = :ets.lookup(query_count, :count)
+          # Safe ETS access with error handling
+          try do
+            :ets.update_counter(query_count, :count, 1)
+            [{:count, current_count}] = :ets.lookup(query_count, :count)
 
-          query_time_ms = measurements.total_time / 1_000_000
-          elapsed_ms = System.monotonic_time(:millisecond) - start_time
+            query_time_ms = measurements.total_time / 1_000_000
+            elapsed_ms = System.monotonic_time(:millisecond) - start_time
 
-          # Log every 50th query + all slow queries
-          if rem(current_count, 50) == 0 or query_time_ms > 1000 do
-            query_preview = metadata.query |> inspect() |> String.slice(0, 150)
-            Logger.error("Query ##{current_count} at +#{elapsed_ms}ms took #{Float.round(query_time_ms, 2)}ms: #{query_preview}...")
-          end
+            # Log every 50th query + all slow queries
+            if rem(current_count, 50) == 0 or query_time_ms > 1000 do
+              query_preview = metadata.query |> inspect() |> String.slice(0, 150)
+              Logger.error("Query ##{current_count} at +#{elapsed_ms}ms took #{Float.round(query_time_ms, 2)}ms: #{query_preview}...")
+            end
 
-          # Track slow queries separately
-          if query_time_ms > 1000 do
-            :ets.insert(slow_queries, {current_count, query_time_ms, metadata.query})
+            # Track slow queries separately
+            if query_time_ms > 1000 do
+              :ets.insert(slow_queries, {current_count, query_time_ms, metadata.query})
+            end
+          rescue
+            # Ignore errors if ETS table was already deleted
+            _ -> :ok
+          catch
+            # Ignore errors if ETS table was already deleted
+            _ -> :ok
           end
         end,
         nil
@@ -198,10 +207,10 @@ defmodule BlockScoutWeb.API.V2.AddressController do
         Logger.error("Step 1: Looking up address in database...")
         step_start = System.monotonic_time(:millisecond)
 
-        case Chain.hash_to_address(address_hash, @address_options) do
+        result = case Chain.hash_to_address(address_hash, @address_options) do
           {:ok, address} ->
             step_time = System.monotonic_time(:millisecond) - step_start
-            [{:count, queries_after_lookup}] = :ets.lookup(query_count, :count)
+            queries_after_lookup = safe_get_query_count(query_count)
             Logger.error("Step 1 completed in #{step_time}ms with #{queries_after_lookup} queries")
 
             Logger.error("Step 2: Preloading smart contract associations...")
@@ -213,7 +222,7 @@ defmodule BlockScoutWeb.API.V2.AddressController do
               |> preload_proxy_implementations_efficiently()
 
             step_time = System.monotonic_time(:millisecond) - step_start
-            [{:count, queries_after_preload}] = :ets.lookup(query_count, :count)
+            queries_after_preload = safe_get_query_count(query_count)
             Logger.error("Step 2 completed in #{step_time}ms with #{queries_after_preload - queries_after_lookup} new queries")
 
             Logger.error("Step 3: Getting proxy implementations...")
@@ -222,7 +231,7 @@ defmodule BlockScoutWeb.API.V2.AddressController do
             implementations = fully_preloaded_address.proxy_implementations || []
 
             step_time = System.monotonic_time(:millisecond) - step_start
-            [{:count, queries_after_impl}] = :ets.lookup(query_count, :count)
+            queries_after_impl = safe_get_query_count(query_count)
             Logger.error("Step 3 completed in #{step_time}ms with #{queries_after_impl - queries_after_preload} new queries")
 
             Logger.error("Step 4: Starting background fetchers...")
@@ -240,18 +249,18 @@ defmodule BlockScoutWeb.API.V2.AddressController do
             end
 
             step_time = System.monotonic_time(:millisecond) - step_start
-            [{:count, queries_after_ens}] = :ets.lookup(query_count, :count)
+            queries_after_ens = safe_get_query_count(query_count)
             Logger.error("Step 5 completed in #{step_time}ms with #{queries_after_ens - queries_after_impl} new queries")
 
             Logger.error("Step 6: Starting view rendering...")
             step_start = System.monotonic_time(:millisecond)
 
-            result = conn
+            render_result = conn
             |> put_status(200)
             |> render(:address, %{address: final_address})
 
             step_time = System.monotonic_time(:millisecond) - step_start
-            [{:count, total_queries}] = :ets.lookup(query_count, :count)
+            total_queries = safe_get_query_count(query_count)
             queries_during_render = total_queries - queries_after_ens
             Logger.error("Step 6 completed in #{step_time}ms with #{queries_during_render} new queries")
 
@@ -268,7 +277,7 @@ defmodule BlockScoutWeb.API.V2.AddressController do
             Logger.error("- View rendering: #{queries_during_render}")
 
             # Log slow queries
-            slow_query_list = :ets.tab2list(slow_queries)
+            slow_query_list = safe_get_slow_queries(slow_queries)
             if length(slow_query_list) > 0 do
               Logger.error("=== SLOW QUERIES (>1000ms) ===")
               Enum.each(slow_query_list, fn {query_num, time_ms, query} ->
@@ -277,31 +286,37 @@ defmodule BlockScoutWeb.API.V2.AddressController do
               end)
             end
 
-            result
+            render_result
 
-        _ ->
-          address =
-            %Address{
-              hash: address_hash,
-              names: [],
-              scam_badge: nil,
-              token: nil,
-              signed_authorization: nil,
-              smart_contract: nil
-            }
-            |> maybe_preload_ens_to_address()
+          _ ->
+            address =
+              %Address{
+                hash: address_hash,
+                names: [],
+                scam_badge: nil,
+                token: nil,
+                signed_authorization: nil,
+                smart_contract: nil
+              }
+              |> maybe_preload_ens_to_address()
 
-          CoinBalanceOnDemand.trigger_fetch(ip, address)
-          ContractCodeOnDemand.trigger_fetch(ip, address)
+            CoinBalanceOnDemand.trigger_fetch(ip, address)
+            ContractCodeOnDemand.trigger_fetch(ip, address)
 
-          conn
-          |> put_status(200)
-          |> render(:address, %{address: address})
-      end
+            conn
+            |> put_status(200)
+            |> render(:address, %{address: address})
+        end
+
+        result
       after
+        # Detach telemetry first to prevent further ETS access
         :telemetry.detach(handler_id)
-        :ets.delete(query_count)
-        :ets.delete(slow_queries)
+        # Small delay to ensure telemetry handlers finish
+        Process.sleep(10)
+        # Then clean up ETS tables
+        safe_delete_ets(query_count)
+        safe_delete_ets(slow_queries)
       end
     end
   end
@@ -844,21 +859,6 @@ defmodule BlockScoutWeb.API.V2.AddressController do
       ok:
         {"Historical coin balance changes for the specified address, with pagination.", "application/json",
          paginated_response(
-           items: Schemas.CoinBalance,
-           next_page_params_example: %{"block_number" => 22_546_398, "items_count" => 50},
-           title_prefix: "AddressCoinBalanceHistory"
-         )},
-      unprocessable_entity: JsonErrorResponse.response(),
-      forbidden: ForbiddenResponse.response()
-    ]
-
-  @doc """
-  Handles GET requests to `/api/v2/addresses/:address_hash_param/coin-balance-history` endpoint (retrieves coin balance history for given address)
-
-  ## Parameters
-
-    - conn: The connection struct.
-    - params: A map containing the parameters for the request.
 
   ## Returns
 
