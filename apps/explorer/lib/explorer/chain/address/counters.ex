@@ -612,14 +612,3 @@ defmodule Explorer.Chain.Address.Counters do
   @spec counters_limit :: integer()
   def counters_limit, do: @counters_limit
 end
-    Returns all possible transactions type
-  """
-  @spec transactions_types :: list(atom)
-  def transactions_types, do: @transactions_types
-
-  @doc """
-    Returns max counter value
-  """
-  @spec counters_limit :: integer()
-  def counters_limit, do: @counters_limit
-end
