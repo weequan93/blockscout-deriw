@@ -54,19 +54,6 @@ defmodule Explorer.Chain.Address.Counters do
     require Logger
     start_time = System.monotonic_time(:millisecond)
 
-    # Log connection pool status
-    repo = select_repo(options)
-    Logger.error("check_if_logs_at_address: Using repo: #{inspect(repo)}")
-
-    # Check connection pool status
-    try do
-      pool_info = repo.get_dynamic_repo() |> DBConnection.get_connection_metrics()
-      Logger.error("check_if_logs_at_address: DB Pool info: #{inspect(pool_info)}")
-    rescue
-      error ->
-        Logger.error("check_if_logs_at_address: Could not get pool info: #{inspect(error)}")
-    end
-
     query = address_hash_to_logs_query(address_hash)
 
     # Convert address hash to hex string for safe logging
@@ -79,13 +66,15 @@ defmodule Explorer.Chain.Address.Counters do
     # Log the query start
     Logger.error("check_if_logs_at_address: Starting query for address #{address_hex}")
 
-    # Log before attempting to get connection
-    Logger.error("check_if_logs_at_address: About to acquire DB connection")
+    # Log which repo is being used
+    repo = select_repo(options)
+    Logger.error("check_if_logs_at_address: Using repo: #{inspect(repo)}")
 
-    Logger.error("check_if_logs_at_address: About to call exists? method")
+    # Log before attempting to execute query
+    Logger.error("check_if_logs_at_address: About to execute exists? query")
     exists_start = System.monotonic_time(:millisecond)
 
-    result = select_repo(options).exists?(query)
+    result = repo.exists?(query)
 
     exists_time = System.monotonic_time(:millisecond) - exists_start
     total_time = System.monotonic_time(:millisecond) - start_time
@@ -612,6 +601,17 @@ defmodule Explorer.Chain.Address.Counters do
   end
 
   @doc """
+    Returns all possible transactions type
+  """
+  @spec transactions_types :: list(atom)
+  def transactions_types, do: @transactions_types
+
+  @doc """
+    Returns max counter value
+  """
+  @spec counters_limit :: integer()
+  def counters_limit, do: @counters_limit
+end
     Returns all possible transactions type
   """
   @spec transactions_types :: list(atom)
