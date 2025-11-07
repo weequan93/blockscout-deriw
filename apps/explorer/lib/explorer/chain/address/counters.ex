@@ -47,7 +47,12 @@ defmodule Explorer.Chain.Address.Counters do
   end
 
   def check_if_validated_blocks_at_address(address_hash, options \\ []) do
-    select_repo(options).exists?(address_hash_to_validated_blocks_query(address_hash))
+    try do
+      select_repo(options).exists?(address_hash_to_validated_blocks_query(address_hash), timeout: 5_000)
+    rescue
+      DBConnection.ConnectionError -> false
+      _ -> false
+    end
   end
 
   def check_if_logs_at_address(address_hash, options \\ []) do
@@ -68,6 +73,28 @@ defmodule Explorer.Chain.Address.Counters do
 
     repo = select_repo(options)
     Logger.error("check_if_logs_at_address: Using repo: #{inspect(repo)}")
+
+    # Log the actual SQL query being executed
+    try do
+      case Ecto.Adapters.SQL.to_sql(:all, repo, query) do
+        {sql, params} ->
+          # Replace parameter placeholders with actual values for readability
+          formatted_sql = Enum.with_index(params, 1)
+          |> Enum.reduce(sql, fn {param, index}, acc_sql ->
+            param_str = case param do
+              binary when is_binary(binary) -> "\\x#{Base.encode16(binary, case: :lower)}"
+              other -> "'#{other}'"
+            end
+            String.replace(acc_sql, "$#{index}", param_str)
+          end)
+          Logger.error("check_if_logs_at_address: SQL query: #{formatted_sql}")
+        _ ->
+          Logger.error("check_if_logs_at_address: Could not extract SQL")
+      end
+    rescue
+      error ->
+        Logger.error("check_if_logs_at_address: Error extracting SQL: #{inspect(error)}")
+    end
 
     # Log before attempting to execute query
     Logger.error("check_if_logs_at_address: About to execute exists? query")
@@ -94,19 +121,34 @@ defmodule Explorer.Chain.Address.Counters do
   end
 
   def check_if_token_transfers_at_address(address_hash, options \\ []) do
-    select_repo(options).exists?(from(tt in TokenTransfer, where: tt.from_address_hash == ^address_hash)) ||
-      select_repo(options).exists?(from(tt in TokenTransfer, where: tt.to_address_hash == ^address_hash))
+    try do
+      select_repo(options).exists?(from(tt in TokenTransfer, where: tt.from_address_hash == ^address_hash), timeout: 5_000) ||
+        select_repo(options).exists?(from(tt in TokenTransfer, where: tt.to_address_hash == ^address_hash), timeout: 5_000)
+    rescue
+      DBConnection.ConnectionError -> false
+      _ -> false
+    end
   end
 
   def check_if_tokens_at_address(address_hash, options \\ []) do
-    select_repo(options).exists?(address_hash_to_token_balances_query(address_hash))
+    try do
+      select_repo(options).exists?(address_hash_to_token_balances_query(address_hash), timeout: 5_000)
+    rescue
+      DBConnection.ConnectionError -> false
+      _ -> false
+    end
   end
 
   @spec check_if_withdrawals_at_address(Hash.Address.t()) :: boolean()
   def check_if_withdrawals_at_address(address_hash, options \\ []) do
-    address_hash
-    |> Withdrawal.address_hash_to_withdrawals_unordered_query()
-    |> select_repo(options).exists?()
+    try do
+      address_hash
+      |> Withdrawal.address_hash_to_withdrawals_unordered_query()
+      |> select_repo(options).exists?(timeout: 5_000)
+    rescue
+      DBConnection.ConnectionError -> false
+      _ -> false
+    end
   end
 
   def address_hash_to_transaction_count_query(address_hash) do
