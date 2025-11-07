@@ -81,87 +81,43 @@ defmodule Explorer.Chain.Address.Counters do
     else
       # Force using main repo instead of replica for this specific query
       repo = Explorer.Repo  # Use main database instead of select_repo(options)
-      Logger.error("check_if_logs_at_address: Using MAIN repo instead of replica for address #{address_hex}")
+      Logger.error("check_if_logs_at_address: Using MAIN repo for address #{address_hex}")
 
-      # Use direct SQL query since it works fast manually
-      Logger.error("check_if_logs_at_address: About to execute direct EXISTS query")
-
-      # Log the exact query and parameters being sent
-      sql_query = "SELECT EXISTS(SELECT 1 FROM logs WHERE address_hash = $1)"
-      Logger.error("check_if_logs_at_address: SQL query: #{sql_query}")
-      Logger.error("check_if_logs_at_address: Parameter 1 (binary): #{inspect(address_bytes, limit: :infinity)}")
-      Logger.error("check_if_logs_at_address: Parameter 1 (hex): #{Base.encode16(address_bytes, case: :lower)}")
-      Logger.error("check_if_logs_at_address: Parameter 1 (length): #{byte_size(address_bytes)} bytes")
-
-      # Test if the address_bytes is valid
-      if byte_size(address_bytes) != 20 do
-        Logger.error("check_if_logs_at_address: ERROR - Address hash should be 20 bytes, got #{byte_size(address_bytes)}")
-      end
-
+      # Use LIMIT 1 instead of EXISTS for better performance on huge tables
+      Logger.error("check_if_logs_at_address: About to execute SELECT with LIMIT 1")
+      
       exists_start = System.monotonic_time(:millisecond)
 
-      # Try multiple different query approaches to isolate the issue
       result = try do
-        Logger.error("check_if_logs_at_address: Attempting Method 1 - Direct query with EXISTS")
-
-        # Method 1: Current approach (the one that's timing out)
-        case repo.query(sql_query, [address_bytes], timeout: 2_000) do
-          {:ok, %{rows: [[true]]}} ->
-            Logger.error("check_if_logs_at_address: Method 1 SUCCESS - returned TRUE")
-            true
-          {:ok, %{rows: [[false]]}} ->
-            Logger.error("check_if_logs_at_address: Method 1 SUCCESS - returned FALSE")
+        # Use SELECT 1 FROM logs WHERE address_hash = $1 LIMIT 1
+        # This will return immediately when it finds the first matching row
+        case repo.query("SELECT 1 FROM logs WHERE address_hash = $1 LIMIT 1", [address_bytes], timeout: 3_000) do
+          {:ok, %{rows: []}} -> 
+            Logger.error("check_if_logs_at_address: No rows found - FALSE")
             false
+          {:ok, %{rows: [[1]]}} -> 
+            Logger.error("check_if_logs_at_address: Found row - TRUE")
+            true
           {:ok, other} ->
-            Logger.error("check_if_logs_at_address: Method 1 unexpected result: #{inspect(other)}")
+            Logger.error("check_if_logs_at_address: Unexpected result: #{inspect(other)}")
             false
           {:error, error} ->
-            Logger.error("check_if_logs_at_address: Method 1 error: #{inspect(error)}")
+            Logger.error("check_if_logs_at_address: Query error: #{inspect(error)}")
             false
         end
       rescue
+        DBConnection.ConnectionError ->
+          Logger.error("check_if_logs_at_address: Connection error, defaulting to false")
+          false
         error ->
-          Logger.error("check_if_logs_at_address: Method 1 FAILED with #{inspect(error)}, trying Method 2")
-
-          # Method 2: Try with LIMIT 1 instead of EXISTS
-          try do
-            Logger.error("check_if_logs_at_address: Attempting Method 2 - SELECT with LIMIT")
-            case repo.query("SELECT 1 FROM logs WHERE address_hash = $1 LIMIT 1", [address_bytes], timeout: 2_000) do
-              {:ok, %{rows: []}} ->
-                Logger.error("check_if_logs_at_address: Method 2 SUCCESS - no rows (FALSE)")
-                false
-              {:ok, %{rows: [[1]]}} ->
-                Logger.error("check_if_logs_at_address: Method 2 SUCCESS - found row (TRUE)")
-                true
-              {:ok, other} ->
-                Logger.error("check_if_logs_at_address: Method 2 unexpected result: #{inspect(other)}")
-                false
-              {:error, error} ->
-                Logger.error("check_if_logs_at_address: Method 2 error: #{inspect(error)}")
-                false
-            end
-          rescue
-            error2 ->
-              Logger.error("check_if_logs_at_address: Method 2 FAILED with #{inspect(error2)}, trying Method 3")
-
-              # Method 3: Try using Ecto's exists? but on main repo
-              try do
-                Logger.error("check_if_logs_at_address: Attempting Method 3 - Ecto exists on main repo")
-                result3 = repo.exists?(from(l in Log, where: l.address_hash == ^address_hash), timeout: 2_000)
-                Logger.error("check_if_logs_at_address: Method 3 SUCCESS - result: #{result3}")
-                result3
-              rescue
-                error3 ->
-                  Logger.error("check_if_logs_at_address: Method 3 FAILED with #{inspect(error3)}, defaulting to false")
-                  false
-              end
-          end
+          Logger.error("check_if_logs_at_address: Query error: #{inspect(error)}, defaulting to false")
+          false
       end
 
       exists_time = System.monotonic_time(:millisecond) - exists_start
       total_time = System.monotonic_time(:millisecond) - start_time
 
-      Logger.error("check_if_logs_at_address: EXISTS query took #{exists_time}ms, total #{total_time}ms, result: #{result}")
+      Logger.error("check_if_logs_at_address: Query took #{exists_time}ms, total #{total_time}ms, result: #{result}")
 
       result
     end
@@ -710,6 +666,50 @@ defmodule Explorer.Chain.Address.Counters do
     |> select_repo(options).all()
     |> InternalTransaction.deduplicate_and_trim_internal_transactions(%PagingOptions{page_size: @counters_limit})
     |> Enum.count()
+  end
+
+  defp count(query, options, _counter_type) do
+    query
+    |> limit(@counters_limit)
+    |> select_repo(options).aggregate(:count)
+  end
+
+  defp process_transactions_counter(
+         %{transactions_types: [_ | _] = transactions_types, transactions_hashes: hashes} = map
+       ) do
+    counter = hashes |> Enum.uniq() |> Enum.count() |> min(@counters_limit)
+
+    if Enum.count(transactions_types) == 3 || counter == @counters_limit do
+      map |> Map.put(:transactions, counter)
+    else
+      map
+    end
+  end
+
+  defp process_transactions_counter(map), do: map
+
+  defp prepare_cache_values(cached_counters) do
+    Enum.reduce(cached_counters, %{}, fn
+      {k, {_, counter}}, acc ->
+        Map.put(acc, k, counter)
+
+      {k, v}, acc ->
+        Map.put(acc, k, v)
+    end)
+  end
+
+  @doc """
+    Returns all possible transactions type
+  """
+  @spec transactions_types :: list(atom)
+  def transactions_types, do: @transactions_types
+
+  @doc """
+    Returns max counter value
+  """
+  @spec counters_limit :: integer()
+  def counters_limit, do: @counters_limit
+end
   end
 
   defp count(query, options, _counter_type) do
