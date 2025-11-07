@@ -72,25 +72,22 @@ defmodule Explorer.Chain.Address.Counters do
       binary when is_binary(binary) -> binary
       other ->
         Logger.error("check_if_logs_at_address: Unexpected address_hash format: #{inspect(other)}")
-        false  # Return false directly instead of using 'return false'
+        false
     end
 
     # Only proceed if we have valid address bytes
     if address_bytes == false do
       false
     else
-      # Log the query start
-      Logger.error("check_if_logs_at_address: Starting query for address #{address_hex}")
+      # Force using main repo instead of replica for this specific query
+      repo = Explorer.Repo  # Use main database instead of select_repo(options)
+      Logger.error("check_if_logs_at_address: Using MAIN repo instead of replica for address #{address_hex}")
 
-      repo = select_repo(options)
-      Logger.error("check_if_logs_at_address: Using repo: #{inspect(repo)}")
-
-      # Instead of using Ecto's exists?, use a direct SQL query that matches what you tested
+      # Use direct SQL query since it works fast manually
       Logger.error("check_if_logs_at_address: About to execute direct EXISTS query")
       exists_start = System.monotonic_time(:millisecond)
 
       result = try do
-        # Use the exact same query structure you tested manually, with binary bytes
         case repo.query("SELECT EXISTS(SELECT 1 FROM logs WHERE address_hash = $1)", [address_bytes], timeout: 5_000) do
           {:ok, %{rows: [[true]]}} -> true
           {:ok, %{rows: [[false]]}} -> false
@@ -120,21 +117,65 @@ defmodule Explorer.Chain.Address.Counters do
   end
 
   def check_if_token_transfers_at_address(address_hash, options \\ []) do
+    require Logger
+    start_time = System.monotonic_time(:millisecond)
+
+    # Convert address hash to hex string for safe logging
+    address_hex = case address_hash do
+      %{bytes: bytes} -> "0x" <> Base.encode16(bytes, case: :lower)
+      binary when is_binary(binary) -> "0x" <> Base.encode16(binary, case: :lower)
+      other -> inspect(other)
+    end
+
+    Logger.error("check_if_token_transfers_at_address: Starting query for address #{address_hex}")
+
     try do
-      select_repo(options).exists?(from(tt in TokenTransfer, where: tt.from_address_hash == ^address_hash), timeout: 5_000) ||
+      result = select_repo(options).exists?(from(tt in TokenTransfer, where: tt.from_address_hash == ^address_hash), timeout: 5_000) ||
         select_repo(options).exists?(from(tt in TokenTransfer, where: tt.to_address_hash == ^address_hash), timeout: 5_000)
+
+      total_time = System.monotonic_time(:millisecond) - start_time
+      Logger.error("check_if_token_transfers_at_address: Query completed in #{total_time}ms, result: #{result}")
+      result
     rescue
-      DBConnection.ConnectionError -> false
-      _ -> false
+      DBConnection.ConnectionError ->
+        total_time = System.monotonic_time(:millisecond) - start_time
+        Logger.error("check_if_token_transfers_at_address: Connection error after #{total_time}ms")
+        false
+      error ->
+        total_time = System.monotonic_time(:millisecond) - start_time
+        Logger.error("check_if_token_transfers_at_address: Error after #{total_time}ms: #{inspect(error)}")
+        false
     end
   end
 
   def check_if_tokens_at_address(address_hash, options \\ []) do
+    require Logger
+    start_time = System.monotonic_time(:millisecond)
+
+    # Convert address hash to hex string for safe logging
+    address_hex = case address_hash do
+      %{bytes: bytes} -> "0x" <> Base.encode16(bytes, case: :lower)
+      binary when is_binary(binary) -> "0x" <> Base.encode16(binary, case: :lower)
+      other -> inspect(other)
+    end
+
+    Logger.error("check_if_tokens_at_address: Starting query for address #{address_hex}")
+
     try do
-      select_repo(options).exists?(address_hash_to_token_balances_query(address_hash), timeout: 5_000)
+      result = select_repo(options).exists?(address_hash_to_token_balances_query(address_hash), timeout: 5_000)
+
+      total_time = System.monotonic_time(:millisecond) - start_time
+      Logger.error("check_if_tokens_at_address: Query completed in #{total_time}ms, result: #{result}")
+      result
     rescue
-      DBConnection.ConnectionError -> false
-      _ -> false
+      DBConnection.ConnectionError ->
+        total_time = System.monotonic_time(:millisecond) - start_time
+        Logger.error("check_if_tokens_at_address: Connection error after #{total_time}ms")
+        false
+      error ->
+        total_time = System.monotonic_time(:millisecond) - start_time
+        Logger.error("check_if_tokens_at_address: Error after #{total_time}ms: #{inspect(error)}")
+        false
     end
   end
 
@@ -659,6 +700,9 @@ defmodule Explorer.Chain.Address.Counters do
   @doc """
     Returns max counter value
   """
+  @spec counters_limit :: integer()
+  def counters_limit, do: @counters_limit
+end
   @spec counters_limit :: integer()
   def counters_limit, do: @counters_limit
 end
