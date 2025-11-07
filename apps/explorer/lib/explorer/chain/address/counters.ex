@@ -66,7 +66,6 @@ defmodule Explorer.Chain.Address.Counters do
     # Log the query start
     Logger.error("check_if_logs_at_address: Starting query for address #{address_hex}")
 
-    # Log which repo is being used
     repo = select_repo(options)
     Logger.error("check_if_logs_at_address: Using repo: #{inspect(repo)}")
 
@@ -74,7 +73,17 @@ defmodule Explorer.Chain.Address.Counters do
     Logger.error("check_if_logs_at_address: About to execute exists? query")
     exists_start = System.monotonic_time(:millisecond)
 
-    result = repo.exists?(query)
+    # Add explicit timeout to the query
+    result = try do
+      repo.exists?(query, timeout: 5_000)  # 5 second timeout
+    rescue
+      DBConnection.ConnectionError ->
+        Logger.error("check_if_logs_at_address: Connection error, defaulting to false")
+        false
+      error ->
+        Logger.error("check_if_logs_at_address: Query error: #{inspect(error)}, defaulting to false")
+        false
+    end
 
     exists_time = System.monotonic_time(:millisecond) - exists_start
     total_time = System.monotonic_time(:millisecond) - start_time
