@@ -51,7 +51,36 @@ defmodule Explorer.Chain.Address.Counters do
   end
 
   def check_if_logs_at_address(address_hash, options \\ []) do
-    select_repo(options).exists?(address_hash_to_logs_query(address_hash))
+    require Logger
+    start_time = System.monotonic_time(:millisecond)
+
+    query = address_hash_to_logs_query(address_hash)
+
+    # Log the actual SQL query being executed
+    Logger.error("check_if_logs_at_address: Starting query for address #{address_hash}")
+
+    # Convert query to SQL for logging
+    sql = case Ecto.Adapters.SQL.to_sql(:all, select_repo(options), query) do
+      {sql, params} ->
+        formatted_sql = String.replace(sql, ~r/\$\d+/, fn param_placeholder ->
+          param_index = param_placeholder |> String.slice(1..-1) |> String.to_integer()
+          param_value = Enum.at(params, param_index - 1)
+          "'#{param_value}'"
+        end)
+        Logger.error("check_if_logs_at_address: SQL query: #{formatted_sql}")
+        sql
+      _ ->
+        Logger.error("check_if_logs_at_address: Could not extract SQL")
+        "Unknown SQL"
+    end
+
+    # Execute the exists query and log timing
+    result = select_repo(options).exists?(query)
+
+    total_time = System.monotonic_time(:millisecond) - start_time
+    Logger.error("check_if_logs_at_address: Query completed in #{total_time}ms, result: #{result}")
+
+    result
   end
 
   def check_if_token_transfers_at_address(address_hash, options \\ []) do
