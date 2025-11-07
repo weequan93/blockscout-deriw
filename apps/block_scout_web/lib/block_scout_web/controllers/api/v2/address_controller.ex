@@ -237,6 +237,7 @@ defmodule BlockScoutWeb.API.V2.AddressController do
 
                           # Store ALL queries in render phase for detailed analysis
                           if is_in_render_phase and :ets.whereis(sq_table) != :undefined do
+                            query_source = metadata[:source] || "unknown"
                             :ets.insert(sq_table, {current_count, query_time_ms, metadata.query, elapsed_ms, query_source})
                           end
 
@@ -281,7 +282,7 @@ defmodule BlockScoutWeb.API.V2.AddressController do
             Logger.error("Step 3: Getting proxy implementations...")
             step_start = System.monotonic_time(:millisecond)
 
-            implementations = fully_preloaded_address.proxy_implementations || []
+            _implementations = fully_preloaded_address.proxy_implementations || []
 
             step_time = System.monotonic_time(:millisecond) - step_start
             queries_after_impl = safe_get_query_count_by_name(query_count_name)
@@ -346,7 +347,7 @@ defmodule BlockScoutWeb.API.V2.AddressController do
 
                 # Group queries by pattern to find the worst offenders
                 query_patterns = render_phase_queries
-                |> Enum.map(fn {query_num, time_ms, query, elapsed_ms, source} ->
+                |> Enum.map(fn {query_num, time_ms, query, elapsed_ms, _source} ->
                   # Extract table and operation pattern
                   query_str = to_string(query)
                   pattern = cond do
