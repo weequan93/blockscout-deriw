@@ -1653,9 +1653,9 @@ defmodule BlockScoutWeb.API.V2.AddressController do
               |> Explorer.Repo.preload([:proxy_implementations], timeout: 10_000)
               |> Map.get(:proxy_implementations, [])
               |> Enum.take(10)  # Limit to prevent excessive data
-              
+
             # Then preload implementation_address separately if it exists
-            enhanced_implementations = 
+            enhanced_implementations =
               implementations
               |> Enum.map(fn impl ->
                 if Map.has_key?(impl, :implementation_address_hash) and impl.implementation_address_hash do
