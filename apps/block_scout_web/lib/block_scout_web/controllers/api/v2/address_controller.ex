@@ -87,8 +87,10 @@ defmodule BlockScoutWeb.API.V2.AddressController do
       :token => :optional,
       :signed_authorization => :optional,
       :smart_contract => :optional,
-      # Add comprehensive proxy implementations preloading
-      :proxy_implementations => :optional
+      # Add comprehensive proxy implementations preloading with nested associations
+      [proxy_implementations: [:smart_contract]] => :optional,
+      # Preload contract creation transaction associations
+      [contract_creation_transaction: [:from_address, :to_address, :created_contract_address]] => :optional
     },
     api?: true
   ]
@@ -162,42 +164,74 @@ defmodule BlockScoutWeb.API.V2.AddressController do
     ip = AccessHelper.conn_to_ip_string(conn)
 
     with {:ok, address_hash} <- validate_address_hash(address_hash_string, params) do
-      # Start comprehensive query monitoring
+      # Start comprehensive query monitoring with process-specific handler
       start_time = System.monotonic_time(:millisecond)
-      query_count = :ets.new(:query_counter, [:set, :public])
-      :ets.insert(query_count, {:count, 0})
-      slow_queries = :ets.new(:slow_queries, [:bag, :public])
+      current_pid = self()  # Capture current process PID
 
-      handler_id = "query_monitor_#{System.unique_integer()}"
+      # Create ETS tables with process-specific names to avoid conflicts
+      pid_string = inspect(current_pid)
+      query_count_name = String.to_atom("query_counter_#{pid_string}")
+      slow_queries_name = String.to_atom("slow_queries_#{pid_string}")
+
+      query_count = :ets.new(query_count_name, [:set, :public, :named_table])
+      :ets.insert(query_count, {:count, 0})
+      slow_queries = :ets.new(slow_queries_name, [:bag, :public, :named_table])
+
+      # Use process PID for truly unique handler ID
+      handler_id = "query_monitor_#{pid_string}_#{System.unique_integer()}"
+
+      # Store table references and process info in process dictionary for cleanup
+      Process.put(:query_monitoring_tables, {query_count, slow_queries})
+      Process.put(:query_monitoring_active, true)
+      Process.put(:monitoring_pid, current_pid)
 
       :telemetry.attach(
         handler_id,
         [:explorer, :repo, :query],
         fn _event, measurements, metadata, _config ->
-          # Safe ETS access with error handling
-          try do
-            :ets.update_counter(query_count, :count, 1)
-            [{:count, current_count}] = :ets.lookup(query_count, :count)
+          # ONLY monitor queries from the original address request process
+          query_pid = metadata[:pid] || self()
 
-            query_time_ms = measurements.total_time / 1_000_000
-            elapsed_ms = System.monotonic_time(:millisecond) - start_time
+          if query_pid == current_pid and Process.get(:query_monitoring_active) == true do
+            case Process.get(:query_monitoring_tables) do
+              {qc_table, sq_table} ->
+                try do
+                  # Safely access ETS tables with existence check
+                  case :ets.whereis(qc_table) do
+                    :undefined -> :ok
+                    _ ->
+                      :ets.update_counter(qc_table, :count, 1)
 
-            # Log every 50th query + all slow queries
-            if rem(current_count, 50) == 0 or query_time_ms > 1000 do
-              query_preview = metadata.query |> inspect() |> String.slice(0, 150)
-              Logger.error("Query ##{current_count} at +#{elapsed_ms}ms took #{Float.round(query_time_ms, 2)}ms: #{query_preview}...")
+                      case :ets.lookup(qc_table, :count) do
+                        [{:count, current_count}] ->
+                          query_time_ms = measurements.total_time / 1_000_000
+                          elapsed_ms = System.monotonic_time(:millisecond) - start_time
+
+                          # Log every 10th query + all slow queries for cleaner output
+                          if rem(current_count, 10) == 0 or query_time_ms > 500 do
+                            query_preview = metadata.query
+                                          |> inspect()
+                                          |> String.slice(0, 100)
+                                          |> String.replace(~r/\s+/, " ")  # Clean up whitespace
+                            Logger.error("[ADDRESS-#{current_count}] +#{elapsed_ms}ms (#{Float.round(query_time_ms, 1)}ms): #{query_preview}...")
+                          end
+
+                          # Track slow queries separately (lowered threshold)
+                          if query_time_ms > 500 and :ets.whereis(sq_table) != :undefined do
+                            :ets.insert(sq_table, {current_count, query_time_ms, metadata.query})
+                          end
+
+                        [] -> :ok
+                      end
+                  end
+                rescue
+                  _ -> :ok
+                catch
+                  _ -> :ok
+                end
+
+              _ -> :ok
             end
-
-            # Track slow queries separately
-            if query_time_ms > 1000 do
-              :ets.insert(slow_queries, {current_count, query_time_ms, metadata.query})
-            end
-          rescue
-            # Ignore errors if ETS table was already deleted
-            _ -> :ok
-          catch
-            # Ignore errors if ETS table was already deleted
-            _ -> :ok
           end
         end,
         nil
@@ -210,7 +244,7 @@ defmodule BlockScoutWeb.API.V2.AddressController do
         result = case Chain.hash_to_address(address_hash, @address_options) do
           {:ok, address} ->
             step_time = System.monotonic_time(:millisecond) - step_start
-            queries_after_lookup = safe_get_query_count(query_count)
+            queries_after_lookup = safe_get_query_count_by_name(query_count_name)
             Logger.error("Step 1 completed in #{step_time}ms with #{queries_after_lookup} queries")
 
             Logger.error("Step 2: Preloading smart contract associations...")
@@ -222,7 +256,7 @@ defmodule BlockScoutWeb.API.V2.AddressController do
               |> preload_proxy_implementations_efficiently()
 
             step_time = System.monotonic_time(:millisecond) - step_start
-            queries_after_preload = safe_get_query_count(query_count)
+            queries_after_preload = safe_get_query_count_by_name(query_count_name)
             Logger.error("Step 2 completed in #{step_time}ms with #{queries_after_preload - queries_after_lookup} new queries")
 
             Logger.error("Step 3: Getting proxy implementations...")
@@ -231,7 +265,7 @@ defmodule BlockScoutWeb.API.V2.AddressController do
             implementations = fully_preloaded_address.proxy_implementations || []
 
             step_time = System.monotonic_time(:millisecond) - step_start
-            queries_after_impl = safe_get_query_count(query_count)
+            queries_after_impl = safe_get_query_count_by_name(query_count_name)
             Logger.error("Step 3 completed in #{step_time}ms with #{queries_after_impl - queries_after_preload} new queries")
 
             Logger.error("Step 4: Starting background fetchers...")
@@ -249,41 +283,64 @@ defmodule BlockScoutWeb.API.V2.AddressController do
             end
 
             step_time = System.monotonic_time(:millisecond) - step_start
-            queries_after_ens = safe_get_query_count(query_count)
+            queries_after_ens = safe_get_query_count_by_name(query_count_name)
             Logger.error("Step 5 completed in #{step_time}ms with #{queries_after_ens - queries_after_impl} new queries")
 
             Logger.error("Step 6: Starting view rendering...")
             step_start = System.monotonic_time(:millisecond)
 
-            render_result = conn
-            |> put_status(200)
-            |> render(:address, %{address: final_address})
+            # Add timeout to view rendering to prevent infinite query loops
+            render_task = Task.async(fn ->
+              # Inherit monitoring context for the render task
+              Process.put(:query_monitoring_active, true)
+              Process.put(:monitoring_pid, current_pid)
+              Process.put(:query_monitoring_tables, {query_count, slow_queries})
+
+              conn
+              |> put_status(200)
+              |> render(:address, %{address: final_address})
+            end)
+
+            render_result = case Task.yield(render_task, 15_000) do
+              {:ok, result} -> result
+              nil ->
+                Task.shutdown(render_task)
+                Logger.error("View rendering timed out after 15 seconds")
+
+                # Return minimal JSON response to avoid timeout
+                conn
+                |> put_status(200)
+                |> json(%{
+                  hash: to_string(address_hash),
+                  fetched_coin_balance: "0",
+                  is_contract: !is_nil(final_address.smart_contract),
+                  message: "Full address data unavailable due to timeout"
+                })
+            end
 
             step_time = System.monotonic_time(:millisecond) - step_start
-            total_queries = safe_get_query_count(query_count)
+            total_queries = safe_get_query_count_by_name(query_count_name)
             queries_during_render = total_queries - queries_after_ens
             Logger.error("Step 6 completed in #{step_time}ms with #{queries_during_render} new queries")
 
-            # Summary
+            # Summary - more concise
             total_time = System.monotonic_time(:millisecond) - start_time
             Logger.error("=== SUMMARY for #{address_hash_string} ===")
-            Logger.error("Total time: #{total_time}ms")
-            Logger.error("Total queries: #{total_queries}")
-            Logger.error("Queries breakdown:")
-            Logger.error("- Initial lookup: #{queries_after_lookup}")
-            Logger.error("- Smart contract preload: #{queries_after_preload - queries_after_lookup}")
-            Logger.error("- Proxy implementations: #{queries_after_impl - queries_after_preload}")
-            Logger.error("- ENS preloading: #{queries_after_ens - queries_after_impl}")
-            Logger.error("- View rendering: #{queries_during_render}")
+            Logger.error("Total: #{total_time}ms, #{total_queries} queries")
+            Logger.error("Breakdown: lookup(#{queries_after_lookup}) + preload(#{queries_after_preload - queries_after_lookup}) + impl(#{queries_after_impl - queries_after_preload}) + ens(#{queries_after_ens - queries_after_impl}) + render(#{queries_during_render})")
 
-            # Log slow queries
-            slow_query_list = safe_get_slow_queries(slow_queries)
+            # Log slow queries - only if any exist
+            slow_query_list = safe_get_slow_queries_by_name(slow_queries_name)
             if length(slow_query_list) > 0 do
-              Logger.error("=== SLOW QUERIES (>1000ms) ===")
-              Enum.each(slow_query_list, fn {query_num, time_ms, query} ->
-                query_preview = query |> inspect() |> String.slice(0, 200)
-                Logger.error("Query ##{query_num}: #{Float.round(time_ms, 2)}ms - #{query_preview}...")
+              Logger.error("=== #{length(slow_query_list)} SLOW QUERIES (>500ms) ===")
+              Enum.take(slow_query_list, 5)  # Only show first 5 slow queries
+              |> Enum.each(fn {query_num, time_ms, query} ->
+                query_preview = query |> inspect() |> String.slice(0, 150) |> String.replace(~r/\s+/, " ")
+                Logger.error("Slow ##{query_num}: #{Float.round(time_ms, 1)}ms - #{query_preview}...")
               end)
+              if length(slow_query_list) > 5 do
+                Logger.error("... and #{length(slow_query_list) - 5} more slow queries")
+              end
             end
 
             render_result
@@ -310,13 +367,24 @@ defmodule BlockScoutWeb.API.V2.AddressController do
 
         result
       after
-        # Detach telemetry first to prevent further ETS access
-        :telemetry.detach(handler_id)
-        # Small delay to ensure telemetry handlers finish
-        Process.sleep(10)
-        # Then clean up ETS tables
-        safe_delete_ets(query_count)
-        safe_delete_ets(slow_queries)
+        # Disable monitoring first
+        Process.put(:query_monitoring_active, false)
+
+        # Detach telemetry handler
+        try do
+          :telemetry.detach(handler_id)
+        catch
+          _ -> :ok
+        end
+
+        # Clean up ETS tables
+        safe_delete_ets_by_name(query_count_name)
+        safe_delete_ets_by_name(slow_queries_name)
+
+        # Clean up process dictionary
+        Process.delete(:query_monitoring_tables)
+        Process.delete(:query_monitoring_active)
+        Process.delete(:monitoring_pid)
       end
     end
   end
@@ -1578,19 +1646,33 @@ defmodule BlockScoutWeb.API.V2.AddressController do
       case address.smart_contract do
         nil -> %{address | proxy_implementations: []}
         _smart_contract ->
-          # Use the optimized function but limit the result size
-          implementations = SmartContractHelper.pre_fetch_implementations(address)
-          %{address | proxy_implementations: Enum.take(implementations || [], 10)}
+          # Preload with nested associations to prevent N+1 queries
+          implementations =
+            address
+            |> Explorer.Repo.preload([
+              proxy_implementations: [
+                :smart_contract,
+                implementation_address: [:names, :scam_badge, :smart_contract]
+              ]
+            ], timeout: 10_000)
+            |> Map.get(:proxy_implementations, [])
+            |> Enum.take(10)  # Limit to prevent excessive data
+
+          %{address | proxy_implementations: implementations}
       end
     end
   end
 
-  # Helper functions for safe ETS access
-  defp safe_get_query_count(query_count) do
+  # Helper functions for safe ETS access by table name
+  defp safe_get_query_count_by_name(table_name) do
     try do
-      case :ets.lookup(query_count, :count) do
-        [{:count, count}] -> count
-        [] -> 0
+      case :ets.whereis(table_name) do
+        :undefined -> 0
+        _tid ->
+          case :ets.lookup(table_name, :count) do
+            [{:count, count}] -> count
+            [] -> 0
+          end
       end
     rescue
       _ -> 0
@@ -1599,9 +1681,12 @@ defmodule BlockScoutWeb.API.V2.AddressController do
     end
   end
 
-  defp safe_get_slow_queries(slow_queries) do
+  defp safe_get_slow_queries_by_name(table_name) do
     try do
-      :ets.tab2list(slow_queries)
+      case :ets.whereis(table_name) do
+        :undefined -> []
+        _tid -> :ets.tab2list(table_name)
+      end
     rescue
       _ -> []
     catch
@@ -1609,9 +1694,12 @@ defmodule BlockScoutWeb.API.V2.AddressController do
     end
   end
 
-  defp safe_delete_ets(table) do
+  defp safe_delete_ets_by_name(table_name) do
     try do
-      :ets.delete(table)
+      case :ets.whereis(table_name) do
+        :undefined -> :ok
+        tid -> :ets.delete(tid)
+      end
     rescue
       _ -> :ok
     catch
