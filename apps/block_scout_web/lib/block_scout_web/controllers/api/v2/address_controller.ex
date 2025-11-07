@@ -154,28 +154,80 @@ defmodule BlockScoutWeb.API.V2.AddressController do
   """
   @spec address(Plug.Conn.t(), map()) :: {:format, :error} | {:restricted_access, true} | Plug.Conn.t()
   def address(conn, %{address_hash_param: address_hash_string} = params) do
+    require Logger
+    start_time = System.monotonic_time(:millisecond)
+    Logger.error("=== ADDRESS ENDPOINT START: #{address_hash_string} ===")
+
     ip = AccessHelper.conn_to_ip_string(conn)
 
     with {:ok, address_hash} <- validate_address_hash(address_hash_string, params) do
+      Logger.error("CHECKPOINT 1: Address validation completed - #{System.monotonic_time(:millisecond) - start_time}ms")
+
       case Chain.hash_to_address(address_hash, @address_options) do
         {:ok, address} ->
+          Logger.error("CHECKPOINT 2: Chain.hash_to_address completed - #{System.monotonic_time(:millisecond) - start_time}ms")
+
+          # Step 1: Start with a single Address struct from the database
+          # address = %Address{hash: "0x123...", names: [], smart_contract: nil, ...}
+
+          # Step 2: Preload smart contract associations into that same Address struct
+          Logger.error("CHECKPOINT 3: Starting Address.maybe_preload_smart_contract_associations - #{System.monotonic_time(:millisecond) - start_time}ms")
+
           fully_preloaded_address =
             Address.maybe_preload_smart_contract_associations(address, contract_address_preloads(), @api_true)
 
+          Logger.error("CHECKPOINT 4: Address.maybe_preload_smart_contract_associations completed - #{System.monotonic_time(:millisecond) - start_time}ms")
+
+          # Now: fully_preloaded_address = %Address{
+          #   hash: "0x123...",
+          #   names: [...],
+          #   smart_contract: %SmartContract{...},
+          #   contract_creation_transaction: %Transaction{...},
+          #   ...
+          # }
+
+          # Step 3: Get proxy implementations using helper
+          Logger.error("CHECKPOINT 5: Starting SmartContractHelper.pre_fetch_implementations - #{System.monotonic_time(:millisecond) - start_time}ms")
+
           implementations = SmartContractHelper.pre_fetch_implementations(fully_preloaded_address)
+
+          Logger.error("CHECKPOINT 6: SmartContractHelper.pre_fetch_implementations completed - #{System.monotonic_time(:millisecond) - start_time}ms")
+
+          # Step 4: Start background fetchers
+          Logger.error("CHECKPOINT 7: Starting background fetchers - #{System.monotonic_time(:millisecond) - start_time}ms")
 
           CoinBalanceOnDemand.trigger_fetch(ip, address)
           ContractCodeOnDemand.trigger_fetch(ip, fully_preloaded_address)
 
-          conn
+          Logger.error("CHECKPOINT 8: Background fetchers started - #{System.monotonic_time(:millisecond) - start_time}ms")
+
+          # Step 5: Render the response
+          Logger.error("CHECKPOINT 9: Starting address struct preparation - #{System.monotonic_time(:millisecond) - start_time}ms")
+
+          final_address = %Address{fully_preloaded_address | proxy_implementations: implementations}
+
+          Logger.error("CHECKPOINT 10: Starting maybe_preload_ens_to_address - #{System.monotonic_time(:millisecond) - start_time}ms")
+
+          ens_preloaded_address = maybe_preload_ens_to_address(final_address)
+
+          Logger.error("CHECKPOINT 11: maybe_preload_ens_to_address completed - #{System.monotonic_time(:millisecond) - start_time}ms")
+
+          Logger.error("CHECKPOINT 12: Starting render - #{System.monotonic_time(:millisecond) - start_time}ms")
+
+          result = conn
           |> put_status(200)
-          |> render(:address, %{
-            address:
-              %Address{fully_preloaded_address | proxy_implementations: implementations}
-              |> maybe_preload_ens_to_address()
-          })
+          |> render(:address, %{address: ens_preloaded_address})
+
+          total_time = System.monotonic_time(:millisecond) - start_time
+          Logger.error("CHECKPOINT 13: Render completed - Total time: #{total_time}ms")
+          Logger.error("=== ADDRESS ENDPOINT SUCCESS: #{address_hash_string} in #{total_time}ms ===")
+
+          result
 
         _ ->
+          Logger.error("CHECKPOINT 2b: Address not found, creating new address struct - #{System.monotonic_time(:millisecond) - start_time}ms")
+
+          # Handle address not found
           address =
             %Address{
               hash: address_hash,
@@ -185,15 +237,33 @@ defmodule BlockScoutWeb.API.V2.AddressController do
               signed_authorization: nil,
               smart_contract: nil
             }
-            |> maybe_preload_ens_to_address()
+
+          Logger.error("CHECKPOINT 3b: Starting ENS preload for new address - #{System.monotonic_time(:millisecond) - start_time}ms")
+
+          ens_address = maybe_preload_ens_to_address(address)
+
+          Logger.error("CHECKPOINT 4b: ENS preload completed for new address - #{System.monotonic_time(:millisecond) - start_time}ms")
 
           CoinBalanceOnDemand.trigger_fetch(ip, address)
           ContractCodeOnDemand.trigger_fetch(ip, address)
 
-          conn
+          Logger.error("CHECKPOINT 5b: Starting render for new address - #{System.monotonic_time(:millisecond) - start_time}ms")
+
+          result = conn
           |> put_status(200)
-          |> render(:address, %{address: address})
+          |> render(:address, %{address: ens_address})
+
+          total_time = System.monotonic_time(:millisecond) - start_time
+          Logger.error("CHECKPOINT 6b: Render completed for new address - Total time: #{total_time}ms")
+          Logger.error("=== ADDRESS ENDPOINT SUCCESS (NOT FOUND): #{address_hash_string} in #{total_time}ms ===")
+
+          result
       end
+    else
+      error ->
+        total_time = System.monotonic_time(:millisecond) - start_time
+        Logger.error("=== ADDRESS ENDPOINT ERROR: #{address_hash_string} - #{inspect(error)} in #{total_time}ms ===")
+        error
     end
   end
 
