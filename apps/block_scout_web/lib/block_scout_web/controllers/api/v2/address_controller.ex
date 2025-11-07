@@ -298,6 +298,11 @@ defmodule BlockScoutWeb.API.V2.AddressController do
           |> put_status(200)
           |> render(:address, %{address: address})
       end
+      after
+        :telemetry.detach(handler_id)
+        :ets.delete(query_count)
+        :ets.delete(slow_queries)
+      end
     end
   end
 
