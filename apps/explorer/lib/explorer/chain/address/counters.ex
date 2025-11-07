@@ -85,17 +85,34 @@ defmodule Explorer.Chain.Address.Counters do
 
       # Use direct SQL query since it works fast manually
       Logger.error("check_if_logs_at_address: About to execute direct EXISTS query")
+
+      # Log the exact query and parameters being sent
+      sql_query = "SELECT EXISTS(SELECT 1 FROM logs WHERE address_hash = $1)"
+      Logger.error("check_if_logs_at_address: SQL query: #{sql_query}")
+      Logger.error("check_if_logs_at_address: Parameter 1 (binary): #{inspect(address_bytes, limit: :infinity)}")
+      Logger.error("check_if_logs_at_address: Parameter 1 (hex): #{Base.encode16(address_bytes, case: :lower)}")
+      Logger.error("check_if_logs_at_address: Parameter 1 (length): #{byte_size(address_bytes)} bytes")
+
+      # Test if the address_bytes is valid
+      if byte_size(address_bytes) != 20 do
+        Logger.error("check_if_logs_at_address: ERROR - Address hash should be 20 bytes, got #{byte_size(address_bytes)}")
+      end
+
       exists_start = System.monotonic_time(:millisecond)
 
       result = try do
-        case repo.query("SELECT EXISTS(SELECT 1 FROM logs WHERE address_hash = $1)", [address_bytes], timeout: 5_000) do
-          {:ok, %{rows: [[true]]}} -> true
-          {:ok, %{rows: [[false]]}} -> false
+        case repo.query(sql_query, [address_bytes], timeout: 5_000) do
+          {:ok, %{rows: [[true]]}} ->
+            Logger.error("check_if_logs_at_address: Query returned TRUE")
+            true
+          {:ok, %{rows: [[false]]}} ->
+            Logger.error("check_if_logs_at_address: Query returned FALSE")
+            false
           {:ok, other} ->
-            Logger.error("check_if_logs_at_address: Unexpected result: #{inspect(other)}")
+            Logger.error("check_if_logs_at_address: Unexpected result structure: #{inspect(other)}")
             false
           {:error, error} ->
-            Logger.error("check_if_logs_at_address: Query error: #{inspect(error)}")
+            Logger.error("check_if_logs_at_address: Query returned error: #{inspect(error)}")
             false
         end
       rescue
