@@ -85,17 +85,17 @@ defmodule Explorer.Chain.Address.Counters do
 
       # Use LIMIT 1 instead of EXISTS for better performance on huge tables
       Logger.error("check_if_logs_at_address: About to execute SELECT with LIMIT 1")
-      
+
       exists_start = System.monotonic_time(:millisecond)
 
       result = try do
         # Use SELECT 1 FROM logs WHERE address_hash = $1 LIMIT 1
         # This will return immediately when it finds the first matching row
         case repo.query("SELECT 1 FROM logs WHERE address_hash = $1 LIMIT 1", [address_bytes], timeout: 3_000) do
-          {:ok, %{rows: []}} -> 
+          {:ok, %{rows: []}} ->
             Logger.error("check_if_logs_at_address: No rows found - FALSE")
             false
-          {:ok, %{rows: [[1]]}} -> 
+          {:ok, %{rows: [[1]]}} ->
             Logger.error("check_if_logs_at_address: Found row - TRUE")
             true
           {:ok, other} ->
