@@ -703,6 +703,3 @@ defmodule Explorer.Chain.Address.Counters do
   @spec counters_limit :: integer()
   def counters_limit, do: @counters_limit
 end
-  @spec counters_limit :: integer()
-  def counters_limit, do: @counters_limit
-end
