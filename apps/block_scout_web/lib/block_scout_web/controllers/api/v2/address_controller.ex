@@ -231,9 +231,69 @@ defmodule BlockScoutWeb.API.V2.AddressController do
 
           Logger.error("CHECKPOINT 12: Starting render - #{System.monotonic_time(:millisecond) - start_time}ms")
 
-          result = conn
-          |> put_status(200)
-          |> render(:address, %{address: ens_preloaded_address})
+          # Log the address data structure before rendering to see what's being passed to the view
+          Logger.error("CHECKPOINT 12a: Address struct info - smart_contract: #{!is_nil(ens_preloaded_address.smart_contract)}, proxy_implementations: #{inspect(safe_implementations)}, names: #{length(ens_preloaded_address.names || [])}")
+
+          # Try to isolate the render issue with timeout
+          render_start = System.monotonic_time(:millisecond)
+
+          result = try do
+            Logger.error("CHECKPOINT 12b: About to call Phoenix.Controller.render - #{System.monotonic_time(:millisecond) - start_time}ms")
+
+            # Use Task.async with timeout to catch hanging renders
+            render_task = Task.async(fn ->
+              conn
+              |> put_status(200)
+              |> render(:address, %{address: ens_preloaded_address})
+            end)
+
+            case Task.yield(render_task, 10_000) do  # 10 second timeout
+              {:ok, result} ->
+                Logger.error("CHECKPOINT 12c: Phoenix.Controller.render completed - #{System.monotonic_time(:millisecond) - start_time}ms")
+                result
+
+              nil ->
+                # Render timed out
+                Task.shutdown(render_task, :brutal_kill)
+                render_time = System.monotonic_time(:millisecond) - render_start
+                Logger.error("CHECKPOINT 12c: Render TIMEOUT after #{render_time}ms - returning minimal JSON")
+
+                # Return a minimal JSON response instead of using the view
+                conn
+                |> put_status(200)
+                |> put_resp_content_type("application/json")
+                |> json(%{
+                  hash: to_string(ens_preloaded_address.hash),
+                  is_contract: !is_nil(ens_preloaded_address.smart_contract),
+                  coin_balance: ens_preloaded_address.fetched_coin_balance,
+                  name: case ens_preloaded_address.names do
+                    [] -> nil
+                    [first | _] -> first.name
+                    _ -> nil
+                  end,
+                  proxy_type: case safe_implementations do
+                    nil -> nil
+                    [] -> nil
+                    [first | _] when is_map(first) -> Map.get(first, :proxy_type)
+                    _ -> nil
+                  end,
+                  implementation_name: case ens_preloaded_address.smart_contract do
+                    nil -> nil
+                    sc -> sc.name
+                  end,
+                  message: "Rendered with timeout bypass due to view performance issues"
+                })
+            end
+          rescue
+            error ->
+              Logger.error("CHECKPOINT 12c: Render ERROR: #{inspect(error)}")
+              Logger.error("CHECKPOINT 12c: Error stacktrace: #{inspect(__STACKTRACE__)}")
+
+              # Return error response
+              conn
+              |> put_status(500)
+              |> json(%{error: "Internal server error during rendering", message: inspect(error)})
+          end
 
           total_time = System.monotonic_time(:millisecond) - start_time
           Logger.error("CHECKPOINT 13: Render completed - Total time: #{total_time}ms")
