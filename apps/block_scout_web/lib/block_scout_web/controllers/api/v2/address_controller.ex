@@ -87,8 +87,8 @@ defmodule BlockScoutWeb.API.V2.AddressController do
       :token => :optional,
       :signed_authorization => :optional,
       :smart_contract => :optional,
-      # Add comprehensive proxy implementations preloading with nested associations
-      [proxy_implementations: [:smart_contract]] => :optional,
+      # Add comprehensive proxy implementations preloading - remove invalid nested associations
+      :proxy_implementations => :optional,
       # Preload contract creation transaction associations
       [contract_creation_transaction: [:from_address, :to_address, :created_contract_address]] => :optional
     },
@@ -1646,19 +1646,36 @@ defmodule BlockScoutWeb.API.V2.AddressController do
       case address.smart_contract do
         nil -> %{address | proxy_implementations: []}
         _smart_contract ->
-          # Preload with nested associations to prevent N+1 queries
-          implementations =
-            address
-            |> Explorer.Repo.preload([
-              proxy_implementations: [
-                :smart_contract,
-                implementation_address: [:names, :scam_badge, :smart_contract]
-              ]
-            ], timeout: 10_000)
-            |> Map.get(:proxy_implementations, [])
-            |> Enum.take(10)  # Limit to prevent excessive data
+          try do
+            # First, get the basic proxy implementations without nested preloading
+            implementations =
+              address
+              |> Explorer.Repo.preload([:proxy_implementations], timeout: 10_000)
+              |> Map.get(:proxy_implementations, [])
+              |> Enum.take(10)  # Limit to prevent excessive data
+              
+            # Then preload implementation_address separately if it exists
+            enhanced_implementations = 
+              implementations
+              |> Enum.map(fn impl ->
+                if Map.has_key?(impl, :implementation_address_hash) and impl.implementation_address_hash do
+                  try do
+                    # Only preload implementation_address with basic associations
+                    Explorer.Repo.preload(impl, [implementation_address: [:names, :scam_badge]], timeout: 5_000)
+                  rescue
+                    _ -> impl  # Return original if preload fails
+                  end
+                else
+                  impl
+                end
+              end)
 
-          %{address | proxy_implementations: implementations}
+            %{address | proxy_implementations: enhanced_implementations}
+          rescue
+            error ->
+              Logger.error("Error preloading proxy implementations: #{inspect(error)}")
+              %{address | proxy_implementations: []}
+          end
       end
     end
   end
