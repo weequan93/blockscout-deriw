@@ -859,6 +859,24 @@ defmodule BlockScoutWeb.API.V2.AddressController do
       ok:
         {"Historical coin balance changes for the specified address, with pagination.", "application/json",
          paginated_response(
+           items: Schemas.CoinBalance,
+           next_page_params_example: %{
+             "block_number" => 22_546_398,
+             "items_count" => 50
+           },
+           title_prefix: "AddressCoinBalanceHistory"
+         )},
+      unprocessable_entity: JsonErrorResponse.response(),
+      forbidden: ForbiddenResponse.response()
+    ]
+
+  @doc """
+  Handles GET requests to `/api/v2/addresses/:address_hash_param/coin-balance-history` endpoint (retrieves coin balance history for given address)
+
+  ## Parameters
+
+    - conn: The connection struct.
+    - params: A map containing the parameters for the request.
 
   ## Returns
 
@@ -1564,6 +1582,40 @@ defmodule BlockScoutWeb.API.V2.AddressController do
           implementations = SmartContractHelper.pre_fetch_implementations(address)
           %{address | proxy_implementations: Enum.take(implementations || [], 10)}
       end
+    end
+  end
+
+  # Helper functions for safe ETS access
+  defp safe_get_query_count(query_count) do
+    try do
+      case :ets.lookup(query_count, :count) do
+        [{:count, count}] -> count
+        [] -> 0
+      end
+    rescue
+      _ -> 0
+    catch
+      _ -> 0
+    end
+  end
+
+  defp safe_get_slow_queries(slow_queries) do
+    try do
+      :ets.tab2list(slow_queries)
+    rescue
+      _ -> []
+    catch
+      _ -> []
+    end
+  end
+
+  defp safe_delete_ets(table) do
+    try do
+      :ets.delete(table)
+    rescue
+      _ -> :ok
+    catch
+      _ -> :ok
     end
   end
 end
