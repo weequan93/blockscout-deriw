@@ -59,8 +59,6 @@ defmodule Explorer.Chain.Address.Counters do
     require Logger
     start_time = System.monotonic_time(:millisecond)
 
-    query = address_hash_to_logs_query(address_hash)
-
     # Convert address hash to hex string for safe logging
     address_hex = case address_hash do
       %{bytes: bytes} -> "0x" <> Base.encode16(bytes, case: :lower)
@@ -74,92 +72,35 @@ defmodule Explorer.Chain.Address.Counters do
     repo = select_repo(options)
     Logger.error("check_if_logs_at_address: Using repo: #{inspect(repo)}")
 
-    # Check if we're in a transaction
-    try do
-      in_transaction = repo.in_transaction?()
-      Logger.error("check_if_logs_at_address: In transaction: #{in_transaction}")
-    rescue
-      _ ->
-        Logger.error("check_if_logs_at_address: Could not check transaction status")
-    end
+    # Instead of using Ecto's exists?, use a direct SQL query that matches what you tested
+    Logger.error("check_if_logs_at_address: About to execute direct EXISTS query")
+    exists_start = System.monotonic_time(:millisecond)
 
-    # Try to get connection pool info
-    try do
-      config = repo.config()
-      pool_size = Keyword.get(config, :pool_size, "unknown")
-      queue_target = Keyword.get(config, :queue_target, "unknown")
-      Logger.error("check_if_logs_at_address: Pool config - size: #{pool_size}, queue_target: #{queue_target}")
-    rescue
-      error ->
-        Logger.error("check_if_logs_at_address: Could not get pool config: #{inspect(error)}")
-    end
-
-    # Log the actual SQL query being executed
-    try do
-      case Ecto.Adapters.SQL.to_sql(:all, repo, query) do
-        {sql, params} ->
-          # Replace parameter placeholders with actual values for readability
-          formatted_sql = Enum.with_index(params, 1)
-          |> Enum.reduce(sql, fn {param, index}, acc_sql ->
-            param_str = case param do
-              binary when is_binary(binary) -> "\\x#{Base.encode16(binary, case: :lower)}"
-              other -> "'#{other}'"
-            end
-            String.replace(acc_sql, "$#{index}", param_str)
-          end)
-          Logger.error("check_if_logs_at_address: SQL query: #{formatted_sql}")
-        _ ->
-          Logger.error("check_if_logs_at_address: Could not extract SQL")
+    result = try do
+      # Use the exact same query structure you tested manually
+      case repo.query("SELECT EXISTS(SELECT 1 FROM logs WHERE address_hash = $1)", [address_hash], timeout: 5_000) do
+        {:ok, %{rows: [[true]]}} -> true
+        {:ok, %{rows: [[false]]}} -> false
+        {:ok, other} ->
+          Logger.error("check_if_logs_at_address: Unexpected result: #{inspect(other)}")
+          false
+        {:error, error} ->
+          Logger.error("check_if_logs_at_address: Query error: #{inspect(error)}")
+          false
       end
     rescue
+      DBConnection.ConnectionError ->
+        Logger.error("check_if_logs_at_address: Connection error, defaulting to false")
+        false
       error ->
-        Logger.error("check_if_logs_at_address: Error extracting SQL: #{inspect(error)}")
-    end
-
-    # Try a simple test query first to see if connection is working
-    Logger.error("check_if_logs_at_address: Testing basic connection with simple query")
-    test_start = System.monotonic_time(:millisecond)
-
-    test_result = try do
-      repo.query!("SELECT 1", [], timeout: 1_000)
-      test_time = System.monotonic_time(:millisecond) - test_start
-      Logger.error("check_if_logs_at_address: Simple test query took #{test_time}ms - connection OK")
-      :ok
-    rescue
-      error ->
-        test_time = System.monotonic_time(:millisecond) - test_start
-        Logger.error("check_if_logs_at_address: Simple test query failed after #{test_time}ms: #{inspect(error)}")
-        :error
-    end
-
-    # Only proceed with exists query if basic connection works
-    result = case test_result do
-      :ok ->
-        # Log before attempting to execute query
-        Logger.error("check_if_logs_at_address: About to execute exists? query")
-        exists_start = System.monotonic_time(:millisecond)
-
-        # Add explicit timeout to the query
-        try do
-          repo.exists?(query, timeout: 5_000)  # 5 second timeout
-        rescue
-          DBConnection.ConnectionError ->
-            Logger.error("check_if_logs_at_address: Connection error, defaulting to false")
-            false
-          error ->
-            Logger.error("check_if_logs_at_address: Query error: #{inspect(error)}, defaulting to false")
-            false
-        end
-
-      :error ->
-        Logger.error("check_if_logs_at_address: Skipping exists query due to connection issues")
+        Logger.error("check_if_logs_at_address: Query error: #{inspect(error)}, defaulting to false")
         false
     end
 
-    exists_time = System.monotonic_time(:millisecond) - start_time
+    exists_time = System.monotonic_time(:millisecond) - exists_start
     total_time = System.monotonic_time(:millisecond) - start_time
 
-    Logger.error("check_if_logs_at_address: exists? took #{exists_time}ms, total #{total_time}ms, result: #{result}")
+    Logger.error("check_if_logs_at_address: EXISTS query took #{exists_time}ms, total #{total_time}ms, result: #{result}")
 
     result
   end
