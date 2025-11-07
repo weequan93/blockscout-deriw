@@ -87,10 +87,8 @@ defmodule BlockScoutWeb.API.V2.AddressController do
       :token => :optional,
       :signed_authorization => :optional,
       :smart_contract => :optional,
-      # Add comprehensive proxy implementations preloading - remove invalid nested associations
-      :proxy_implementations => :optional,
-      # Preload contract creation transaction associations
-      [contract_creation_transaction: [:from_address, :to_address, :created_contract_address]] => :optional
+      # Add comprehensive proxy implementations preloading
+      :proxy_implementations => :optional
     },
     api?: true
   ]
@@ -164,94 +162,33 @@ defmodule BlockScoutWeb.API.V2.AddressController do
     ip = AccessHelper.conn_to_ip_string(conn)
 
     with {:ok, address_hash} <- validate_address_hash(address_hash_string, params) do
-      # Start comprehensive query monitoring with process-specific handler
+      # Start comprehensive query monitoring
       start_time = System.monotonic_time(:millisecond)
-      current_pid = self()  # Capture current process PID
-
-      # Create ETS tables with process-specific names to avoid conflicts
-      pid_string = inspect(current_pid)
-      query_count_name = String.to_atom("query_counter_#{pid_string}")
-      slow_queries_name = String.to_atom("slow_queries_#{pid_string}")
-
-      query_count = :ets.new(query_count_name, [:set, :public, :named_table])
+      query_count = :ets.new(:query_counter, [:set, :public])
       :ets.insert(query_count, {:count, 0})
-      slow_queries = :ets.new(slow_queries_name, [:bag, :public, :named_table])
+      slow_queries = :ets.new(:slow_queries, [:bag, :public])
 
-      # Use process PID for truly unique handler ID
-      handler_id = "query_monitor_#{pid_string}_#{System.unique_integer()}"
-
-      # Store table references and process info in process dictionary for cleanup
-      Process.put(:query_monitoring_tables, {query_count, slow_queries})
-      Process.put(:query_monitoring_active, true)
-      Process.put(:monitoring_pid, current_pid)
+      handler_id = "query_monitor_#{System.unique_integer()}"
 
       :telemetry.attach(
         handler_id,
         [:explorer, :repo, :query],
         fn _event, measurements, metadata, _config ->
-          # ONLY monitor queries from the original address request process
-          query_pid = metadata[:pid] || self()
+          :ets.update_counter(query_count, :count, 1)
+          [{:count, current_count}] = :ets.lookup(query_count, :count)
 
-          if query_pid == current_pid and Process.get(:query_monitoring_active) == true do
-            case Process.get(:query_monitoring_tables) do
-              {qc_table, sq_table} ->
-                try do
-                  # Safely access ETS tables with existence check
-                  case :ets.whereis(qc_table) do
-                    :undefined -> :ok
-                    _ ->
-                      :ets.update_counter(qc_table, :count, 1)
+          query_time_ms = measurements.total_time / 1_000_000
+          elapsed_ms = System.monotonic_time(:millisecond) - start_time
 
-                      case :ets.lookup(qc_table, :count) do
-                        [{:count, current_count}] ->
-                          query_time_ms = measurements.total_time / 1_000_000
-                          elapsed_ms = System.monotonic_time(:millisecond) - start_time
+          # Log every 50th query + all slow queries
+          if rem(current_count, 50) == 0 or query_time_ms > 1000 do
+            query_preview = metadata.query |> inspect() |> String.slice(0, 150)
+            Logger.error("Query ##{current_count} at +#{elapsed_ms}ms took #{Float.round(query_time_ms, 2)}ms: #{query_preview}...")
+          end
 
-                          # Log ALL queries during render phase (after query 100) and slow queries
-                          is_in_render_phase = current_count > 100
-                          is_slow = query_time_ms > 100  # Lowered threshold to catch more
-
-                          if is_in_render_phase or is_slow or rem(current_count, 25) == 0 do
-                            # Get more detail about the query
-                            query_source = metadata[:source] || "unknown"
-                            query_full = metadata.query |> to_string()
-
-                            # Extract table names from the query
-                            table_pattern = ~r/FROM\s+"?(\w+)"?/i
-                            tables = Regex.scan(table_pattern, query_full) |> Enum.map(fn [_, table] -> table end)
-
-                            query_preview = query_full
-                                          |> String.replace(~r/\s+/, " ")
-                                          |> String.slice(0, 200)
-
-                            phase = cond do
-                              current_count <= 20 -> "LOOKUP"
-                              current_count <= 50 -> "PRELOAD"
-                              current_count <= 80 -> "PROXY"
-                              current_count <= 100 -> "ENS"
-                              true -> "RENDER"
-                            end
-
-                            Logger.error("[#{phase}-#{current_count}] +#{elapsed_ms}ms (#{Float.round(query_time_ms, 1)}ms) Tables: #{inspect(tables)} | #{query_preview}...")
-                          end
-
-                          # Store ALL queries in render phase for detailed analysis
-                          if is_in_render_phase and :ets.whereis(sq_table) != :undefined do
-                            query_source = metadata[:source] || "unknown"
-                            :ets.insert(sq_table, {current_count, query_time_ms, metadata.query, elapsed_ms, query_source})
-                          end
-
-                        [] -> :ok
-                      end
-                  end
-                rescue
-                  _ -> :ok
-                catch
-                  _ -> :ok
-                end
-
-              _ -> :ok
-            end
+          # Track slow queries separately
+          if query_time_ms > 1000 do
+            :ets.insert(slow_queries, {current_count, query_time_ms, metadata.query})
           end
         end,
         nil
@@ -261,53 +198,31 @@ defmodule BlockScoutWeb.API.V2.AddressController do
         Logger.error("Step 1: Looking up address in database...")
         step_start = System.monotonic_time(:millisecond)
 
-        result = case Chain.hash_to_address(address_hash, @address_options) do
+        case Chain.hash_to_address(address_hash, @address_options) do
           {:ok, address} ->
             step_time = System.monotonic_time(:millisecond) - step_start
-            queries_after_lookup = safe_get_query_count_by_name(query_count_name)
+            [{:count, queries_after_lookup}] = :ets.lookup(query_count, :count)
             Logger.error("Step 1 completed in #{step_time}ms with #{queries_after_lookup} queries")
 
             Logger.error("Step 2: Preloading smart contract associations...")
             step_start = System.monotonic_time(:millisecond)
 
-            fully_preloaded_address = try do
-              Logger.error("Step 2a: Starting Address.maybe_preload_smart_contract_associations...")
-              preload_result = Address.maybe_preload_smart_contract_associations(address, contract_address_preloads(), @api_true)
-              Logger.error("Step 2a: Completed Address.maybe_preload_smart_contract_associations")
-
-              Logger.error("Step 2b: Starting preload_proxy_implementations_efficiently...")
-              final_result = preload_proxy_implementations_efficiently(preload_result)
-              Logger.error("Step 2b: Completed preload_proxy_implementations_efficiently")
-
-              final_result
-            rescue
-              error ->
-                Logger.error("ERROR in Step 2: #{inspect(error)}")
-                Logger.error("ERROR stacktrace: #{inspect(__STACKTRACE__)}")
-
-                # Return the original address with minimal processing to continue
-                %{address | proxy_implementations: []}
-            catch
-              :exit, reason ->
-                Logger.error("EXIT in Step 2: #{inspect(reason)}")
-                %{address | proxy_implementations: []}
-
-              :throw, value ->
-                Logger.error("THROW in Step 2: #{inspect(value)}")
-                %{address | proxy_implementations: []}
-            end
+            fully_preloaded_address =
+              address
+              |> Address.maybe_preload_smart_contract_associations(contract_address_preloads(), @api_true)
+              |> preload_proxy_implementations_efficiently()
 
             step_time = System.monotonic_time(:millisecond) - step_start
-            queries_after_preload = safe_get_query_count_by_name(query_count_name)
+            [{:count, queries_after_preload}] = :ets.lookup(query_count, :count)
             Logger.error("Step 2 completed in #{step_time}ms with #{queries_after_preload - queries_after_lookup} new queries")
 
             Logger.error("Step 3: Getting proxy implementations...")
             step_start = System.monotonic_time(:millisecond)
 
-            _implementations = fully_preloaded_address.proxy_implementations || []
+            implementations = fully_preloaded_address.proxy_implementations || []
 
             step_time = System.monotonic_time(:millisecond) - step_start
-            queries_after_impl = safe_get_query_count_by_name(query_count_name)
+            [{:count, queries_after_impl}] = :ets.lookup(query_count, :count)
             Logger.error("Step 3 completed in #{step_time}ms with #{queries_after_impl - queries_after_preload} new queries")
 
             Logger.error("Step 4: Starting background fetchers...")
@@ -325,202 +240,68 @@ defmodule BlockScoutWeb.API.V2.AddressController do
             end
 
             step_time = System.monotonic_time(:millisecond) - step_start
-            queries_after_ens = safe_get_query_count_by_name(query_count_name)
+            [{:count, queries_after_ens}] = :ets.lookup(query_count, :count)
             Logger.error("Step 5 completed in #{step_time}ms with #{queries_after_ens - queries_after_impl} new queries")
 
             Logger.error("Step 6: Starting view rendering...")
             step_start = System.monotonic_time(:millisecond)
 
-            # Try a more aggressive approach - render with minimal preloading first
-            render_task = Task.async(fn ->
-              # Inherit monitoring context for the render task
-              Process.put(:query_monitoring_active, true)
-              Process.put(:monitoring_pid, current_pid)
-              Process.put(:query_monitoring_tables, {query_count, slow_queries})
-
-              # Create a minimal address version for faster rendering
-              # Ensure proxy_implementations is properly structured or empty
-              safe_proxy_implementations = case final_address.proxy_implementations do
-                nil -> []
-                [] -> []
-                implementations when is_list(implementations) ->
-                  # Take only the first 3 and ensure they have the required fields
-                  implementations
-                  |> Enum.take(3)
-                  |> Enum.filter(fn impl ->
-                    is_map(impl) and Map.has_key?(impl, :proxy_type)
-                  end)
-                _ -> []
-              end
-
-              Logger.error("render_task: Using #{length(safe_proxy_implementations)} proxy implementations")
-
-              minimal_address = %{final_address |
-                proxy_implementations: safe_proxy_implementations,
-                contract_creation_transaction: nil  # Skip this expensive association
-              }
-
-              conn
-              |> put_status(200)
-              |> render(:address, %{address: minimal_address})
-            end)
-
-            render_result = case Task.yield(render_task, 8_000) do  # Reduced timeout to 8 seconds
-              {:ok, result} ->
-                Logger.error("View rendering succeeded")
-                result
-              nil ->
-                Task.shutdown(render_task, :brutal_kill)  # Force kill the task
-                Logger.error("View rendering timed out after 8 seconds - returning minimal response")
-
-                queries_at_timeout = safe_get_query_count_by_name(query_count_name)
-                Logger.error("Queries executed before timeout: #{queries_at_timeout}")
-
-                # Get the render-phase queries for analysis
-                render_queries = safe_get_slow_queries_by_name(slow_queries_name)
-                render_phase_queries = Enum.filter(render_queries, fn {query_num, _, _, _, _} -> query_num > 100 end)
-
-                Logger.error("=== RENDER PHASE QUERIES (causing timeout) ===")
-                Logger.error("Total render queries: #{length(render_phase_queries)}")
-
-                # Group queries by pattern to find the worst offenders
-                query_patterns = render_phase_queries
-                |> Enum.map(fn {query_num, time_ms, query, elapsed_ms, _source} ->
-                  # Extract table and operation pattern
-                  query_str = to_string(query)
-                  pattern = cond do
-                    String.contains?(query_str, "proxy_implementations") -> "PROXY_IMPL_QUERY"
-                    String.contains?(query_str, "smart_contracts") -> "SMART_CONTRACT_QUERY"
-                    String.contains?(query_str, "addresses") and String.contains?(query_str, "JOIN") -> "ADDRESS_JOIN_QUERY"
-                    String.contains?(query_str, "contract_creation_transaction") -> "CONTRACT_CREATION_QUERY"
-                    String.contains?(query_str, "SELECT") and String.contains?(query_str, "WHERE") -> "BASIC_SELECT"
-                    true -> "OTHER_QUERY"
-                  end
-                  {pattern, query_num, time_ms, elapsed_ms, String.slice(query_str, 0, 300)}
-                end)
-                |> Enum.group_by(fn {pattern, _, _, _, _} -> pattern end)
-
-                # Log summary of query patterns
-                Enum.each(query_patterns, fn {pattern, queries} ->
-                  count = length(queries)
-                  total_time = Enum.sum(Enum.map(queries, fn {_, _, time_ms, _, _} -> time_ms end))
-                  Logger.error("#{pattern}: #{count} queries, #{Float.round(total_time, 1)}ms total")
-
-                  # Show worst offenders for each pattern
-                  worst_queries = Enum.sort_by(queries, fn {_, _, time_ms, _, _} -> time_ms end, :desc) |> Enum.take(3)
-                  Enum.each(worst_queries, fn {_, query_num, time_ms, elapsed_ms, query_preview} ->
-                    Logger.error("  #{query_num}: #{Float.round(time_ms, 1)}ms at +#{elapsed_ms}ms: #{query_preview}...")
-                  end)
-                end)
-
-                # Return a more comprehensive minimal response
-                conn
-                |> put_status(200)
-                |> json(%{
-                  hash: to_string(address_hash),
-                  fetched_coin_balance: final_address.fetched_coin_balance || "0",
-                  fetched_coin_balance_block_number: final_address.fetched_coin_balance_block_number,
-                  is_contract: !is_nil(final_address.smart_contract),
-                  is_verified: case final_address.smart_contract do
-                    nil -> nil
-                    sc -> !is_nil(sc.abi)
-                  end,
-                  name: case final_address.names do
-                    [] -> nil
-                    [first | _] -> first.name
-                    _ -> nil
-                  end,
-                  implementation_name: case final_address.smart_contract do
-                    nil -> nil
-                    sc -> sc.name
-                  end,
-                  proxy_type: case final_address.proxy_implementations do
-                    [] -> nil
-                    [first | _] -> first.proxy_type
-                    _ -> nil
-                  end,
-                  creator_address_hash: case final_address.contract_creation_transaction do
-                    nil -> nil
-                    tx -> tx.from_address_hash
-                  end,
-                  creation_tx_hash: case final_address.contract_creation_transaction do
-                    nil -> nil
-                    tx -> tx.hash
-                  end,
-                  token: final_address.token,
-                  coin_balance: final_address.fetched_coin_balance,
-                  exchange_rate: nil,
-                  message: "Partial address data - view rendering timeout after 8s, #{queries_at_timeout} queries executed"
-                })
-            end
+            result = conn
+            |> put_status(200)
+            |> render(:address, %{address: final_address})
 
             step_time = System.monotonic_time(:millisecond) - step_start
-            total_queries = safe_get_query_count_by_name(query_count_name)
+            [{:count, total_queries}] = :ets.lookup(query_count, :count)
             queries_during_render = total_queries - queries_after_ens
             Logger.error("Step 6 completed in #{step_time}ms with #{queries_during_render} new queries")
 
-            # Summary - more concise
+            # Summary
             total_time = System.monotonic_time(:millisecond) - start_time
             Logger.error("=== SUMMARY for #{address_hash_string} ===")
-            Logger.error("Total: #{total_time}ms, #{total_queries} queries")
-            Logger.error("Breakdown: lookup(#{queries_after_lookup}) + preload(#{queries_after_preload - queries_after_lookup}) + impl(#{queries_after_impl - queries_after_preload}) + ens(#{queries_after_ens - queries_after_impl}) + render(#{queries_during_render})")
+            Logger.error("Total time: #{total_time}ms")
+            Logger.error("Total queries: #{total_queries}")
+            Logger.error("Queries breakdown:")
+            Logger.error("- Initial lookup: #{queries_after_lookup}")
+            Logger.error("- Smart contract preload: #{queries_after_preload - queries_after_lookup}")
+            Logger.error("- Proxy implementations: #{queries_after_impl - queries_after_preload}")
+            Logger.error("- ENS preloading: #{queries_after_ens - queries_after_impl}")
+            Logger.error("- View rendering: #{queries_during_render}")
 
-            # Log slow queries - only if any exist
-            slow_query_list = safe_get_slow_queries_by_name(slow_queries_name)
+            # Log slow queries
+            slow_query_list = :ets.tab2list(slow_queries)
             if length(slow_query_list) > 0 do
-              Logger.error("=== #{length(slow_query_list)} SLOW QUERIES (>500ms) ===")
-              Enum.take(slow_query_list, 5)  # Only show first 5 slow queries
-              |> Enum.each(fn {query_num, time_ms, query} ->
-                query_preview = query |> inspect() |> String.slice(0, 150) |> String.replace(~r/\s+/, " ")
-                Logger.error("Slow ##{query_num}: #{Float.round(time_ms, 1)}ms - #{query_preview}...")
+              Logger.error("=== SLOW QUERIES (>1000ms) ===")
+              Enum.each(slow_query_list, fn {query_num, time_ms, query} ->
+                query_preview = query |> inspect() |> String.slice(0, 200)
+                Logger.error("Query ##{query_num}: #{Float.round(time_ms, 2)}ms - #{query_preview}...")
               end)
-              if length(slow_query_list) > 5 do
-                Logger.error("... and #{length(slow_query_list) - 5} more slow queries")
-              end
             end
 
-            render_result
+            result
 
-          _ ->
-            address =
-              %Address{
-                hash: address_hash,
-                names: [],
-                scam_badge: nil,
-                token: nil,
-                signed_authorization: nil,
-                smart_contract: nil
-              }
-              |> maybe_preload_ens_to_address()
+        _ ->
+          address =
+            %Address{
+              hash: address_hash,
+              names: [],
+              scam_badge: nil,
+              token: nil,
+              signed_authorization: nil,
+              smart_contract: nil
+            }
+            |> maybe_preload_ens_to_address()
 
-            CoinBalanceOnDemand.trigger_fetch(ip, address)
-            ContractCodeOnDemand.trigger_fetch(ip, address)
+          CoinBalanceOnDemand.trigger_fetch(ip, address)
+          ContractCodeOnDemand.trigger_fetch(ip, address)
 
-            conn
-            |> put_status(200)
-            |> render(:address, %{address: address})
-        end
-
-        result
+          conn
+          |> put_status(200)
+          |> render(:address, %{address: address})
+      end
       after
-        # Disable monitoring first
-        Process.put(:query_monitoring_active, false)
-
-        # Detach telemetry handler
-        try do
-          :telemetry.detach(handler_id)
-        catch
-          _ -> :ok
-        end
-
-        # Clean up ETS tables
-        safe_delete_ets_by_name(query_count_name)
-        safe_delete_ets_by_name(slow_queries_name)
-
-        # Clean up process dictionary
-        Process.delete(:query_monitoring_tables)
-        Process.delete(:query_monitoring_active)
-        Process.delete(:monitoring_pid)
+        :telemetry.detach(handler_id)
+        :ets.delete(query_count)
+        :ets.delete(slow_queries)
       end
     end
   end
@@ -1064,10 +845,7 @@ defmodule BlockScoutWeb.API.V2.AddressController do
         {"Historical coin balance changes for the specified address, with pagination.", "application/json",
          paginated_response(
            items: Schemas.CoinBalance,
-           next_page_params_example: %{
-             "block_number" => 22_546_398,
-             "items_count" => 50
-           },
+           next_page_params_example: %{"block_number" => 22_546_398, "items_count" => 50},
            title_prefix: "AddressCoinBalanceHistory"
          )},
       unprocessable_entity: JsonErrorResponse.response(),
@@ -1773,96 +1551,19 @@ defmodule BlockScoutWeb.API.V2.AddressController do
     end
   end
 
-  # Simplified proxy implementations preloading to reduce queries
+  # Add efficient proxy implementations preloading
   defp preload_proxy_implementations_efficiently(address) do
-    Logger.error("preload_proxy_implementations_efficiently: Starting for address #{inspect(address.hash)}")
-    Logger.error("preload_proxy_implementations_efficiently: proxy_implementations loaded? #{Ecto.assoc_loaded?(address.proxy_implementations)}")
-    Logger.error("preload_proxy_implementations_efficiently: smart_contract present? #{!is_nil(address.smart_contract)}")
-
     if Ecto.assoc_loaded?(address.proxy_implementations) do
-      # Even if loaded, limit the number to prevent view rendering issues
-      limited_implementations = Enum.take(address.proxy_implementations || [], 5)
-      Logger.error("preload_proxy_implementations_efficiently: Already loaded, limiting to #{length(limited_implementations)} implementations")
-      %{address | proxy_implementations: limited_implementations}
+      address
     else
       # Only fetch proxy implementations if smart contract exists
       case address.smart_contract do
-        nil ->
-          Logger.error("preload_proxy_implementations_efficiently: No smart contract, returning empty implementations")
-          %{address | proxy_implementations: []}
+        nil -> %{address | proxy_implementations: []}
         _smart_contract ->
-          Logger.error("preload_proxy_implementations_efficiently: Smart contract found, attempting to preload...")
-          try do
-            # Get only the most basic proxy implementations - no nested preloading
-            Logger.error("preload_proxy_implementations_efficiently: Starting Explorer.Repo.preload...")
-            preloaded = Explorer.Repo.preload(address, [:proxy_implementations], timeout: 5_000)
-            Logger.error("preload_proxy_implementations_efficiently: Repo.preload completed")
-
-            implementations = preloaded
-              |> Map.get(:proxy_implementations, [])
-              |> Enum.take(3)  # Reduced to only 3 to limit queries
-
-            Logger.error("preload_proxy_implementations_efficiently: Found #{length(implementations)} implementations")
-
-            # Log the structure of implementations to debug the issue
-            if length(implementations) > 0 do
-              first_impl = List.first(implementations)
-              Logger.error("preload_proxy_implementations_efficiently: First implementation keys: #{inspect(Map.keys(first_impl))}")
-              Logger.error("preload_proxy_implementations_efficiently: First implementation has proxy_type? #{Map.has_key?(first_impl, :proxy_type)}")
-            end
-
-            %{address | proxy_implementations: implementations}
-          rescue
-            error ->
-              Logger.error("preload_proxy_implementations_efficiently: ERROR #{inspect(error)}")
-              Logger.error("preload_proxy_implementations_efficiently: ERROR stacktrace: #{inspect(__STACKTRACE__)}")
-              %{address | proxy_implementations: []}
-          end
+          # Use the optimized function but limit the result size
+          implementations = SmartContractHelper.pre_fetch_implementations(address)
+          %{address | proxy_implementations: Enum.take(implementations || [], 10)}
       end
-    end
-  end
-
-  # Helper functions for safe ETS access by table name
-  defp safe_get_query_count_by_name(table_name) do
-    try do
-      case :ets.whereis(table_name) do
-        :undefined -> 0
-        _tid ->
-          case :ets.lookup(table_name, :count) do
-            [{:count, count}] -> count
-            [] -> 0
-          end
-      end
-    rescue
-      _ -> 0
-    catch
-      _ -> 0
-    end
-  end
-
-  defp safe_get_slow_queries_by_name(table_name) do
-    try do
-      case :ets.whereis(table_name) do
-        :undefined -> []
-        _tid -> :ets.tab2list(table_name)
-      end
-    rescue
-      _ -> []
-    catch
-      _ -> []
-    end
-  end
-
-  defp safe_delete_ets_by_name(table_name) do
-    try do
-      case :ets.whereis(table_name) do
-        :undefined -> :ok
-        tid -> :ets.delete(tid)
-      end
-    rescue
-      _ -> :ok
-    catch
-      _ -> :ok
     end
   end
 end
