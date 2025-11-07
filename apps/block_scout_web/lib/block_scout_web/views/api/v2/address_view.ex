@@ -122,23 +122,29 @@ defmodule BlockScoutWeb.API.V2.AddressView do
 
     Logger.error("PREPARE_ADDRESS: Starting Counters checks - #{System.monotonic_time(:millisecond) - start_time}ms")
 
-    has_validated_blocks = Counters.check_if_validated_blocks_at_address(address.hash, @api_true)
-    Logger.error("PREPARE_ADDRESS: has_validated_blocks completed - #{System.monotonic_time(:millisecond) - start_time}ms")
+    # Use Task.async with timeout for each counter check to prevent hanging
+    has_validated_blocks = safe_counter_check(fn ->
+      Counters.check_if_validated_blocks_at_address(address.hash, @api_true)
+    end, "has_validated_blocks", start_time)
 
-    has_logs = Counters.check_if_logs_at_address(address.hash, @api_true)
-    Logger.error("PREPARE_ADDRESS: has_logs completed - #{System.monotonic_time(:millisecond) - start_time}ms")
+    has_logs = safe_counter_check(fn ->
+      Counters.check_if_logs_at_address(address.hash, @api_true)
+    end, "has_logs", start_time)
 
-    has_tokens = Counters.check_if_tokens_at_address(address.hash, @api_true)
-    Logger.error("PREPARE_ADDRESS: has_tokens completed - #{System.monotonic_time(:millisecond) - start_time}ms")
+    has_tokens = safe_counter_check(fn ->
+      Counters.check_if_tokens_at_address(address.hash, @api_true)
+    end, "has_tokens", start_time)
 
-    has_token_transfers = Counters.check_if_token_transfers_at_address(address.hash, @api_true)
-    Logger.error("PREPARE_ADDRESS: has_token_transfers completed - #{System.monotonic_time(:millisecond) - start_time}ms")
+    has_token_transfers = safe_counter_check(fn ->
+      Counters.check_if_token_transfers_at_address(address.hash, @api_true)
+    end, "has_token_transfers", start_time)
 
     watchlist_address_id = Chain.select_watchlist_address_id(get_watchlist_id(conn), address.hash)
     Logger.error("PREPARE_ADDRESS: watchlist_address_id completed - #{System.monotonic_time(:millisecond) - start_time}ms")
 
-    has_beacon_chain_withdrawals = Counters.check_if_withdrawals_at_address(address.hash, @api_true)
-    Logger.error("PREPARE_ADDRESS: has_beacon_chain_withdrawals completed - #{System.monotonic_time(:millisecond) - start_time}ms")
+    has_beacon_chain_withdrawals = safe_counter_check(fn ->
+      Counters.check_if_withdrawals_at_address(address.hash, @api_true)
+    end, "has_beacon_chain_withdrawals", start_time)
 
     extended_info =
       Map.merge(base_info, %{
@@ -331,5 +337,29 @@ defmodule BlockScoutWeb.API.V2.AddressView do
       defp chain_type_fields(result, _params) do
         result
       end
+  end
+
+  # Helper function to safely execute counter checks with timeout
+  defp safe_counter_check(counter_fn, check_name, start_time) do
+    require Logger
+    Logger.error("PREPARE_ADDRESS: Starting #{check_name} - #{System.monotonic_time(:millisecond) - start_time}ms")
+
+    task = Task.async(counter_fn)
+
+    case Task.yield(task, 60_000) do  # 60 second timeout for each counter check
+      {:ok, result} ->
+        Logger.error("PREPARE_ADDRESS: #{check_name} completed - #{System.monotonic_time(:millisecond) - start_time}ms")
+        result
+
+      nil ->
+        # Counter check timed out
+        Task.shutdown(task, :brutal_kill)
+        Logger.error("PREPARE_ADDRESS: #{check_name} TIMEOUT after 60000ms - returning false - #{System.monotonic_time(:millisecond) - start_time}ms")
+        false  # Default to false when counter check times out
+    end
+  rescue
+    error ->
+      Logger.error("PREPARE_ADDRESS: #{check_name} ERROR: #{inspect(error)} - #{System.monotonic_time(:millisecond) - start_time}ms")
+      false  # Default to false on error
   end
 end
