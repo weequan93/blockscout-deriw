@@ -100,28 +100,62 @@ defmodule Explorer.Chain.Address.Counters do
 
       exists_start = System.monotonic_time(:millisecond)
 
+      # Try multiple different query approaches to isolate the issue
       result = try do
-        case repo.query(sql_query, [address_bytes], timeout: 5_000) do
+        Logger.error("check_if_logs_at_address: Attempting Method 1 - Direct query with EXISTS")
+
+        # Method 1: Current approach (the one that's timing out)
+        case repo.query(sql_query, [address_bytes], timeout: 2_000) do
           {:ok, %{rows: [[true]]}} ->
-            Logger.error("check_if_logs_at_address: Query returned TRUE")
+            Logger.error("check_if_logs_at_address: Method 1 SUCCESS - returned TRUE")
             true
           {:ok, %{rows: [[false]]}} ->
-            Logger.error("check_if_logs_at_address: Query returned FALSE")
+            Logger.error("check_if_logs_at_address: Method 1 SUCCESS - returned FALSE")
             false
           {:ok, other} ->
-            Logger.error("check_if_logs_at_address: Unexpected result structure: #{inspect(other)}")
+            Logger.error("check_if_logs_at_address: Method 1 unexpected result: #{inspect(other)}")
             false
           {:error, error} ->
-            Logger.error("check_if_logs_at_address: Query returned error: #{inspect(error)}")
+            Logger.error("check_if_logs_at_address: Method 1 error: #{inspect(error)}")
             false
         end
       rescue
-        DBConnection.ConnectionError ->
-          Logger.error("check_if_logs_at_address: Connection error, defaulting to false")
-          false
         error ->
-          Logger.error("check_if_logs_at_address: Query error: #{inspect(error)}, defaulting to false")
-          false
+          Logger.error("check_if_logs_at_address: Method 1 FAILED with #{inspect(error)}, trying Method 2")
+
+          # Method 2: Try with LIMIT 1 instead of EXISTS
+          try do
+            Logger.error("check_if_logs_at_address: Attempting Method 2 - SELECT with LIMIT")
+            case repo.query("SELECT 1 FROM logs WHERE address_hash = $1 LIMIT 1", [address_bytes], timeout: 2_000) do
+              {:ok, %{rows: []}} ->
+                Logger.error("check_if_logs_at_address: Method 2 SUCCESS - no rows (FALSE)")
+                false
+              {:ok, %{rows: [[1]]}} ->
+                Logger.error("check_if_logs_at_address: Method 2 SUCCESS - found row (TRUE)")
+                true
+              {:ok, other} ->
+                Logger.error("check_if_logs_at_address: Method 2 unexpected result: #{inspect(other)}")
+                false
+              {:error, error} ->
+                Logger.error("check_if_logs_at_address: Method 2 error: #{inspect(error)}")
+                false
+            end
+          rescue
+            error2 ->
+              Logger.error("check_if_logs_at_address: Method 2 FAILED with #{inspect(error2)}, trying Method 3")
+
+              # Method 3: Try using Ecto's exists? but on main repo
+              try do
+                Logger.error("check_if_logs_at_address: Attempting Method 3 - Ecto exists on main repo")
+                result3 = repo.exists?(from(l in Log, where: l.address_hash == ^address_hash), timeout: 2_000)
+                Logger.error("check_if_logs_at_address: Method 3 SUCCESS - result: #{result3}")
+                result3
+              rescue
+                error3 ->
+                  Logger.error("check_if_logs_at_address: Method 3 FAILED with #{inspect(error3)}, defaulting to false")
+                  false
+              end
+          end
       end
 
       exists_time = System.monotonic_time(:millisecond) - exists_start
