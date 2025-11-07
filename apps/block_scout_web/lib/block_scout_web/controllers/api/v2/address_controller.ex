@@ -339,8 +339,24 @@ defmodule BlockScoutWeb.API.V2.AddressController do
               Process.put(:query_monitoring_tables, {query_count, slow_queries})
 
               # Create a minimal address version for faster rendering
+              # Ensure proxy_implementations is properly structured or empty
+              safe_proxy_implementations = case final_address.proxy_implementations do
+                nil -> []
+                [] -> []
+                implementations when is_list(implementations) ->
+                  # Take only the first 3 and ensure they have the required fields
+                  implementations
+                  |> Enum.take(3)
+                  |> Enum.filter(fn impl ->
+                    is_map(impl) and Map.has_key?(impl, :proxy_type)
+                  end)
+                _ -> []
+              end
+
+              Logger.error("render_task: Using #{length(safe_proxy_implementations)} proxy implementations")
+
               minimal_address = %{final_address |
-                proxy_implementations: Enum.take(final_address.proxy_implementations || [], 3),  # Limit to 3
+                proxy_implementations: safe_proxy_implementations,
                 contract_creation_transaction: nil  # Skip this expensive association
               }
 
@@ -1787,6 +1803,14 @@ defmodule BlockScoutWeb.API.V2.AddressController do
               |> Enum.take(3)  # Reduced to only 3 to limit queries
 
             Logger.error("preload_proxy_implementations_efficiently: Found #{length(implementations)} implementations")
+
+            # Log the structure of implementations to debug the issue
+            if length(implementations) > 0 do
+              first_impl = List.first(implementations)
+              Logger.error("preload_proxy_implementations_efficiently: First implementation keys: #{inspect(Map.keys(first_impl))}")
+              Logger.error("preload_proxy_implementations_efficiently: First implementation has proxy_type? #{Map.has_key?(first_impl, :proxy_type)}")
+            end
+
             %{address | proxy_implementations: implementations}
           rescue
             error ->
