@@ -4,6 +4,8 @@ defmodule BlockScoutWeb.API.V2.AddressController do
   use Utils.RuntimeEnvHelper, chain_type: [:explorer, :chain_type]
   use OpenApiSpex.ControllerSpecs
 
+  require Logger
+
   import BlockScoutWeb.Chain,
     only: [
       next_page_params: 3,
@@ -154,7 +156,6 @@ defmodule BlockScoutWeb.API.V2.AddressController do
   """
   @spec address(Plug.Conn.t(), map()) :: {:format, :error} | {:restricted_access, true} | Plug.Conn.t()
   def address(conn, %{address_hash_param: address_hash_string} = params) do
-    require Logger
     start_time = System.monotonic_time(:millisecond)
     Logger.error("=== ADDRESS ENDPOINT START: #{address_hash_string} ===")
 
@@ -204,7 +205,23 @@ defmodule BlockScoutWeb.API.V2.AddressController do
           # Step 5: Render the response
           Logger.error("CHECKPOINT 9: Starting address struct preparation - #{System.monotonic_time(:millisecond) - start_time}ms")
 
-          final_address = %Address{fully_preloaded_address | proxy_implementations: implementations}
+          # Ensure proxy_implementations is always a properly structured list or nil
+          safe_implementations = case implementations do
+            [] -> nil  # Set to nil instead of empty list to avoid view issues
+            list when is_list(list) ->
+              # Filter to ensure all items have required fields
+              list
+              |> Enum.filter(fn impl ->
+                is_map(impl) and Map.has_key?(impl, :proxy_type)
+              end)
+              |> case do
+                [] -> nil  # If no valid implementations, set to nil
+                valid_list -> Enum.take(valid_list, 3)  # Limit to 3
+              end
+            _ -> nil
+          end
+
+          final_address = %Address{fully_preloaded_address | proxy_implementations: safe_implementations}
 
           Logger.error("CHECKPOINT 10: Starting maybe_preload_ens_to_address - #{System.monotonic_time(:millisecond) - start_time}ms")
 
