@@ -97,15 +97,48 @@ defmodule BlockScoutWeb.API.V2.AddressView do
 
   @spec prepare_address(Address.t(), Plug.Conn.t()) :: map()
   defp prepare_address(address, conn) do
+    require Logger
+    start_time = System.monotonic_time(:millisecond)
+    Logger.error("PREPARE_ADDRESS START - #{System.monotonic_time(:millisecond) - start_time}ms")
+
     base_info = Helper.address_with_info(conn, address, address.hash, true)
+    Logger.error("PREPARE_ADDRESS: Helper.address_with_info completed - #{System.monotonic_time(:millisecond) - start_time}ms")
 
     balance = address.fetched_coin_balance && address.fetched_coin_balance.value
+    Logger.error("PREPARE_ADDRESS: Balance extraction completed - #{System.monotonic_time(:millisecond) - start_time}ms")
+
     exchange_rate = Market.get_coin_exchange_rate().fiat_value
+    Logger.error("PREPARE_ADDRESS: Exchange rate completed - #{System.monotonic_time(:millisecond) - start_time}ms")
 
     creation_transaction = Address.creation_transaction(address)
+    Logger.error("PREPARE_ADDRESS: Creation transaction completed - #{System.monotonic_time(:millisecond) - start_time}ms")
+
     creator_hash = creation_transaction && creation_transaction.from_address_hash
     creation_transaction_hash = creator_hash && AddressView.transaction_hash(address)
+    Logger.error("PREPARE_ADDRESS: Creator hash extraction completed - #{System.monotonic_time(:millisecond) - start_time}ms")
+
     token = address.token && TokenView.render("token.json", %{token: address.token})
+    Logger.error("PREPARE_ADDRESS: Token render completed - #{System.monotonic_time(:millisecond) - start_time}ms")
+
+    Logger.error("PREPARE_ADDRESS: Starting Counters checks - #{System.monotonic_time(:millisecond) - start_time}ms")
+
+    has_validated_blocks = Counters.check_if_validated_blocks_at_address(address.hash, @api_true)
+    Logger.error("PREPARE_ADDRESS: has_validated_blocks completed - #{System.monotonic_time(:millisecond) - start_time}ms")
+
+    has_logs = Counters.check_if_logs_at_address(address.hash, @api_true)
+    Logger.error("PREPARE_ADDRESS: has_logs completed - #{System.monotonic_time(:millisecond) - start_time}ms")
+
+    has_tokens = Counters.check_if_tokens_at_address(address.hash, @api_true)
+    Logger.error("PREPARE_ADDRESS: has_tokens completed - #{System.monotonic_time(:millisecond) - start_time}ms")
+
+    has_token_transfers = Counters.check_if_token_transfers_at_address(address.hash, @api_true)
+    Logger.error("PREPARE_ADDRESS: has_token_transfers completed - #{System.monotonic_time(:millisecond) - start_time}ms")
+
+    watchlist_address_id = Chain.select_watchlist_address_id(get_watchlist_id(conn), address.hash)
+    Logger.error("PREPARE_ADDRESS: watchlist_address_id completed - #{System.monotonic_time(:millisecond) - start_time}ms")
+
+    has_beacon_chain_withdrawals = Counters.check_if_withdrawals_at_address(address.hash, @api_true)
+    Logger.error("PREPARE_ADDRESS: has_beacon_chain_withdrawals completed - #{System.monotonic_time(:millisecond) - start_time}ms")
 
     extended_info =
       Map.merge(base_info, %{
@@ -116,19 +149,25 @@ defmodule BlockScoutWeb.API.V2.AddressView do
         "coin_balance" => balance,
         "exchange_rate" => exchange_rate,
         "block_number_balance_updated_at" => address.fetched_coin_balance_block_number,
-        "has_validated_blocks" => Counters.check_if_validated_blocks_at_address(address.hash, @api_true),
-        "has_logs" => Counters.check_if_logs_at_address(address.hash, @api_true),
-        "has_tokens" => Counters.check_if_tokens_at_address(address.hash, @api_true),
-        "has_token_transfers" => Counters.check_if_token_transfers_at_address(address.hash, @api_true),
-        "watchlist_address_id" => Chain.select_watchlist_address_id(get_watchlist_id(conn), address.hash),
-        "has_beacon_chain_withdrawals" => Counters.check_if_withdrawals_at_address(address.hash, @api_true)
+        "has_validated_blocks" => has_validated_blocks,
+        "has_logs" => has_logs,
+        "has_tokens" => has_tokens,
+        "has_token_transfers" => has_token_transfers,
+        "watchlist_address_id" => watchlist_address_id,
+        "has_beacon_chain_withdrawals" => has_beacon_chain_withdrawals
       })
+    Logger.error("PREPARE_ADDRESS: Map.merge completed - #{System.monotonic_time(:millisecond) - start_time}ms")
 
-    extended_info
+    result = extended_info
     |> chain_type_fields(%{
       address: address,
       creation_transaction_from_address: creation_transaction && creation_transaction.from_address
     })
+
+    total_time = System.monotonic_time(:millisecond) - start_time
+    Logger.error("PREPARE_ADDRESS COMPLETED - Total time: #{total_time}ms")
+
+    result
   end
 
   @spec prepare_token_balance(Chain.Address.TokenBalance.t(), boolean()) :: map()
