@@ -39,8 +39,16 @@ defmodule Explorer.Chain.Address.Counters do
   @transactions_types [:transactions_from, :transactions_to, :transactions_contract]
 
   defp address_hash_to_logs_query(address_hash) do
-    from(l in Log, where: l.address_hash == ^address_hash)
+    normalized_hash = normalize_address_hash(address_hash)
+    from(l in Log, where: l.address_hash == ^normalized_hash)
   end
+
+  defp normalize_address_hash(address_hash) when is_binary(address_hash) do
+    {:ok, hash} = Chain.string_to_address_hash(String.downcase(address_hash))
+    hash
+  end
+
+  defp normalize_address_hash(address_hash), do: address_hash
 
   defp address_hash_to_validated_blocks_query(address_hash) do
     from(b in Block, where: b.miner_hash == ^address_hash)
