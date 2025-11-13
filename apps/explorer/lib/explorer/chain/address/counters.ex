@@ -59,7 +59,58 @@ defmodule Explorer.Chain.Address.Counters do
   end
 
   def check_if_logs_at_address(address_hash, options \\ []) do
-    select_repo(options).exists?(address_hash_to_logs_query(address_hash))
+    require Logger
+    start_time = System.monotonic_time(:millisecond)
+
+    # Extract the binary bytes from the Hash struct for the database query
+    address_bytes = case address_hash do
+      %{bytes: bytes} -> bytes
+      binary when is_binary(binary) -> binary
+      other ->
+        Logger.error("check_if_logs_at_address: Unexpected address_hash format: #{inspect(other)}")
+        false
+    end
+
+    # Only proceed if we have valid address bytes
+    if address_bytes == false do
+      false
+    else
+      # Force using main repo instead of replica for this specific query
+      repo = Explorer.Repo  # Use main database instead of select_repo(options)
+
+      exists_start = System.monotonic_time(:millisecond)
+
+      result = try do
+        # Use SELECT 1 FROM logs WHERE address_hash = $1 ORDER BY block_number DESC LIMIT 1
+        # This will return immediately when it finds the most recent matching row
+        case repo.query("SELECT 1 FROM logs WHERE address_hash = $1 ORDER BY block_number DESC LIMIT 1", [address_bytes], timeout: 3_000) do
+          {:ok, %{rows: []}} ->
+            false
+          {:ok, %{rows: [[1]]}} ->
+            true
+          {:ok, other} ->
+            Logger.error("check_if_logs_at_address: Unexpected result: #{inspect(other)}")
+            false
+          {:error, error} ->
+            Logger.error("check_if_logs_at_address: Query error: #{inspect(error)}")
+            false
+        end
+      rescue
+        DBConnection.ConnectionError ->
+          Logger.error("check_if_logs_at_address: Connection error, defaulting to false")
+          false
+        error ->
+          Logger.error("check_if_logs_at_address: Query error: #{inspect(error)}, defaulting to false")
+          false
+      end
+
+      exists_time = System.monotonic_time(:millisecond) - exists_start
+      total_time = System.monotonic_time(:millisecond) - start_time
+
+      Logger.error("check_if_logs_at_address: Query took #{exists_time}ms, total #{total_time}ms, result: #{result}")
+
+      result
+    end
   end
 
   def check_if_token_transfers_at_address(address_hash, options \\ []) do
