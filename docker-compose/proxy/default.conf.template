@@ -15,6 +15,10 @@ server {
     ssl_certificate_key  /etc/nginx/templates/ssl/dev.deriw.com/privkey.pem;
     ssl_trusted_certificate /etc/nginx/templates/ssl/dev.deriw.com/chain.pem;
 
+   location ~* \.js\.map$ {
+        deny all;
+        return 404;
+    }
 
    location ~ ^/(api(?!-docs$)|socket|sitemap.xml|auth/auth0|auth/auth0/callback|auth/logout) {
         proxy_pass            ${BACK_PROXY_PASS};
@@ -85,6 +89,11 @@ server {
     server_name  localhost;
     proxy_http_version 1.1;
 
+    location ~* \.js\.map$ {
+        deny all;
+        return 404;
+    }
+
     location ~ ^/(api(?!-docs$)|socket|sitemap.xml|auth/auth0|auth/auth0/callback|auth/logout) {
         proxy_pass            ${BACK_PROXY_PASS};
         proxy_http_version    1.1;
@@ -96,6 +105,7 @@ server {
         proxy_set_header      Connection $connection_upgrade;
         proxy_cache_bypass    $http_upgrade;
     }
+
     location / {
         proxy_pass            ${FRONT_PROXY_PASS};
         proxy_http_version    1.1;
