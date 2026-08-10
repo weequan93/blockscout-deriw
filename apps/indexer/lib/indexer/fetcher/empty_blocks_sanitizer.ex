@@ -227,7 +227,7 @@ defmodule Indexer.Fetcher.EmptyBlocksSanitizer do
 
     from(q in subquery(blocks_query),
       inner_join: transaction in Transaction,
-      on: q.number == transaction.block_number,
+      on: q.number == transaction.block_number and transaction.block_consensus == true,
       select: q.hash,
       order_by: [asc: q.hash],
       lock: fragment("FOR NO KEY UPDATE OF ?", q)
@@ -240,7 +240,7 @@ defmodule Indexer.Fetcher.EmptyBlocksSanitizer do
     query =
       from(q in subquery(blocks_query),
         left_join: transaction in Transaction,
-        on: q.number == transaction.block_number,
+        on: q.number == transaction.block_number and transaction.block_consensus == true,
         where: is_nil(transaction.block_number),
         select: {q.number, q.hash},
         distinct: q.number,

@@ -3945,10 +3945,7 @@ defmodule Explorer.Chain do
         select: transaction,
         where:
           transaction.status == ^:ok and
-            fragment(
-              "NOW() - ? at time zone 'UTC' <= interval '24 hours'",
-              transaction.created_contract_code_indexed_at
-            )
+            transaction.created_contract_code_indexed_at >= fragment("(NOW() AT TIME ZONE 'UTC') - interval '24 hours'")
       )
 
     query
