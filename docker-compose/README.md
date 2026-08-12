@@ -67,6 +67,12 @@ You can adjust BlockScout environment variables:
 - for visualizer in `./envs/common-visualizer.env`
 - for user-ops-indexer in `./envs/common-user-ops-indexer.env`
 
+Machine-specific backend overrides belong in `./envs/common-blockscout.env.local`. This file is ignored by Git and loaded after `common-blockscout.env`, so its values take precedence and are not changed by `git pull`. The optional env-file syntax requires Docker Compose v2.24 or newer.
+
+Machine-specific Compose service settings belong in `./docker-compose.override.yml`, which is ignored by Git. Compose loads this file automatically when `docker compose up` is run from this directory without `-f`. When specifying files explicitly, include both files in order: `docker compose -f docker-compose.yml -f docker-compose.override.yml up -d`.
+
+Machine-specific values used for Compose interpolation, such as `DOCKER_TAG`, `DOCKER_REPO`, and host port variables, belong in `./.env`, which is also ignored by Git.
+
 Descriptions of the ENVs are available
 
 - for [backend](https://docs.blockscout.com/setup/env-variables)

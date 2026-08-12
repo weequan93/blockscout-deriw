@@ -59,7 +59,10 @@ dump.rdb
 /docker-compose/services/stats-db-data
 /docker-compose/services/redis-data
 /docker-compose/services/logs
+/docker-compose/services/dets
 /docker-compose/tmp
+/docker-compose/docker-compose.override.yml
+/docker-compose/.env
 
 .idea/
 *.iml

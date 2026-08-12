@@ -225,9 +225,16 @@ defmodule Indexer.Fetcher.EmptyBlocksSanitizer do
   defp unprocessed_non_empty_blocks_query(limit) do
     blocks_query = consensus_blocks_with_nil_is_empty_query(limit)
 
+    transaction_exists_query =
+      from(transaction in Transaction,
+        where: transaction.block_number == parent_as(:block).number,
+        where: transaction.block_consensus == true,
+        select: 1
+      )
+
     from(q in subquery(blocks_query),
-      inner_join: transaction in Transaction,
-      on: q.number == transaction.block_number and transaction.block_consensus == true,
+      as: :block,
+      where: exists(transaction_exists_query),
       select: q.hash,
       order_by: [asc: q.hash],
       lock: fragment("FOR NO KEY UPDATE OF ?", q)
@@ -237,13 +244,18 @@ defmodule Indexer.Fetcher.EmptyBlocksSanitizer do
   defp unprocessed_empty_blocks_list_query(limit) do
     blocks_query = consensus_blocks_with_nil_is_empty_query(limit)
 
+    transaction_exists_query =
+      from(transaction in Transaction,
+        where: transaction.block_number == parent_as(:block).number,
+        where: transaction.block_consensus == true,
+        select: 1
+      )
+
     query =
       from(q in subquery(blocks_query),
-        left_join: transaction in Transaction,
-        on: q.number == transaction.block_number and transaction.block_consensus == true,
-        where: is_nil(transaction.block_number),
+        as: :block,
+        where: not exists(transaction_exists_query),
         select: {q.number, q.hash},
-        distinct: q.number,
         order_by: [asc: q.hash]
       )
 
