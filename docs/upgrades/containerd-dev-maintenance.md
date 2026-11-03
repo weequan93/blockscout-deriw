@@ -139,6 +139,35 @@ a separate reviewed action. No source cleanup command is included. New image
 store writes use `/data/containerd`; Docker's separate root stays `/data/docker`.
 This storage move provides no database backup for the later v10 schema upgrade.
 
+The operator subsequently confirmed successful resume on 2026-11-04: all 12
+services running, backend/NFT checks passed, target configuration active. The
+root disk still has about 1.2 GiB free, `/data` has 928 GiB free and the original
+store occupies 30 GiB. A separate 30 GiB archive fits on `/data`, leaving roughly
+898 GiB free. These figures do not establish a working-space budget for v10's
+large database backfills.
+
+The following helper copies **only the inactive original store** to
+`original-store-archive/` inside the private plan directory. It checks active
+maintenance status, the daemon and application mount references, source/archive
+identities and a conservative free-space budget. It preserves metadata using
+the same rsync flags as the cold copy, adds file fsync, performs a checksum and
+metadata dry run, flushes the archive filesystem, then rechecks active health.
+It saves a private receipt without modifying the maintenance execution journal.
+It has no removal, service-control or database-mutation operation.
+
+```bash
+python3 deploy/scripts/archive_containerd_source.py --check \
+  --state /data/blockscout-dev-private/containerd-storage/plan-4xiv4wmt/state.json
+python3 deploy/scripts/archive_containerd_source.py --copy \
+  --state /data/blockscout-dev-private/containerd-storage/plan-4xiv4wmt/state.json
+```
+
+Expected result: `original_store_archive_verified`, with `source_removed=false`.
+Root space is reclaimed only after a separate source-retirement operation is
+prepared and reviewed against that receipt. Keep the entire private plan
+directory on the server. The archive preserves the old pre-resume image store;
+it is not a current backup of applications or PostgreSQL.
+
 Use the executor's `--status` for this maintenance record. The older backend
 release snapshot is retained intact; its strict check of unrelated containers'
 start times can report the intentional host-maintenance restarts. The next
