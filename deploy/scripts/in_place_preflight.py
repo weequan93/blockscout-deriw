@@ -73,7 +73,7 @@ data = step.("metadata_transaction", fn ->
     Ecto.Adapters.SQL.query!(repo, "SET LOCAL lock_timeout = '500ms'", [], timeout: 2000, log: false)
   end);
   server = step.("server_metadata", fn -> Ecto.Adapters.SQL.query!(repo,
-    "SELECT current_setting('server_version_num')::integer, current_setting('data_directory'), pg_is_in_recovery(), pg_database_size(current_database()), inet_server_addr()::text, inet_server_port()",
+    "SELECT current_setting('server_version_num')::integer, current_setting('data_directory'), pg_is_in_recovery(), pg_database_size(current_database()), host(inet_server_addr()), inet_server_port()",
     [], timeout: 2000, log: false).rows end);
   settings = step.("wal_settings", fn -> Ecto.Adapters.SQL.query!(repo,
     "SELECT name, setting, unit FROM pg_settings WHERE name = ANY($1::text[]) ORDER BY name",

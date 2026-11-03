@@ -66,7 +66,7 @@ def expression(stage, token, versions):
     ) + "}")
 
 
-def evaluate(image, stage, token, network, password, versions, directory, defer_indexes=False):
+def evaluate(image, stage, token, network, password, versions, directory, pg_name, defer_indexes=False):
     name = "blockscout-schema-" + stage + "-" + token
     environment = {
         "UPGRADE_SCHEMA_FIXTURE": token, "CHAIN_TYPE": "arbitrum", "CHAIN_ID": "18417507517",
@@ -113,9 +113,13 @@ def evaluate(image, stage, token, network, password, versions, directory, defer_
                 report[key] = history.safe_history(report[key])
         if report.get("in_place_metadata") is not None:
             public, connection, tablespaces = preflight.safe_database(report["in_place_metadata"])
-            if public["in_recovery"] or connection[1] != 5432 or tablespaces:
+            pg = json.loads(run(["docker", "inspect", pg_name]))[0]
+            network_metadata = pg["NetworkSettings"]["Networks"][network]
+            addresses = {network_metadata.get(key) for key in ("IPAddress", "GlobalIPv6Address")}
+            if public["in_recovery"] or connection[0] not in addresses or connection[1] != 5432 or tablespaces:
                 raise RuntimeError("In-place metadata probe did not recognize the isolated primary database")
             report["in_place_metadata"] = public
+            report["in_place_database_route_checked"] = True
         if stage in ("baseline", "background"):
             before = [index["key_columns"] for index in report["history_metadata_before"]["indexes"] if index["primary"]]
             if before != [["block_hash", "block_index"]]:
@@ -209,7 +213,7 @@ def main():
             stages.append(("background", candidate["Id"]))
         for stage, image in stages:
             print(json.dumps({"phase": stage}), flush=True)
-            results.append(evaluate(image, stage, token, network, password, versions, directory, args.defer_indexes))
+            results.append(evaluate(image, stage, token, network, password, versions, directory, pg_name, args.defer_indexes))
         report.update(status="passed", postgres_image=pg["Id"], baseline_image=baseline["Id"],
                       candidate_image=candidate["Id"], architecture=candidate["Architecture"], results=results,
                       background_backfills_tested=args.background, deferred_custom_indexes=args.defer_indexes)
