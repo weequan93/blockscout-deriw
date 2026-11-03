@@ -97,6 +97,64 @@ class ProcessTests(unittest.TestCase):
                 S.root_upperdir(changed)
 
 
+class WorkloadTests(unittest.TestCase):
+    ids = {'a' * 64, 'b' * 64}
+
+    def reader(self, namespaces=('moby', 'moby_history'), overrides=None):
+        overrides = overrides or {}
+
+        def read(arguments, **_options):
+            if '--namespace' not in arguments:
+                return '\n'.join(namespaces)
+            namespace = arguments[arguments.index('--namespace') + 1]
+            kind = arguments[-3]
+            if (namespace, kind) in overrides:
+                value = overrides[namespace, kind]
+                if isinstance(value, Exception):
+                    raise value
+                return value
+            return '\n'.join(sorted(self.ids)) if namespace == 'moby' else ''
+
+        return read
+
+    def test_observed_moby_history_is_permitted_only_when_both_lists_are_empty(self):
+        result = S.workload_inventory(self.ids, self.ids, self.reader())
+        self.assertEqual(result, [
+            {'namespace': 'moby', 'containers': 2, 'tasks': 2},
+            {'namespace': 'moby_history', 'containers': 0, 'tasks': 0},
+        ])
+
+    def test_history_with_containers_or_tasks_is_rejected_even_if_ids_are_known(self):
+        for kind in ('containers', 'tasks'):
+            with self.subTest(kind=kind), self.assertRaisesRegex(S.PlanError, 'other_containerd_workloads'):
+                S.workload_inventory(self.ids, self.ids, self.reader(overrides={('moby_history', kind): 'a' * 64}))
+
+    def test_unrelated_namespace_missing_moby_or_duplicate_name_is_rejected(self):
+        for names in (('moby', 'k8s.io'), ('moby_history',), ('moby', 'moby')):
+            with self.subTest(names=names), self.assertRaisesRegex(S.PlanError, 'other_containerd_namespaces'):
+                S.workload_inventory(self.ids, self.ids, self.reader(namespaces=names))
+
+    def test_unknown_moby_container_or_task_is_rejected(self):
+        for kind in ('containers', 'tasks'):
+            with self.subTest(kind=kind), self.assertRaisesRegex(S.PlanError, 'other_containerd_workloads'):
+                S.workload_inventory(self.ids, self.ids, self.reader(overrides={('moby', kind): 'c' * 64}))
+
+    def test_task_for_a_stopped_docker_container_is_rejected(self):
+        with self.assertRaisesRegex(S.PlanError, 'other_containerd_workloads'):
+            S.workload_inventory(self.ids, {'a' * 64}, self.reader())
+
+    def test_query_failure_is_not_treated_as_an_empty_history_namespace(self):
+        with self.assertRaisesRegex(S.PlanError, 'metadata_read_failed'):
+            S.workload_inventory(self.ids, self.ids, self.reader(overrides={
+                ('moby_history', 'tasks'): S.PlanError('metadata_read_failed'),
+            }))
+
+    def test_namespace_listing_order_does_not_create_a_stability_difference(self):
+        a = S.workload_inventory(self.ids, self.ids, self.reader())
+        b = S.workload_inventory(self.ids, self.ids, self.reader(namespaces=('moby_history', 'moby')))
+        self.assertEqual(a, b)
+
+
 class PrivatePlanTests(unittest.TestCase):
     def test_prepare_writes_private_snapshots_without_exporting_credentials(self):
         with tempfile.TemporaryDirectory() as folder:

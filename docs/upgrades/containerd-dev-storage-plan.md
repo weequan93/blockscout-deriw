@@ -27,7 +27,11 @@ Both effective dumps must match apart from the root. No temporary config file
 or directory scan is used in this mode.
 
 The checker inventories the dev Docker containers and selected containerd
-namespaces. Additional host containers, Swarm, managed Docker plugins, unrelated
+namespaces. The observed `moby_history` namespace is permitted only while both
+its container and task lists are empty; the same empty requirement applies to
+`default` and `plugins.moby`. The `moby` task IDs must match the running dev
+Docker containers. The namespace inventory is checked again at the end of the
+read. Additional host containers, Swarm, managed Docker plugins, unrelated
 containerd workloads, real imported configuration files, CLI storage overrides,
 an existing destination, or a redirected source/destination require review.
 The default config import glob is permitted only when it matches no files.

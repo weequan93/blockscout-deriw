@@ -145,6 +145,28 @@ def digest(value):
     return hashlib.sha256(value).hexdigest()
 
 
+def workload_inventory(docker_ids, running_ids, read=None):
+    read = command if read is None else read
+    prefix = ['ctr', '--address', '/run/containerd/containerd.sock']
+    namespaces = read(prefix + ['namespaces', 'list', '--quiet'], timeout=5).split()
+    allowed = {'moby', 'plugins.moby', 'default', 'moby_history'}
+    require('moby' in namespaces and len(namespaces) == len(set(namespaces))
+            and set(namespaces) <= allowed, 'other_containerd_namespaces_require_review')
+    result = []
+    for namespace in sorted(namespaces):
+        containers = read(prefix + ['--namespace', namespace, 'containers', 'list', '--quiet'], timeout=5).split()
+        tasks = read(prefix + ['--namespace', namespace, 'tasks', 'list', '--quiet'], timeout=5).split()
+        if namespace == 'moby':
+            require(set(containers) <= docker_ids and set(tasks) <= set(containers)
+                    and set(tasks) == running_ids, 'other_containerd_workloads_require_review')
+        else:
+            # The operator observed moby_history with no containers or tasks.
+            # Inspect both on every run; its name alone grants no exception.
+            require(not containers and not tasks, 'other_containerd_workloads_require_review')
+        result.append({'namespace': namespace, 'containers': len(containers), 'tasks': len(tasks)})
+    return result
+
+
 def collect():
     phase('host_prerequisites')
     require(sys.platform.startswith('linux') and os.geteuid() == 0, 'linux_root_required')
@@ -198,12 +220,8 @@ def collect():
     upperdir = root_upperdir(Path('/proc', str(backend_pid), 'mountinfo').read_text())
     require(Path(upperdir).is_dir() and Path(upperdir).stat().st_dev == SOURCE.stat().st_dev, 'active_snapshot_on_unexpected_filesystem')
     phase('containerd_workloads')
-    namespaces = command(['ctr', '--address', '/run/containerd/containerd.sock', 'namespaces', 'list', '--quiet']).split()
-    require('moby' in namespaces and set(namespaces) <= {'moby', 'plugins.moby', 'default'}, 'other_containerd_namespaces_require_review')
-    for namespace in namespaces:
-        containers = command(['ctr', '--address', '/run/containerd/containerd.sock', '--namespace', namespace,
-                              'containers', 'list', '--quiet']).split()
-        require(set(containers) <= ids if namespace == 'moby' else not containers, 'other_containerd_workloads_require_review')
+    running_ids = {row['Id'] for row in rows.values() if row['State']['Running']}
+    workloads = workload_inventory(ids, running_ids)
     phase('storage_capacity')
     source_space, target_space = capacity(SOURCE), capacity(TARGET.parent)
     require(source_space['filesystem_device'] != target_space['filesystem_device'], 'destination_must_use_data_filesystem')
@@ -215,10 +233,12 @@ def collect():
     require(CONFIG.exists() == exists and (CONFIG.read_bytes() if exists else None) == original,
             'configuration_changed_during_planning')
     validate_imports(top_fields(before))
+    require(workload_inventory(ids, running_ids) == workloads, 'containerd_workloads_changed_during_planning')
     report = {'status': 'containerd_storage_plan_ready', 'read_only_services': True,
               'source': str(SOURCE), 'target': str(TARGET), 'runtime_state_preserved': '/run/containerd',
               'containerd_version': '2.2.4', 'effective_config_version': 3,
               'active_backend_snapshot_path_verified': True, 'source_capacity': source_space,
+              'containerd_workloads': workloads,
               'destination_capacity': target_space, 'copy_free_space_reserve_bytes': RESERVE,
               'services': len(rows), 'running_services': sorted(name for name, row in rows.items() if row['State']['Running']),
               'maintenance_required': True, 'application_upgrade_performed': False, 'apply_available': False,
