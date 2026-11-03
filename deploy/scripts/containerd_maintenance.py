@@ -295,6 +295,32 @@ class Maintenance:
     def save(self):
         write_atomic(self.journal_path, encoded(self.state))
 
+    def source_retirement(self):
+        path = self.directory / 'original-store-retirement.json'
+        if not os.path.lexists(path):
+            return None
+        record = json.loads(private_file(path))
+        require(record['format'] == 'blockscout-original-store-retirement-v1'
+                and record['plan_sha256'] == self.plan_hash
+                and record['source_identity'] == self.plan['source_identity']
+                and record['phase'] in ('prepared', 'removing', 'complete'), 'invalid_source_retirement_record')
+        require(self.state is not None and self.state['copy_verified']
+                and self.state['services_started_on_target'], 'retirement_requires_started_verified_target')
+        archive = self.directory / 'original-store-archive'
+        require(archive.is_dir() and archive.resolve() == archive
+                and record['archive_identity'] == {'device': archive.stat().st_dev, 'inode': archive.stat().st_ino},
+                'retired_source_archive_identity_changed')
+        receipt = private_file(self.directory / 'original-store-archive.json')
+        require(S.digest(receipt) == record['archive_receipt_sha256'], 'retired_source_archive_receipt_changed')
+        saved = json.loads(receipt)
+        require(saved['format'] == 'blockscout-original-store-archive-v1'
+                and saved['plan_sha256'] == self.plan_hash and saved['copy_verified'] is True
+                and saved['source_identity'] == record['source_identity']
+                and saved['archive_identity'] == record['archive_identity'], 'invalid_retired_source_archive_receipt')
+        if record['phase'] == 'complete':
+            require(not any(S.SOURCE.iterdir()), 'retired_source_directory_is_no_longer_empty')
+        return record
+
     def unit_state(self, unit):
         return self.read(['systemctl', 'show', unit, '--property=ActiveState', '--value']).strip()
 
@@ -705,15 +731,23 @@ class Maintenance:
         return {**self.summary(), **health}
 
     def summary(self):
+        retirement = self.source_retirement()
         retained = (S.SOURCE.is_dir() and S.SOURCE.resolve() == S.SOURCE
                     and {'device': S.SOURCE.stat().st_dev, 'inode': S.SOURCE.stat().st_ino} == self.plan['source_identity'])
+        retired = retirement is not None and retirement['phase'] in ('removing', 'complete')
+        note = ('The old store contents are archived in the private plan directory; root cleanup is recorded separately. '
+                'The archive is the pre-resume store, not a current application/database backup. '
+                'The active store remains /data/containerd.' if retired else
+                'The original store remains on the root filesystem. Abort is available only before services resume on the target. '
+                'Resume retries use the target store; they never copy the old store over newer writes.')
         return {'status': self.state['status'] if self.state else 'not_started', 'private_plan': str(self.path),
                 'recorded_phase': self.state.get('phase') if self.state else None,
                 'copy_verified': self.state.get('copy_verified', False) if self.state else False,
                 'services_started_on_target': self.state.get('services_started_on_target', False) if self.state else False,
-                'source_retained': retained, 'application_upgrade_performed': False,
-                'original_store_cleanup_performed': False,
-                'note': 'The original store remains on the root filesystem. Abort is available only before services resume on the target. Resume retries use the target store; they never copy the old store over newer writes.'}
+                'source_retained': retained and not retired, 'application_upgrade_performed': False,
+                'original_store_cleanup_performed': retirement is not None and retirement['phase'] == 'complete',
+                'original_store_cleanup_phase': retirement['phase'] if retirement else None,
+                'source_archive_retained': retired, 'note': note}
 
     def status(self):
         self.identities()

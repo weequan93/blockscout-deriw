@@ -45,6 +45,8 @@ def active_check(maintenance):
 
 
 def archive(maintenance, copy=False):
+    M.require(not os.path.lexists(maintenance.directory / 'original-store-retirement.json'),
+              'source_retirement_recorded_use_maintenance_status')
     destination = maintenance.directory / 'original-store-archive'
     receipt_path = maintenance.directory / 'original-store-archive.json'
     active_check(maintenance)

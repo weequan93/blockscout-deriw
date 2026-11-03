@@ -135,7 +135,7 @@ can still require operator recovery. Never recover by deleting either store.
 
 The original `/var/lib/containerd` directory remains on the root filesystem;
 the move therefore does **not** reclaim its disk space yet. Cleanup/archival is
-a separate reviewed action. No source cleanup command is included. New image
+a separate action, described below. New image
 store writes use `/data/containerd`; Docker's separate root stays `/data/docker`.
 This storage move provides no database backup for the later v10 schema upgrade.
 
@@ -163,10 +163,49 @@ python3 deploy/scripts/archive_containerd_source.py --copy \
 ```
 
 Expected result: `original_store_archive_verified`, with `source_removed=false`.
-Root space is reclaimed only after a separate source-retirement operation is
-prepared and reviewed against that receipt. Keep the entire private plan
+Root space is reclaimed only by the separate source-retirement operation
+below, checked against that receipt. Keep the entire private plan
 directory on the server. The archive preserves the old pre-resume image store;
 it is not a current backup of applications or PostgreSQL.
+
+The operator ran this archive step successfully: checksum/metadata verification
+passed, no service changed and 964,241,080,320 bytes remained available on
+`/data`. The source still occupied the root disk after that operation.
+
+To reclaim its root-disk space, run the separate retirement helper:
+
+```bash
+python3 deploy/scripts/retire_containerd_source.py --check \
+  --state /data/blockscout-dev-private/containerd-storage/plan-4xiv4wmt/state.json
+python3 deploy/scripts/retire_containerd_source.py --apply \
+  --state /data/blockscout-dev-private/containerd-storage/plan-4xiv4wmt/state.json
+python3 deploy/scripts/containerd_maintenance.py --status \
+  --state /data/blockscout-dev-private/containerd-storage/plan-4xiv4wmt/state.json
+df -h / /data
+```
+
+Check reads metadata only. Apply freshly compares source/archive checksums and
+metadata, flushes the archive, then repeats active-store health/configuration,
+mount-reference and archive-identity checks. It records the archive receipt's
+hash before removing any source contents. The removal uses a fixed `find -P`
+command with `-xdev`, `-mindepth 1`, `-depth` and `-delete` on the pinned original
+directory. It follows no symlinks, retains that directory's inode and does not
+target the active store, archive or database mounts. It requests no service stop
+or restart. Heartbeats continue during long verification and removal commands.
+
+The private retirement journal records `prepared`, `removing` and `complete`.
+An interrupted `removing` run can continue with the same `--apply` command,
+using the already flushed, verified archive and repeating active-state/identity
+checks. It never copies partially removed source data back into the archive.
+A surviving removal/copy process blocks another attempt. Keep the archive and
+private records intact throughout; do not edit their hashes or phases.
+
+Expected result: `source_retirement_verified`. Maintenance status then reports
+`original_store_cleanup_performed=true`, `source_retained=false` and
+`source_archive_retained=true`. The original directory remains empty so its
+recorded identity can still be checked. New contents appearing there cause a
+status failure. The archive-copy helper refuses runs after retirement has been
+recorded, so it cannot invalidate the preserved archive receipt.
 
 Use the executor's `--status` for this maintenance record. The older backend
 release snapshot is retained intact; its strict check of unrelated containers'
