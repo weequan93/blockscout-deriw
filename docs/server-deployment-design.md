@@ -1,10 +1,12 @@
 # Server deployments for dev, test and prod
 
 Status: partially implemented, 3 November 2026. The versioned dev adoption
-profile and `./deploy.sh dev capture-private` / `./deploy.sh dev plan` now exist;
+profile and `./deploy.sh dev capture-private`, `plan` and candidate `build` now exist;
 see [environment configuration](../docker-compose/environments/README.md).
-Build, upgrade, deployment and rollback commands below remain an implementation
-contract, not available operations. Test/prod profiles are not configured.
+Candidate build uses the current clean committed checkout and requires
+`--private-file`; it has no `--ref` option and performs no activation. Upgrade,
+deployment and rollback commands below remain an implementation contract, not
+available operations. Test/prod profiles are not configured.
 No running deployment has been changed by this repository work.
 
 The application repairs were committed first as
@@ -15,11 +17,16 @@ The application repairs were committed first as
 Give every server the same entry point, with an explicit environment:
 
 ```bash
-# Proposed commands, available after implementation.
+# Available now, from a clean committed checkout on the dev explorer server.
+./deploy.sh dev plan --private-file /server/private.json
+./deploy.sh dev build --private-file /server/private.json --check
+./deploy.sh dev build --private-file /server/private.json
+
+# Proposed commands, available after further implementation.
 ./deploy.sh dev plan --ref origin/dev
 ./deploy.sh dev upgrade --ref origin/dev
 
-# Prepare a candidate without changing running services.
+# Proposed ref-selection support.
 ./deploy.sh dev build --ref <commit>
 
 # Deploy an already built, tested release.

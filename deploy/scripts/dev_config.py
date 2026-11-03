@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Collect server-only inputs or compare the versioned dev profile. No deployment operations."""
+"""Collect dev inputs, compare configuration or build an isolated candidate. No activation."""
 import argparse
+import importlib.util
 from functools import lru_cache
 import json
 import os
@@ -9,6 +10,7 @@ import re
 import shlex
 import stat
 import subprocess
+import sys
 
 ROOT=Path(__file__).resolve().parents[2]
 ENV_KEY=re.compile(r'[A-Z][A-Z0-9_]{0,159}')
@@ -489,6 +491,11 @@ def main():
  compare=sub.add_parser('plan',help='Compare the checked-in dev profile against the running eight-layer deployment')
  compare.add_argument('--private-file',type=Path,required=True)
  compare.add_argument('--live-compose-dir',type=Path,default=Path('/data/blockscout/docker-compose'))
+ build=sub.add_parser('build',help='Build/check a clean committed candidate without activation')
+ build.add_argument('--private-file',type=Path,required=True)
+ build.add_argument('--live-compose-dir',type=Path,default=Path('/data/blockscout/docker-compose'))
+ build.add_argument('--state-dir',type=Path,default=Path('/data/blockscout-dev-private/releases'))
+ mode=build.add_mutually_exclusive_group();mode.add_argument('--check',action='store_true');mode.add_argument('--reuse',action='store_true')
  args=parser.parse_args()
  try:
   manifest,requirements,_=configuration(ROOT,args.environment)
@@ -498,11 +505,17 @@ def main():
    save_private(args.output,values,ROOT)
    report={'status':'private_inputs_saved','environment':'dev','value_count':len(values),'output':str(args.output),
     'note':'Keep this file on the server. Do not upload or commit it. No services changed.'}
-  else:
+  elif args.operation=='plan':
    values=load_private(args.private_file,requirements)
    report=plan(ROOT,manifest,requirements,values,args.live_compose_dir)
+  else:
+   values=load_private(args.private_file,requirements)
+   spec=importlib.util.spec_from_file_location('candidate_build',ROOT/'deploy/scripts/candidate_build.py')
+   builder=importlib.util.module_from_spec(spec);spec.loader.exec_module(builder)
+   report=builder.build_candidate(sys.modules[__name__],ROOT,manifest,requirements,values,args.private_file,
+    args.live_compose_dir,args.state_dir,check_only=args.check,reuse=args.reuse)
   print(json.dumps(report,indent=2));return 0
- except (ConfigError,OSError,ValueError,KeyError,TypeError,IndexError,AttributeError) as error:
+ except (ConfigError,OSError,ValueError,KeyError,TypeError,IndexError,AttributeError,subprocess.SubprocessError) as error:
   report={'status':'stopped','reason':str(error) if isinstance(error,ConfigError) else 'Configuration check failed; raw values suppressed'}
   if isinstance(error,StabilityError):
    report['changed_containers']=error.changes

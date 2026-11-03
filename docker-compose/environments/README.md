@@ -105,7 +105,7 @@ resolution disables implicit `.env` discovery and ignores ambient `DEV_*` and
 without shell evaluation. A public fixture detects the installed Compose CLI's
 dollar escaping so literal `$`, `$$`, quotes and newlines compare correctly.
 
-Commands are read-only for running services. The only persistent write is the
+These two commands are read-only for running services. Their only persistent write is the
 explicit private snapshot from `capture-private`. `plan` uses metadata reads,
 Compose configuration resolution and one bounded `eth_chainId` request through
 the existing backend. It performs no build, container recreation, migration or
@@ -136,11 +136,10 @@ remaining differences must be reviewed before adoption. The real Nginx templates
 and TLS assets still require their own source/config backup and comparison.
 
 Current backend/NFT image pins reproduce the observed deployment, not the newly
-committed application code. A newer application image still needs a separate
-build, candidate validation and explicit release selection. This tool does not
-provide `upgrade`, `build`, `deploy`, `up` or `rollback` commands yet, and this
-profile must not be activated directly before parity and release checks pass.
-Do not remove the eight server layers until that adoption succeeds.
+committed application code. The candidate build below prepares a replacement
+backend image; it preserves the existing NFT worker. This tool does not provide
+`upgrade`, `deploy`, `up` or `rollback` commands yet. Do not activate this profile
+directly or remove the eight server layers before adoption checks succeed.
 
 Test and prod profiles remain unconfigured because their actual inventories
 have not been supplied. The CLI refuses those environments instead of selecting
@@ -149,14 +148,74 @@ dev or assuming the legacy base's chain ID is the production chain.
 The complete server rollout design is in
 [server-deployment-design.md](../../docs/server-deployment-design.md).
 
+## Build a dev candidate
+
+Use the clean review checkout on the explorer server. The source revision must
+contain these commands and be committed; dirty checkouts are refused. Keep the
+existing eight-layer stack running and retain its configuration backups.
+
+```bash
+cd /data/blockscout-config-review-20261103
+./deploy.sh dev build \
+  --private-file /data/blockscout-dev-private/private-20261103.json --check
+
+./deploy.sh dev build \
+  --private-file /data/blockscout-dev-private/private-20261103.json
+```
+
+`--check` reads metadata, resolves configuration and checks the L2 chain ID without
+building or writing state. Build preflight allows only the reviewed historical
+token-repair flag difference and rejects live env/image drift. A successful
+preflight does not approve activation.
+
+Build mode streams `git archive` of the selected commit to Docker, using the
+committed `docker/Dockerfile`, explicit Arbitrum/API options and the baseline
+backend architecture. Ignored/untracked server files and `.git` are excluded;
+runtime private inputs are not passed as build arguments or added to the archive.
+The candidate tag includes the commit and architecture. An existing tag is never
+intentionally overwritten; use `--reuse` to revalidate a matching candidate
+without rebuilding it. Docker base images and dependency downloads still require
+network access, and a rebuild is not guaranteed to reproduce identical bytes.
+
+Builds can consume substantial host CPU, memory, disk and I/O. They have a
+one-hour limit and print periodic progress. The default server-only state root is
+`/data/blockscout-dev-private/releases` (`0700`); each run has private build/check
+logs and, on success, a `candidate.json` receipt (`0600`). Keep these files on the
+server: logs can contain private diagnostics. Share only the CLI JSON summary.
+All checkouts for this dev stack must use the same state root so its build lock
+serializes candidate builds. `--state-dir` changes that root explicitly.
+
+Three temporary release checks load runtime configuration with the historical
+repair option unset, false and true. They use no network, a read-only root
+filesystem, `/tmp` tmpfs and CPU/memory limits. Runtime private values enter only
+through stdin. Checks verify the dev chain, count/backoff/range settings, bundled
+receipt fallback, repair startup policy and old-block revert guard. They do not
+start the application or migrations, connect to the DB or make RPC requests.
+Temporary check containers are removed. Source, private inputs, live deployment
+and candidate tag are checked again before a success receipt is written.
+
+`candidate_verified` confirms these limited checks. It does not prove full app
+startup, migration compatibility, live mount permissions or NFT connectivity.
+`runtime_user_matches_baseline` reports only the declared image-user comparison.
+The CLI creates a candidate image without restarting any running service. Actual
+activation and rollback remain a separate implementation step.
+
 ## Checks
 
 ```bash
 python3 deploy/tests/test_dev_config.py --compose
+python3 deploy/tests/test_candidate_build.py
+# Optional: builds a tiny disposable scratch image through the real archive pipe.
+python3 deploy/tests/test_candidate_build.py --docker
+# Requires Docker and the pinned Elixir fixture image, but no Mix deps or DB.
+python3 deploy/tests/check_candidate_smoke.py
 ```
 
 The tests use synthetic private values, mocked daemon metadata and actual Compose
 config resolution. They cover required inputs, wrong-chain rejection, private
 file permissions/scope/no-overwrite, cookie equality, output suppression, startup
 drift, literal-value handling and a real eight-to-two-layer comparison fixture.
-No production RPC/database is used and no service is started.
+Candidate tests also exercise build/reuse/failure/race/lock handling, private
+stdin/log handling and exact release expressions with source-derived Elixir
+fixtures. The optional Docker test verifies archive exclusions and removes its
+fixture image/container. No production RPC/database is used and no service is started.
