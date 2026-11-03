@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import stat
 import subprocess
 
@@ -204,6 +205,7 @@ def model_differences(before,after):
   for key in sorted(set(a)|set(b)):
    if key=='build':continue
    if a.get(key)==b.get(key):continue
+   if key=='networks' and canonical_networks(a.get(key))==canonical_networks(b.get(key)):continue
    if key=='environment':
     av=a.get(key) or {};bv=b.get(key) or {}
     for env in sorted(set(av)|set(bv)):
@@ -215,6 +217,128 @@ def model_differences(before,after):
  for key in ('networks','volumes','secrets','configs'):
   if (before.get(key) or {})!=(after.get(key) or {}):result.append(key)
  return result
+
+
+def canonical_networks(networks):
+ result={}
+ for name,options in (networks or {}).items():
+  options=dict(options or {})
+  if options.get('aliases')==[]:options.pop('aliases')
+  result[name]=options
+ return result
+
+
+PUBLIC_PG_PARAMETERS=frozenset(('max_connections shared_buffers effective_cache_size maintenance_work_mem work_mem '
+ 'wal_buffers min_wal_size max_wal_size checkpoint_timeout checkpoint_completion_target effective_io_concurrency '
+ 'max_worker_processes max_parallel_workers max_parallel_workers_per_gather max_parallel_maintenance_workers '
+ 'random_page_cost seq_page_cost default_statistics_target client_connection_check_interval autovacuum_max_workers '
+ 'autovacuum_vacuum_cost_limit autovacuum_vacuum_scale_factor autovacuum_analyze_scale_factor autovacuum_work_mem '
+ 'statement_timeout idle_in_transaction_session_timeout max_locks_per_transaction jit synchronous_commit').split())
+
+
+def sensitive_values(requirements,values):
+ result=set()
+ for ref,origin in requirements.items():
+  key=origin['environment_key'];value=values[ref]
+  if re.search(r'PASSWORD|PASSWD|SECRET|COOKIE|CREDENTIAL|PRIVATE.?KEY|API.?KEY|BEARER|(?:^|_)TOKEN$',key,re.I) and value:
+   result.add(value)
+  # URLs can carry credentials even when the environment key looks public.
+  if '://' in value:
+   from urllib.parse import unquote,urlsplit
+   try:password=urlsplit(value).password
+   except ValueError:password=None
+   if password:
+    result.update(v for v in (password,unquote(password)) if v)
+ return result
+
+
+def public_tuning_value(value,sensitive):
+ if isinstance(value,(str,int)) and not isinstance(value,bool):
+  text=str(value)
+  if (re.fullmatch(r'[0-9]+(?:\.[0-9]+)?(?:[kKmMgGtT]?[bB]|[kKmMgGtT]|us|ms|s|min|h|d)?',text)
+    or text in ('on','off','local','remote_write','remote_apply')) and not any(v in text for v in sensitive):return text
+ return '[withheld]'
+
+
+def postgres_command_summary(command,sensitive):
+ if isinstance(command,str):
+  try:command=shlex.split(command)
+  except ValueError:return {'recognized':False,'raw_command_withheld':True}
+ if not isinstance(command,list) or not command or command[0]!='postgres':
+  return {'recognized':False,'raw_command_withheld':True}
+ result={'recognized':True,'parameters':{},'unclassified_argument_count':0,'raw_command_withheld':True}
+ i=1
+ while i<len(command):
+  if command[i]=='-c' and i+1<len(command) and isinstance(command[i+1],str):
+   item=command[i+1];i+=2
+  elif isinstance(command[i],str) and command[i].startswith('-c') and len(command[i])>2:
+   item=command[i][2:];i+=1
+  else:result['unclassified_argument_count']+=1;i+=1;continue
+  key,separator,value=item.partition('=')
+  if separator and key in PUBLIC_PG_PARAMETERS:
+   # Retain duplicates and ordering, since the last assignment wins.
+   result.setdefault('ordered_parameters',[]).append({'name':key,'value':public_tuning_value(value,sensitive)})
+   result['parameters'][key]=public_tuning_value(value,sensitive)
+  else:result['unclassified_argument_count']+=1
+ return result
+
+
+def bind_options(row):
+ result={};options=row.get('bind') or {}
+ for key in ('create_host_path','non_recursive','recursive_read_only'):
+  if type(options.get(key)) is bool:result[key]=options[key]
+ if options.get('propagation') in ('private','rprivate','shared','rshared','slave','rslave'):
+  result['propagation']=options['propagation']
+ if options.get('selinux') in ('z','Z'):result['selinux']=options['selinux']
+ result['unclassified_option_count']=len(set(options)-set(result))
+ return result
+
+
+def volume_details(current,managed,live,sensitive):
+ before=current.get('volumes') or [];after=managed.get('volumes') or []
+ a={row.get('target'):row for row in before};b={row.get('target'):row for row in after}
+ observed={row.get('Destination'):row for row in live.get('Mounts',[]) or []}
+ details={'target_sets_equal':set(a)==set(b),'current_count':len(before),'proposed_count':len(after),'mounts':[]}
+ for target,row in b.items():
+  old=a.get(target)
+  if not isinstance(target,str) or not re.fullmatch(r'/[A-Za-z0-9_./-]{0,511}',target) or any(v in target for v in sensitive):
+   details['mounts'].append({'target_withheld':True});continue
+  item={'target':target,'present_in_current':old is not None}
+  if old is not None:
+   item.update({'same_source':old.get('source')==row.get('source'),'same_type':old.get('type')==row.get('type'),
+    'current_read_only':bool(old.get('read_only',False)),'proposed_read_only':bool(row.get('read_only',False)),
+    'current_bind_options':bind_options(old),'proposed_bind_options':bind_options(row),
+    'other_fields_equal':{k:v for k,v in old.items() if k not in ('type','source','target','read_only','bind')}
+     =={k:v for k,v in row.items() if k not in ('type','source','target','read_only','bind')}})
+   if target in observed:
+    item['live_source_matches_current']=observed[target].get('Source')==old.get('source')
+    item['live_read_only_matches_current']=(not bool(observed[target].get('RW',True)))==bool(old.get('read_only',False))
+  details['mounts'].append(item)
+ return details
+
+
+def difference_details(current,managed,rows,requirements,values):
+ sensitive=sensitive_values(requirements,values)
+ output={'representation_only_fields':[],'volumes':{},'database':{}}
+ for name,after in managed['services'].items():
+  before=current['services'].get(name,{})
+  if before.get('networks')!=after.get('networks') and canonical_networks(before.get('networks'))==canonical_networks(after.get('networks')):
+   output['representation_only_fields'].append('services.'+name+'.networks')
+  if before.get('volumes')!=after.get('volumes'):
+   output['volumes'][name]=volume_details(before,after,rows.get(name,{}),sensitive)
+  if name in ('db','stats-db'):
+   item={}
+   if before.get('command')!=after.get('command'):
+    item['current_command']=postgres_command_summary(before.get('command'),sensitive)
+    item['proposed_command']=postgres_command_summary(after.get('command'),sensitive)
+   if before.get('shm_size')!=after.get('shm_size'):
+    item['current_shm_size_present']='shm_size' in before
+    item['proposed_shm_size_present']='shm_size' in after
+    item['current_shm_size']=public_tuning_value(before.get('shm_size'),sensitive)
+    item['proposed_shm_size']=public_tuning_value(after.get('shm_size'),sensitive)
+    item['live_shm_size_bytes']=public_tuning_value(rows.get(name,{}).get('HostConfig',{}).get('ShmSize'),sensitive)
+   if item:output['database'][name]=item
+ return output
 
 
 def live_environment_differences(model,rows):
@@ -259,6 +383,7 @@ def plan(root,manifest,requirements,values,live_directory):
   'environment':'dev','rpc_chain_id':chain,'services':len(managed['services']),
   'private_values_exported':False,'changed_runtime_fields':diff,'live_declared_environment_drift':drift,
   'live_images_differing_from_capture':image_drift,
+  'runtime_difference_details':difference_details(current,managed,before,requirements,values),
   'startup_policy_change_expected':intended in diff,'current_compose_layers':len(current_files),
   'proposed_compose_layers':2,'build_fields_compared':False,
   'note':'Comparison only. Build recipes, image/tag binding and mounted file contents require separate review before adoption. No build, recreation, migration or deployment was performed.'}

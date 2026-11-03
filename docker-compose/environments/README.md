@@ -56,6 +56,14 @@ consistency and the L2 RPC's reported chain ID. It reports changed service/field
 names, declared/live env drift and image changes from the public capture. It
 never prints raw env values, commands, Compose output or credential hashes.
 
+The report also includes `runtime_difference_details`: it separates equivalent
+empty network attachments (`null` versus `{}`), compares bind-mount policies
+without exposing source paths, and shows only allowlisted numeric/boolean
+PostgreSQL tuning options plus shared-memory sizes. Unknown command arguments
+and sensitive-value overlaps are withheld. Nonempty aliases, static addresses
+and other real network changes remain differences. Mount policy differences are
+reported even when the source path is unchanged; do not discard them as cosmetic.
+
 The comparison uses the backend's recorded file list and defaults to live Compose
 directory `/data/blockscout/docker-compose`. A different live path requires an
 explicit `--live-compose-dir` argument and matching recorded paths. Managed

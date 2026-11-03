@@ -128,6 +128,49 @@ class ConfigTests(unittest.TestCase):
    report=T.plan(ROOT,self.manifest,self.requirements,self.values,self.live_dir)
   self.assertEqual(report['status'],'differences_require_review');self.assertNotIn(SECRET,json.dumps(report))
   self.assertIn('services.backend.environment.INDEXER_CONTRACT_CODE_RETRY_DELAY',report['changed_runtime_fields'])
+ def test_empty_network_mapping_representation_is_equivalent(self):
+  a={'services':{'backend':{'networks':{'default':None}}}}
+  for options in ({},{'aliases':[]}):
+   b={'services':{'backend':{'networks':{'default':options}}}}
+   self.assertEqual(T.model_differences(a,b),[])
+   details=T.difference_details(a,b,{},self.requirements,self.values)
+   self.assertEqual(details['representation_only_fields'],['services.backend.networks'])
+ def test_real_network_changes_remain_visible(self):
+  a={'services':{'backend':{'networks':{'default':None}}}}
+  for options in ({'aliases':['different']},{'ipv4_address':'172.19.0.99'},{'priority':1}):
+   b={'services':{'backend':{'networks':{'default':options}}}}
+   self.assertEqual(T.model_differences(a,b),['services.backend.networks'])
+ def test_postgres_tuning_summary_withholds_unclassified_arguments(self):
+  command=['postgres','-c','max_connections=800','-c','shared_buffers=16GB','-c','password='+SECRET,'--opaque='+SECRET]
+  result=T.postgres_command_summary(command,{SECRET})
+  self.assertEqual(result['parameters'],{'max_connections':'800','shared_buffers':'16GB'})
+  self.assertEqual(result['unclassified_argument_count'],2)
+  self.assertNotIn(SECRET,json.dumps(result));self.assertNotIn('password',json.dumps(result))
+ def test_numeric_credentials_are_withheld_from_public_tuning(self):
+  values=deepcopy(self.values)
+  for ref,origin in self.requirements.items():
+   if origin['environment_key']=='RELEASE_COOKIE':values[ref]='1234'
+  sensitive=T.sensitive_values(self.requirements,values)
+  result=T.postgres_command_summary(['postgres','-c','max_connections=1234'],sensitive)
+  self.assertEqual(result['parameters']['max_connections'],'[withheld]')
+  self.assertNotIn('1234',json.dumps(result))
+ def test_volume_policy_details_never_export_source_paths(self):
+  a={'volumes':[{'type':'bind','source':'/private/'+SECRET,'target':'/app/logs','bind':{'create_host_path':True}}]}
+  b={'volumes':[{'type':'bind','source':'/different/'+SECRET,'target':'/app/logs'}]}
+  result=T.volume_details(a,b,{},set())
+  self.assertEqual(result['mounts'][0]['current_bind_options']['create_host_path'],True)
+  self.assertFalse(result['mounts'][0]['same_source'])
+  self.assertNotIn(SECRET,json.dumps(result))
+ def test_database_details_include_shared_memory_and_safe_command(self):
+  a={'services':{'db':{'command':['postgres','-c','max_connections=800'],'shm_size':'1073741824'}}}
+  b={'services':{'db':{'command':['postgres','-c','max_connections=200'],'shm_size':'268435456'}}}
+  rows={'db':{'HostConfig':{'ShmSize':1073741824}}}
+  result=T.difference_details(a,b,rows,self.requirements,self.values)
+  db=result['database']['db']
+  self.assertEqual(db['current_shm_size'],'1073741824')
+  self.assertEqual(db['live_shm_size_bytes'],'1073741824')
+  self.assertEqual(db['current_command']['parameters']['max_connections'],'800')
+  self.assertNotIn(SECRET,json.dumps(result))
 
 
 class ComposeTests(ConfigTests):
