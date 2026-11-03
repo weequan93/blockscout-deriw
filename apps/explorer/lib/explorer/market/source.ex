@@ -331,8 +331,10 @@ defmodule Explorer.Market.Source do
   """
   @spec market_cap_history_source() :: module
   def market_cap_history_source do
-    config(:market_cap_history_source) ||
-      Enum.find(@sources, fn source -> source.market_cap_history_fetching_enabled?() == true end)
+    unless Explorer.Market.native_coin_price_only?() do
+      config(:market_cap_history_source) ||
+        Enum.find(@sources, fn source -> source.market_cap_history_fetching_enabled?() == true end)
+    end
   end
 
   @doc """

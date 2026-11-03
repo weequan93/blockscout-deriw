@@ -136,7 +136,10 @@ defmodule BlockScoutWeb.API.V2.StatsController do
         data ->
           data
       end
-      |> Enum.map(fn day -> Map.take(day, [:closing_price, :market_cap, :tvl, :date]) end)
+      |> Enum.map(fn day ->
+        data = Map.take(day, [:closing_price, :market_cap, :tvl, :date])
+        if Market.native_coin_price_only?(), do: Map.put(data, :market_cap, nil), else: data
+      end)
 
     market_history_data =
       MarketHistoryChartController.encode_market_history_data(price_history_data, current_total_supply)

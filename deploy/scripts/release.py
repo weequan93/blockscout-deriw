@@ -198,20 +198,32 @@ def recreate(api,path,manifest,live_directory,log):
     except subprocess.TimeoutExpired:process.kill();process.wait(timeout=10)
 
 
-def runtime_probe():
+def runtime_probe(market_expression=''):
  expression='''
 true = Application.get_env(:explorer, Explorer.Chain.Cache.Counters.TransactionsCount)[:approximate?];
 "18417507517" = Application.get_env(:block_scout_web, :chain_id);
 60000 = Application.get_env(:indexer, :contract_code_retry_delay);
 1 = Application.get_env(:indexer, :contract_code_concurrency);
 "176114083..latest" = Application.get_env(:indexer, :trace_block_ranges);
+market_price_ready = if System.get_env("MARKET_NATIVE_COIN_PRICE_ONLY") == "true" do
+  case Explorer.Market.Fetcher.Coin.get_coin_exchange_rate() do
+    %{fiat_value: %Decimal{} = price} = coin ->
+      rate = Explorer.Market.apply_native_coin_policy(coin);
+      Decimal.compare(price, Decimal.new(0)) == :gt and
+        is_nil(rate.total_supply) and is_nil(rate.available_supply) and is_nil(rate.market_cap)
+    _ -> false
+  end
+else
+  nil
+end;
 IO.puts("BLOCKSCOUT_DEPLOY_CHECK=" <> Jason.encode!(%{
   settings_ok: true,
+  market_price_ready: market_price_ready,
   historical_scanner_running: is_pid(Process.whereis(Indexer.Temporary.UncatalogedTokenTransfers)),
   repair_disabled: Indexer.Temporary.UncatalogedTokenTransfers.Supervisor.disabled?()
 }))
 '''
- return expression
+ return market_expression+expression
 
 
 def unchanged_others(api,before,after):
@@ -223,7 +235,7 @@ def unchanged_others(api,before,after):
 
 def verify(api,builder,checker,manifest,state_path,state,side,wait=False):
  model=api.compose_model(Path(state['live_directory']),manifest,{},[state_path.parent/(side+'.compose.json')],True)
- ready=False;runtime=False;scanner=None;deadline=time.monotonic()+120
+ ready=False;runtime=False;scanner=None;price_ready=None;deadline=time.monotonic()+120
  for attempt in range(30 if wait else 1):
   rows=api.inspect_project(manifest,require_running=False)
   unchanged_others(api,state['before'],rows)
@@ -243,14 +255,17 @@ def verify(api,builder,checker,manifest,state_path,state,side,wait=False):
    'Backend network set changed')
   try:
    health=checker.live_health(api,rows)
-   probe=checker.marked_json(api,api.run(['docker','exec','backend','/app/bin/blockscout','rpc',runtime_probe()],timeout=20))
+   probe=checker.marked_json(api,api.run(['docker','exec','backend','/app/bin/blockscout','rpc',
+    runtime_probe(builder.market_policy().smoke_expression())],timeout=20))
    scanner=probe.get('historical_scanner_running')
+   price_ready=probe.get('market_price_ready')
    runtime=probe.get('settings_ok') is True
    if side=='forward':runtime=runtime and probe.get('repair_disabled') is True and scanner is False
-   ready=all(health.values()) and runtime and backend.get('State',{}).get('Running') is True and backend.get('RestartCount')==0
+   price_ok=service.get('environment',{}).get('MARKET_NATIVE_COIN_PRICE_ONLY')!='true' or price_ready is True
+   ready=all(health.values()) and runtime and price_ok and backend.get('State',{}).get('Running') is True and backend.get('RestartCount')==0
    if ready:api.rpc_chain(manifest)
   except api.ConfigError:
-   health={'backend_readiness_ok':False,'nft_connection_and_queue_ok':False};ready=False
+   health={'backend_readiness_ok':False,'nft_connection_and_queue_ok':False};ready=False;runtime=False;price_ready=None
   fresh=api.inspect_project(manifest,require_running=False)
   api.ensure_stable(rows,fresh,'Deployment changed during release verification')
   if ready or not wait or time.monotonic()>=deadline:break
@@ -258,9 +273,10 @@ def verify(api,builder,checker,manifest,state_path,state,side,wait=False):
   time.sleep(2)
  return {'status':'verified' if ready else 'needs_attention','environment':'dev','side':side,'state':str(state_path),'recorded_phase':state['status'],
   'backend_image':backend['Image'],'backend':api.lifecycle_summary(backend),**health,'runtime_settings_ok':runtime,
+  'market_price_ready':price_ready,
   'historical_scanner_running':scanner,'startup_migrations_executed':False,'unrelated_containers_unchanged':True,
   'deferred_index_migrations':state['deferred_migrations'],
-  'scope':'Readiness, selected runtime settings, scanner policy, NFT connectivity and container/mount preservation. '
+  'scope':'Readiness, selected runtime settings, scanner policy, NFT connectivity, container/mount preservation and enabled native-price cache. '
    'No DB restore or migration. Chain/indexing progress and representative API behavior need subsequent observation.'}
 
 

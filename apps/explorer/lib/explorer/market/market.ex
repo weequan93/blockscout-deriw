@@ -21,10 +21,8 @@ defmodule Explorer.Market do
   """
   @spec get_native_coin_exchange_rate_from_db(boolean()) :: Token.t()
   def get_native_coin_exchange_rate_from_db(secondary_coin? \\ false) do
-    secondary_coin?
-    |> fetch_recent_history()
-    |> List.first()
-    |> MarketHistory.to_token()
+    coin = secondary_coin? |> fetch_recent_history() |> List.first() |> MarketHistory.to_token()
+    if secondary_coin?, do: coin, else: apply_native_coin_policy(coin)
   end
 
   @doc """
@@ -32,7 +30,22 @@ defmodule Explorer.Market do
   """
   @spec get_coin_exchange_rate() :: Token.t()
   def get_coin_exchange_rate do
-    Coin.get_coin_exchange_rate() || get_native_coin_exchange_rate_from_db()
+    (Coin.get_coin_exchange_rate() || get_native_coin_exchange_rate_from_db())
+    |> apply_native_coin_policy()
+  end
+
+  @doc "Whether the native coin borrows a price without the provider's supply or market size."
+  def native_coin_price_only? do
+    Application.get_env(:explorer, __MODULE__, [])[:native_coin_price_only] == true
+  end
+
+  @doc false
+  def apply_native_coin_policy(%Token{} = coin) do
+    if native_coin_price_only?() do
+      %{coin | available_supply: nil, total_supply: nil, market_cap: nil, volume_24h: nil}
+    else
+      coin
+    end
   end
 
   @doc """
@@ -69,5 +82,6 @@ defmodule Explorer.Market do
     |> DateTime.to_date()
     |> MarketHistory.price_at_date(false, options)
     |> MarketHistory.to_token()
+    |> apply_native_coin_policy()
   end
 end

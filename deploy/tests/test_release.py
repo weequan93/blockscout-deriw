@@ -51,7 +51,8 @@ class ReleaseTests(unittest.TestCase):
   if command[:3]==['docker','image','tag']:return ''
   if command[:3]==['docker','exec','backend']:
    forward=self.rows['backend']['Image']==IMAGE
-   return C.MARKER+json.dumps({'settings_ok':True,'repair_disabled':forward,'historical_scanner_running':not forward})
+   return C.MARKER+json.dumps({'settings_ok':True,'repair_disabled':forward,'historical_scanner_running':not forward,
+    'market_price_ready':True if T.env_map(self.rows['backend']).get('MARKET_NATIVE_COIN_PRICE_ONLY')=='true' else None})
   raise AssertionError('Unexpected command: '+str(command[:3]))
  @contextlib.contextmanager
  def mocked(self):
@@ -173,6 +174,21 @@ class ReleaseTests(unittest.TestCase):
    status=R.status(T,B,C,self.manifest,path)
   self.assertEqual(status['status'],'needs_attention');self.assertEqual(path.read_bytes(),saved)
   self.assertEqual(self.calls,['forward.compose.json'])
+ def test_enabled_price_feed_requires_an_actual_rate_before_success(self):
+  self.managed['services']['backend']['environment']['MARKET_NATIVE_COIN_PRICE_ONLY']='true'
+  with self.mocked(),contextlib.redirect_stdout(io.StringIO()):
+   result=self.deploy(True);path=Path(result['state']);saved=path.read_bytes()
+   original=self.runner
+   def missing_rate(command,**kwargs):
+    response=original(command,**kwargs)
+    if command[:3]==['docker','exec','backend']:
+     data=json.loads(response[len(C.MARKER):]);data['market_price_ready']=False
+     return C.MARKER+json.dumps(data)
+    return response
+   with patch.object(T,'run',side_effect=missing_rate):
+    status=R.status(T,B,C,self.manifest,path)
+  self.assertEqual(status['status'],'needs_attention');self.assertFalse(status['market_price_ready'])
+  self.assertEqual(path.read_bytes(),saved);self.assertEqual(self.calls,['forward.compose.json'])
  def test_cli_requires_explicit_check_or_apply(self):
   arguments=['deploy','dev','deploy','--private-file',str(self.e.f.private),'--receipt',str(self.e.path)]
   with patch.object(sys,'argv',arguments),contextlib.redirect_stderr(io.StringIO()):

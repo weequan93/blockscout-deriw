@@ -268,6 +268,7 @@ def managed_model(root,manifest,values):
  require(str(db.get('shm_size'))==str(database.get('shm_size_bytes')),'Resolved PostgreSQL shared-memory limit differs from confirmed dev settings')
  for key in ('CHAIN_ID','ETHEREUM_JSONRPC_HTTP_URL','ETHEREUM_JSONRPC_TRACE_URL'):
   require('rpc.prod.deriw.com' not in str(backend.get(key,'')),'Production RPC leaked into dev backend selection')
+ load_tool('market_policy').validate(sys.modules[__name__],backend)
  return model
 
 
@@ -525,6 +526,11 @@ def main():
  activation.add_argument('--private-file',type=Path,required=True);activation.add_argument('--receipt',type=Path,required=True)
  activation.add_argument('--live-compose-dir',type=Path,default=Path('/data/blockscout/docker-compose'))
  mode=activation.add_mutually_exclusive_group(required=True);mode.add_argument('--check',action='store_true');mode.add_argument('--apply',action='store_true')
+ market=sub.add_parser('eth-price',help='Check or build/deploy the committed ETH price-only backend profile')
+ market.add_argument('--private-file',type=Path,required=True)
+ market.add_argument('--live-compose-dir',type=Path,default=Path('/data/blockscout/docker-compose'))
+ mode=market.add_mutually_exclusive_group(required=True);mode.add_argument('--check',action='store_true');mode.add_argument('--apply',action='store_true')
+ market.add_argument('--reuse',action='store_true',help='Revalidate an existing candidate before applying')
  status=sub.add_parser('status',help='Verify a saved managed release without modifying it');status.add_argument('--state',type=Path,required=True)
  undo=sub.add_parser('rollback',help='Plan/apply the previous backend image and settings without startup migrations')
  undo.add_argument('--state',type=Path,required=True)
@@ -557,7 +563,10 @@ def main():
      releases.rollback(api,builder,checker,ROOT,manifest,args.state,apply=args.apply))
     print(json.dumps(report,indent=2));return 0 if report['status'] in ('verified','rollback_plan_ready','not_activated') else 1
    values=load_private(args.private_file,requirements)
-   if args.operation=='build':
+   if args.operation=='eth-price':
+    report=load_tool('market_policy').enable(api,builder,checker,releases,ROOT,manifest,requirements,values,
+     args.private_file,args.live_compose_dir,check_only=args.check,reuse=args.reuse)
+   elif args.operation=='build':
     report=builder.build_candidate(api,ROOT,manifest,requirements,values,args.private_file,
      args.live_compose_dir,args.state_dir,check_only=args.check,reuse=args.reuse)
    elif args.operation=='deploy':

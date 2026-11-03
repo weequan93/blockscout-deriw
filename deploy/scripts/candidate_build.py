@@ -3,6 +3,7 @@
 from contextlib import contextmanager
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -16,6 +17,11 @@ FORMAT='blockscout-dev-candidate-v1'
 LABEL='org.deriw.build-fingerprint'
 FLAG='INDEXER_UNCATALOGED_TOKEN_TRANSFERS_ENABLED'
 MARKER='BLOCKSCOUT_DEV_CANDIDATE_CONFIG_OK'
+
+
+def market_policy():
+ spec=importlib.util.spec_from_file_location('dev_market_policy',Path(__file__).with_name('market_policy.py'))
+ module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
 
 
 def clean_source(api,root):
@@ -139,7 +145,7 @@ def smoke_expression(mode):
   '{:module, _} = Code.ensure_loaded(sup); '+expected+' = sup.disabled?(); '
   +('' if mode=='true' else ':ignore = sup.start_link([]); ')
   +'nil = Explorer.Chain.fetch_transaction_revert_reason(%{block_number: 1335744}); '
-  'IO.puts("'+MARKER+'")')
+  +market_policy().smoke_expression()+'IO.puts("'+MARKER+'")')
 
 
 def smoke_script(mode):
@@ -181,7 +187,7 @@ def smoke_image(api,image,source,backend_environment,directory):
 
 def approved_preflight(api,report):
  intended='services.backend.environment.'+FLAG
- api.require(set(report['changed_runtime_fields'])<={intended} and not report['live_declared_environment_drift']
+ api.require(set(report['changed_runtime_fields'])<=({intended}|market_policy().FIELDS) and not report['live_declared_environment_drift']
   and not report['live_images_differing_from_capture'],'Dev profile has unreviewed runtime/image differences; build preflight stopped')
 
 
@@ -197,11 +203,13 @@ def _build_candidate(api,root,manifest,requirements,values,private_path,live_dir
  validate_state_directory(api,state_directory,root)
  report=api.plan(root,manifest,requirements,values,live_directory);approved_preflight(api,report)
  before=api.inspect_project(manifest);model=api.managed_model(root,manifest,values)
+ market=market_policy().provider_check(api,model['services']['backend'].get('environment') or {})
+ api.require(market['status']!='unavailable','ETH price provider is unavailable from backend; no build or restart requested')
  source=source_plan(api,root,manifest,model,before)
  existing=image_info(api,source['tag'],missing=True)
  summary={'environment':'dev','source_commit':source['source_commit'],'release_version':source['release_version'],
   'platform':source['platform'],'candidate_tag':source['tag'],'source_context':'git archive of the committed revision',
-  'activation_performed':False}
+  'activation_performed':False,'native_coin_market':market}
  if check_only:return {'status':'candidate_build_plan_ready',**summary,'candidate_already_exists':existing is not None,
   'effect':'Build mode creates a candidate image and isolated release-config checks. No live service recreation, application startup or migrations.'}
  api.require((existing is not None)==reuse,'Candidate already exists; use --reuse, or omit --reuse when no candidate exists')

@@ -128,6 +128,8 @@ def inherited_image_changes(api,baseline,image,service,live):
  old=api.env_map(live)
  changed=sorted(k for k in old.keys()|effective.keys() if old.get(k)!=effective.get(k))
  expected={'BLOCKSCOUT_VERSION','INDEXER_UNCATALOGED_TOKEN_TRANSFERS_ENABLED'}
+ policy=api.load_tool('market_policy');policy.validate(api,service.get('environment') or {})
+ if service.get('environment',{}).get('MARKET_NATIVE_COIN_PRICE_ONLY')=='true':expected.update(policy.ENVIRONMENT)
  return {'fields':fields,'environment_keys':changed,'unexpected_environment_keys':sorted(set(changed)-expected)}
 
 
@@ -278,6 +280,8 @@ def check(api,builder,root,manifest,requirements,values,private_path,receipt_pat
  builder.approved_preflight(api,api.plan(root,manifest,requirements,values,live_directory))
  before=api.inspect_project(manifest);context=api.release_context(before['backend'],manifest)
  model=api.release_model(api.managed_model(root,manifest,values),context)
+ market=builder.market_policy().provider_check(api,model['services']['backend'].get('environment') or {})
+ api.require(market['status']!='unavailable','ETH price provider is unavailable from backend; no activation requested')
  receipt,image=candidate(api,builder,root,manifest,requirements,values,private_path,receipt_path)
  api.require(receipt['baseline_image_ids']=={name:row['Image'] for name,row in before.items()},'Live image identities changed since candidate build')
  baseline=builder.image_info(api,before['backend']['Image'])
@@ -305,7 +309,7 @@ def check(api,builder,root,manifest,requirements,values,private_path,receipt_pat
  if not (migration_startup or start_only) or not command_matches:blockers.append('startup_command_requires_review')
  return {'status':'preactivation_evidence_passed' if not blockers else 'preactivation_review_required',
   'environment':'dev','candidate_image':image['Id'],'candidate_source_commit':receipt['source_commit'],
-  'activation_performed':False,'blockers':blockers,'inherited_image_changes':defaults,
+  'activation_performed':False,'blockers':blockers,'inherited_image_changes':defaults,'native_coin_market':market,
   'migration_inventory':migrations,'current_database_migrations':pending,'mount_access':mounts,**health,
   'reviewed_performance_index_metadata':indexes,
   'startup_includes_create_and_migrate':migration_startup,

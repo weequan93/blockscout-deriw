@@ -151,6 +151,63 @@ The complete server rollout design is in
 
 ## Build a dev candidate
 
+### Enable ETH price data on dev
+
+The dev profile now selects the user's requested Ethereum USD price from
+CoinGecko. These public settings are committed in `dev/compose.json`; no provider
+key is committed or added to the 133 server-only inputs. The native symbol/name
+are `ETH`/`Ether` for backend market lookups. Existing frontend branding is preserved.
+
+`MARKET_NATIVE_COIN_PRICE_ONLY=true` retains prices and price history while
+withholding the provider's Ethereum supply, market cap and global trading volume
+from native-coin API results. Existing cached/database rates also pass through
+this policy. Foreign market-cap history is not fetched and existing market-cap
+chart points are masked when served. Top-account native supply percentages stay
+hidden until a separate dev-chain supply source is implemented. Other environments
+retain the previous behavior unless they explicitly enable this option.
+
+The initial price-history window is two days, rather than a full-year backfill,
+to obtain yesterday's closing price for the daily change. ERC-20 price fetching
+stays disabled. Market price history can write a few ordinary market-history
+rows; no schema migration or chain-history repair is requested.
+
+From a clean committed review checkout containing this update, run:
+
+```bash
+./deploy.sh dev eth-price \
+  --private-file /data/blockscout-dev-private/private-20261103.json --check
+
+./deploy.sh dev eth-price \
+  --private-file /data/blockscout-dev-private/private-20261103.json --apply
+```
+
+`--check` performs the existing deployment comparison and a single unauthenticated
+HTTPS quote read through the running backend. It performs no build or restart.
+The quote read has a 10-second curl limit, 2 MiB body cap, TLS validation and no
+redirect following; only a positive Ethereum/USD quote is accepted. Provider
+failure stops the command before a build or recreation. Diagnostics never print
+keys, request headers, raw errors or the response body.
+
+`--apply` builds a candidate from the selected committed source, runs isolated
+configuration and price-policy checks, records the candidate receipt, and invokes
+the existing backend-only release. The new price-only code requires a rebuilt
+image for this rollout. Startup migrations remain disabled, both reviewed index
+migrations remain deferred, and NFT/DB/frontend/proxy containers are preserved.
+Only the exact reviewed ETH setting values are allowed as additional deployment
+differences; other runtime, image or private-input drift still stops preflight.
+
+The command prints private release-state and rollback paths. Keep them on the
+server. Runtime success additionally requires an actual positive rate in the
+backend's market cache (`market_price_ready=true`); configuration alone does not
+prove the provider fetch succeeded. Daily percentage change can appear later as
+the two-day price history arrives. A failed provider fetch after restart leaves
+the release available for status/rollback; it does not trigger an automatic
+rollback or touch unrelated services. Follow the printed state path with the
+existing `status` or `rollback` commands. If a previous attempt built the same
+candidate, use `eth-price --apply --reuse` to revalidate it before deployment.
+
+### Build separately
+
 Use the clean review checkout on the explorer server. The source revision must
 contain these commands and be committed; dirty checkouts are refused. Keep the
 existing eight-layer stack running and retain its configuration backups.
