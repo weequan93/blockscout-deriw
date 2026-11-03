@@ -152,6 +152,17 @@ def network_definition(row):
             for name, value in (row.get('NetworkSettings', {}).get('Networks') or {}).items()}
 
 
+def host_definition(row):
+    values = dict(row['HostConfig'])
+    # Docker's readHostConfig calls InitDNSHostConfig on daemon startup,
+    # replacing nil DNS slices with empty slices. Normalize only these three
+    # null values; preserve missing keys, nonempty lists and every other field.
+    for key in ('Dns', 'DnsOptions', 'DnsSearch'):
+        if key in values and values[key] is None:
+            values[key] = []
+    return values
+
+
 def validate_containers(before, after, policies='either', running=None):
     require(set(before) == set(after), 'container_service_set_changed')
     for name, old in before.items():
@@ -159,7 +170,7 @@ def validate_containers(before, after, policies='either', running=None):
         require(old['Id'] == new['Id'] and old['Image'] == new['Image'] and old['Config'] == new['Config'],
                 'container_identity_image_or_configuration_changed')
         require(sorted_mounts(old) == sorted_mounts(new), 'container_mounts_changed')
-        a, b = dict(old['HostConfig']), dict(new['HostConfig'])
+        a, b = host_definition(old), host_definition(new)
         saved_policy, actual_policy = a.pop('RestartPolicy'), b.pop('RestartPolicy')
         require(a == b and network_definition(old) == network_definition(new), 'container_host_or_network_definition_changed')
         disabled = {'Name': 'no', 'MaximumRetryCount': 0}

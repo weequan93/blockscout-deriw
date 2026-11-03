@@ -68,6 +68,42 @@ class PreservationTests(unittest.TestCase):
             with self.assertRaises(M.S.PlanError):
                 M.validate_containers(before, after)
 
+    def test_docker_daemon_empty_dns_normalization_preserves_original_snapshot(self):
+        before = rows()
+        for row in before.values():
+            row['HostConfig'].update(Dns=None, DnsOptions=None, DnsSearch=None)
+        original = deepcopy(before)
+        after = deepcopy(before)
+        for row in after.values():
+            row['HostConfig'].update(Dns=[], DnsOptions=[], DnsSearch=[])
+        M.validate_containers(before, after, policies='original')
+        M.validate_containers(after, before, policies='original')
+        self.assertEqual(before, original)
+
+    def test_real_dns_changes_and_non_dns_empty_changes_are_rejected(self):
+        for key in ('Dns', 'DnsOptions', 'DnsSearch'):
+            for old, new in ((None, ['configured']), (['configured'], []), (['one'], ['two']),
+                             (['first', 'second'], ['second', 'first']), (None, {}), (None, '')):
+                with self.subTest(key=key, old=old, new=new):
+                    before = rows()
+                    before['backend']['HostConfig'][key] = old
+                    after = deepcopy(before)
+                    after['backend']['HostConfig'][key] = new
+                    with self.assertRaisesRegex(M.S.PlanError, 'host_or_network_definition_changed'):
+                        M.validate_containers(before, after)
+        for key in ('ExtraHosts', 'Binds', 'PortBindings'):
+            before = rows()
+            before['backend']['HostConfig'][key] = None
+            after = deepcopy(before)
+            after['backend']['HostConfig'][key] = []
+            with self.assertRaises(M.S.PlanError):
+                M.validate_containers(before, after)
+        before = rows()
+        after = deepcopy(before)
+        after['backend']['HostConfig']['Dns'] = []
+        with self.assertRaises(M.S.PlanError):
+            M.validate_containers(before, after)
+
     def test_static_ip_is_preserved_while_dynamic_ip_changes_are_tolerated(self):
         before = rows()
         after = deepcopy(before)
@@ -416,6 +452,31 @@ class ExecutionTests(unittest.TestCase):
         self.host.resume()
         self.assertEqual((M.S.TARGET / 'payload').read_bytes(), b'newer-writes')
         self.assertEqual(self.host.copied, 1)
+
+    def test_resume_after_dns_comparison_failure_uses_verified_copy_without_recopying(self):
+        for row in self.host.plan['before'].values():
+            row['HostConfig'].update(Dns=None, DnsOptions=None, DnsSearch=None)
+        self.host.live = deepcopy(self.host.plan['before'])
+        def old_verification_failure():
+            for row in self.host.live.values():
+                row['HostConfig'].update(Dns=[], DnsOptions=[], DnsSearch=[])
+            raise M.S.PlanError('container_host_or_network_definition_changed')
+        with patch.object(self.host, 'verify_store', side_effect=old_verification_failure):
+            with self.assertRaisesRegex(M.S.PlanError, 'host_or_network_definition_changed'):
+                self.host.apply()
+        # main records needs_attention when the old validator stops here.
+        self.host.state.update(status='needs_attention', phase='verifying_new_store')
+        self.host.save()
+        self.assertTrue(self.host.state['copy_verified'])
+        self.assertFalse(self.host.state['services_started_on_target'])
+        self.assertFalse(any(row['State']['Running'] for row in self.host.live.values()))
+        events_before_resume = len(self.host.events)
+        self.host.resume()
+        self.assertEqual(self.host.state['status'], 'active')
+        self.assertEqual(self.host.copied, 1)
+        self.assertFalse(any(event[0] == 'rsync' for event in self.host.events[events_before_resume:]))
+        self.assertEqual((M.S.TARGET / 'payload').read_bytes(), b'original-store')
+        self.assertTrue(all(row['HostConfig']['Dns'] is None for row in self.host.plan['before'].values()))
 
     def test_unexpected_target_service_start_blocks_abort(self):
         self.host.apply()

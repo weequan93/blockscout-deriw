@@ -91,6 +91,21 @@ Status reports both the saved phase and observed configuration/unit/container
 state. While an operation holds the lock, a concurrent invocation can report
 that the operation is still running. Use the running operation's phase output.
 
+If the original executor stopped at `verifying_new_store`, the operator's
+read-only diagnostic confirmed only `HostConfig.Dns`, `DnsOptions` and
+`DnsSearch` changed from null to empty arrays on all 14 containers. Docker
+initializes these three nil slices when loading saved container settings
+([upstream implementation](https://github.com/moby/moby/blob/master/daemon/container/container.go#L567)).
+The corrected comparison treats only those null/empty-list representations as
+equal. Configured DNS values and their order, missing keys, other host settings
+and network definitions remain checked. Saved plan/journal files stay intact.
+
+For that verified-copy failure, update to the corrected executor and run
+`--resume --state` with the same private plan, then `--status --state`.
+Resume rechecks the copied store before starting services; it does not repeat
+the copy, restart active daemons or run application migrations. A further mismatch
+still stops recovery for review.
+
 Before `--resume` has begun, restore the original configuration/store with:
 
 ```bash
