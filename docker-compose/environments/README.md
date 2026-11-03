@@ -87,6 +87,16 @@ differences. Omitted `read_only` versus explicit false, and omitted versus empty
 bind option objects, compare as defaults; explicit bind policies, changed paths,
 read-only mounts and mount ordering remain differences.
 
+Docker inspection is different from Compose declaration ordering: some Docker
+versions return the same final mount records in a different array order on each
+read. The snapshot stability check compares those full records as a multiset,
+retaining duplicates and every property. `inspection_order_only_changes` reports
+such harmless reorderings. Real source/target/mode/driver/policy changes, process
+restarts, recreation, environment or other configuration changes still stop the
+check. A stopped stability check includes `changed_containers`, with service and
+field names and public lifecycle metadata; it never includes raw env, commands,
+labels or host paths. Compose volume declaration ordering remains compared.
+
 The comparison uses the backend's recorded file list and defaults to live Compose
 directory `/data/blockscout/docker-compose`. A different live path requires an
 explicit `--live-compose-dir` argument and matching recorded paths. Managed

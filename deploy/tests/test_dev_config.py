@@ -118,6 +118,8 @@ class ConfigTests(unittest.TestCase):
   with patch.object(sys,'argv',['deploy','dev','capture-private','--output',str(output)]),patch.object(T,'inspect_project',side_effect=[self.rows,after]),contextlib.redirect_stdout(text):
    self.assertEqual(T.main(),1)
   self.assertFalse(output.exists());self.assertNotIn(SECRET,text.getvalue())
+  report=json.loads(text.getvalue());self.assertEqual(report['changed_containers'][0]['service'],'backend')
+  self.assertEqual(report['changed_containers'][0]['changed_fields'],['restart_count'])
  def test_capture_stdout_contains_no_private_values(self):
   output=self.parent/'private'/'private.json';text=io.StringIO()
   with patch.object(sys,'argv',['deploy','dev','capture-private','--output',str(output)]),patch.object(T,'inspect_project',return_value=self.rows),contextlib.redirect_stdout(text):
@@ -135,6 +137,49 @@ class ConfigTests(unittest.TestCase):
    report=T.plan(ROOT,self.manifest,self.requirements,self.values,self.live_dir)
   self.assertEqual(report['status'],'differences_require_review');self.assertNotIn(SECRET,json.dumps(report))
   self.assertIn('services.backend.environment.INDEXER_CONTRACT_CODE_RETRY_DELAY',report['changed_runtime_fields'])
+ def test_inspect_mount_order_is_not_a_stability_change(self):
+  before=deepcopy(self.rows)
+  mounts=[{'Type':'bind','Source':'/data/'+SECRET,'Destination':'/app/logs','RW':True,'Propagation':'rprivate'},
+   {'Type':'bind','Source':'/data/dets','Destination':'/app/dets','RW':True,'Propagation':'rprivate'}]
+  before['backend']['Mounts']=mounts
+  after=deepcopy(before);after['backend']['Mounts'].reverse()
+  self.assertEqual(T.stable(before),T.stable(after));self.assertEqual(T.stability_changes(before,after),[])
+  note=T.inspection_order_changes(before,after)
+  self.assertEqual(note,['services.backend.inspect_mounts_order']);self.assertNotIn(SECRET,json.dumps(note))
+ def test_actual_inspect_mount_properties_remain_stability_changes(self):
+  before=deepcopy(self.rows)
+  before['backend']['Mounts']=[{'Type':'bind','Source':'/data/logs','Destination':'/app/logs','RW':True,'Propagation':'rprivate','Driver':'local'}]
+  for field,value in [('Type','volume'),('Source','/private/'+SECRET),('Destination','/other'),('RW',False),('Propagation','rshared'),('Driver','different'),('OtherMetadata',SECRET)]:
+   after=deepcopy(before);after['backend']['Mounts'][0][field]=value
+   changes=T.stability_changes(before,after)
+   self.assertEqual(changes[0]['changed_fields'],['mounts'])
+   self.assertNotIn(SECRET,json.dumps(changes))
+ def test_inspect_mount_multiplicity_is_not_discarded(self):
+  before=deepcopy(self.rows);before['backend']['Mounts']=[{'Type':'bind','Source':'/data/logs','Destination':'/app/logs','RW':True}]
+  after=deepcopy(before);after['backend']['Mounts']+=deepcopy(after['backend']['Mounts'])
+  self.assertNotEqual(T.stable(before),T.stable(after))
+ def test_stability_diagnostics_do_not_print_configuration_values(self):
+  after=deepcopy(self.rows)
+  after['backend']['Config']['Env'].append('PRIVATE='+SECRET)
+  after['backend']['Config']['Cmd']=['echo',SECRET]
+  after['backend']['Config']['Labels']['PRIVATE_LABEL']=SECRET
+  after['backend']['HostConfig']={'Binds':['/private/'+SECRET+':/secret']}
+  with self.assertRaises(T.StabilityError) as caught:T.ensure_stable(self.rows,after,'Expected test change')
+  changes=caught.exception.changes
+  self.assertEqual(changes[0]['changed_fields'],['container_configuration','host_configuration'])
+  self.assertEqual(changes[0]['configuration_fields']['fields'],['Cmd','Env','Labels'])
+  self.assertNotIn(SECRET,json.dumps(changes));self.assertNotIn('PRIVATE_LABEL',json.dumps(changes))
+ def test_recreation_and_started_time_changes_are_not_ignored(self):
+  for field in ('Id','StartedAt'):
+   after=deepcopy(self.rows)
+   if field=='Id':after['backend']['Id']='f'*64
+   else:after['backend']['State']['StartedAt']='2026-11-03T04:00:00Z'
+   with self.assertRaises(T.StabilityError) as caught:T.ensure_stable(self.rows,after,'Expected test change')
+   self.assertEqual(caught.exception.changes[0]['changed_fields'],['container_identity'] if field=='Id' else ['started_at'])
+ def test_environment_order_is_still_checked(self):
+  after=deepcopy(self.rows);after['backend']['Config']['Env'].reverse()
+  self.assertNotEqual(T.stable(self.rows),T.stable(after))
+  self.assertEqual(T.stability_changes(self.rows,after)[0]['configuration_fields']['fields'],['Env'])
  def test_empty_network_mapping_representation_is_equivalent(self):
   a={'services':{'backend':{'networks':{'default':None}}}}
   for options in ({},{'aliases':[]}):
@@ -233,12 +278,16 @@ class ComposeTests(ConfigTests):
   for path in self.paths[1:]:path.write_text('{"services":{}}')
   rows=deepcopy(self.rows)
   rows['backend']['Config']['Env']=[v for v in rows['backend']['Config']['Env'] if not v.startswith('INDEXER_UNCATALOGED_TOKEN_TRANSFERS_ENABLED=')]
-  with patch.object(T,'inspect_project',return_value=rows),patch.object(T,'rpc_chain',return_value=18417507517):
+  rows['backend']['Mounts']=[{'Type':'bind','Source':'/data/logs','Destination':'/app/logs','RW':True},
+   {'Type':'bind','Source':'/data/dets','Destination':'/app/dets','RW':True}]
+  after=deepcopy(rows);after['backend']['Mounts'].reverse()
+  with patch.object(T,'inspect_project',side_effect=[rows,after]),patch.object(T,'rpc_chain',return_value=18417507517):
    report=T.plan(ROOT,self.manifest,self.requirements,self.values,self.live_dir)
   self.assertEqual(report['current_compose_layers'],8);self.assertEqual(report['proposed_compose_layers'],2)
   self.assertEqual(report['changed_runtime_fields'],['services.backend.environment.INDEXER_UNCATALOGED_TOKEN_TRANSFERS_ENABLED'])
   self.assertEqual(report['live_declared_environment_drift'],[])
   self.assertTrue(report['startup_policy_change_expected']);self.assertNotIn(SECRET,json.dumps(report))
+  self.assertEqual(report['inspection_order_only_changes'],['services.backend.inspect_mounts_order'])
 
 
 if __name__=='__main__':

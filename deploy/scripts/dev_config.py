@@ -18,6 +18,12 @@ IDENT=re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,159}')
 class ConfigError(Exception):pass
 
 
+class StabilityError(ConfigError):
+ def __init__(self,message,changes,order_changes):
+  super().__init__(message)
+  self.changes=changes;self.order_changes=order_changes
+
+
 def require(condition,message):
  if not condition:raise ConfigError(message)
 
@@ -79,10 +85,69 @@ def inspect_project(manifest):
  return by_service
 
 
+def inspect_mounts(mounts):
+ # Docker inspect describes the final mounts, not their application order. Older
+ # daemons build this array by iterating a map; compare its full records as a multiset.
+ require(mounts is None or isinstance(mounts,list),'Unexpected Docker mount metadata')
+ require(all(isinstance(row,dict) for row in mounts or []),'Unexpected Docker mount record')
+ return sorted(mounts or [],key=lambda row:json.dumps(row,sort_keys=True,separators=(',',':')))
+
+
 def stable(rows):
  return {name:(row.get('Id'),row.get('Image'),row.get('Config'),row.get('HostConfig'),
-  row.get('Mounts'),row.get('NetworkSettings',{}).get('Networks'),row.get('State',{}).get('StartedAt'),
+  inspect_mounts(row.get('Mounts')),row.get('NetworkSettings',{}).get('Networks'),row.get('State',{}).get('StartedAt'),
   row.get('RestartCount')) for name,row in rows.items()}
+
+
+def lifecycle_summary(row):
+ result={};state=row.get('State') or {}
+ if state.get('Status') in ('created','running','paused','restarting','removing','exited','dead'):result['status']=state['Status']
+ if type(row.get('RestartCount')) is int:result['restart_count']=row['RestartCount']
+ started=state.get('StartedAt','')
+ if isinstance(started,str) and re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z',started):result['started_utc']=started
+ identity=row.get('Id','')
+ if isinstance(identity,str) and re.fullmatch(r'[a-f0-9]{64}',identity):result['container_id_prefix']=identity[:12]
+ return result
+
+
+def inspection_order_changes(before,after):
+ return ['services.'+name+'.inspect_mounts_order' for name in sorted(set(before)&set(after))
+  if before[name].get('Mounts')!=after[name].get('Mounts')
+  and inspect_mounts(before[name].get('Mounts'))==inspect_mounts(after[name].get('Mounts'))]
+
+
+def metadata_field_changes(before,after,allowed):
+ before=before or {};after=after or {}
+ changed={key for key in set(before)|set(after) if before.get(key)!=after.get(key) or (key in before)!=(key in after)}
+ return {'fields':sorted(changed&allowed),'other_field_count':len(changed-allowed)}
+
+
+def stability_changes(before,after):
+ a=stable(before);b=stable(after);result=[]
+ names=('container_identity','image_identity','container_configuration','host_configuration','mounts','network_attachments','started_at','restart_count')
+ for name in sorted(set(before)|set(after)):
+  require(isinstance(name,str) and bool(IDENT.fullmatch(name)),'Unexpected service name during stability check')
+  if name not in a or name not in b:
+   result.append({'service':name,'changed_fields':['container_added_or_removed']});continue
+  changed=[field for i,field in enumerate(names) if a[name][i]!=b[name][i]]
+  if not changed:continue
+  item={'service':name,'changed_fields':changed,'before':lifecycle_summary(before[name]),'after':lifecycle_summary(after[name])}
+  if 'container_configuration' in changed:
+   item['configuration_fields']=metadata_field_changes(before[name].get('Config'),after[name].get('Config'),
+    {'Env','Labels','Cmd','Entrypoint','Hostname','Domainname','User','WorkingDir','Image','Healthcheck','ExposedPorts',
+     'AttachStdin','AttachStdout','AttachStderr','OpenStdin','Tty','StopSignal','StopTimeout','StdinOnce','Volumes','ArgsEscaped','Shell'})
+  if 'host_configuration' in changed:
+   item['host_configuration_fields']=metadata_field_changes(before[name].get('HostConfig'),after[name].get('HostConfig'),
+    {'Binds','Mounts','NetworkMode','PortBindings','Dns','DnsOptions','DnsSearch','ExtraHosts','Links','LogConfig','RestartPolicy',
+     'Memory','MemorySwap','MemoryReservation','NanoCpus','CpuShares','CpuPeriod','CpuQuota','CpusetCpus','ShmSize',
+     'IpcMode','PidMode','ReadonlyRootfs','Ulimits','OomKillDisable','AutoRemove','Init','Privileged','SecurityOpt'})
+  result.append(item)
+ return result
+
+
+def ensure_stable(before,after,message):
+ changes=stability_changes(before,after)
+ if changes:raise StabilityError(message,changes,inspection_order_changes(before,after))
 
 
 def collect_values(requirements,rows):
@@ -400,7 +465,7 @@ def plan(root,manifest,requirements,values,live_directory):
  require(not private_drift,'Private inputs differ from live values; capture to a new private file and review before adoption')
  chain=rpc_chain(manifest)
  after=inspect_project(manifest)
- require(stable(before)==stable(after),'Container/configuration/topology changed during comparison; retry when stable')
+ ensure_stable(before,after,'Container/configuration/topology changed during comparison; inspect changed_containers')
  require(compose_model(live_directory,manifest,values,current_files,False)==current,'Live resolved model changed during comparison')
  require(managed_model(root,manifest,values)==managed,'Managed resolved model changed during comparison')
  intended='services.backend.environment.INDEXER_UNCATALOGED_TOKEN_TRANSFERS_ENABLED'
@@ -408,6 +473,7 @@ def plan(root,manifest,requirements,values,live_directory):
   'environment':'dev','rpc_chain_id':chain,'services':len(managed['services']),
   'private_values_exported':False,'changed_runtime_fields':diff,'live_declared_environment_drift':drift,
   'live_images_differing_from_capture':image_drift,
+  'inspection_order_only_changes':inspection_order_changes(before,after),
   'runtime_difference_details':difference_details(current,managed,before,requirements,values),
   'startup_policy_change_expected':intended in diff,'current_compose_layers':len(current_files),
   'proposed_compose_layers':2,'build_fields_compared':False,
@@ -428,7 +494,7 @@ def main():
   manifest,requirements,_=configuration(ROOT,args.environment)
   if args.operation=='capture-private':
    before=inspect_project(manifest);values=collect_values(requirements,before)
-   require(stable(before)==stable(inspect_project(manifest)),'Deployment changed while collecting private values; no output written')
+   ensure_stable(before,inspect_project(manifest),'Deployment changed while collecting private values; no output written')
    save_private(args.output,values,ROOT)
    report={'status':'private_inputs_saved','environment':'dev','value_count':len(values),'output':str(args.output),
     'note':'Keep this file on the server. Do not upload or commit it. No services changed.'}
@@ -437,7 +503,11 @@ def main():
    report=plan(ROOT,manifest,requirements,values,args.live_compose_dir)
   print(json.dumps(report,indent=2));return 0
  except (ConfigError,OSError,ValueError,KeyError,TypeError,IndexError,AttributeError) as error:
-  print(json.dumps({'status':'stopped','reason':str(error) if isinstance(error,ConfigError) else 'Configuration check failed; raw values suppressed'}));return 1
+  report={'status':'stopped','reason':str(error) if isinstance(error,ConfigError) else 'Configuration check failed; raw values suppressed'}
+  if isinstance(error,StabilityError):
+   report['changed_containers']=error.changes
+   report['inspection_order_only_changes']=error.order_changes
+  print(json.dumps(report,indent=2));return 1
 
 
 if __name__=='__main__':raise SystemExit(main())
