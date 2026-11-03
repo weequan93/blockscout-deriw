@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[2]
 SPEC=importlib.util.spec_from_file_location('dev_config',ROOT/'deploy/scripts/dev_config.py')
-T=importlib.util.module_from_spec(SPEC);SPEC.loader.exec_module(T)
+T=importlib.util.module_from_spec(SPEC);sys.modules[SPEC.name]=T;SPEC.loader.exec_module(T)
 SECRET='fixture-private-do-not-export-X29'
 
 

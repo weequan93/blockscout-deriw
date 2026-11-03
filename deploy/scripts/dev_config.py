@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect dev inputs, compare, build or inspect a candidate. No activation."""
+"""Capture, compare, build, deploy or roll back the versioned dev backend."""
 import argparse
 import importlib.util
 from functools import lru_cache
@@ -15,6 +15,20 @@ import sys
 ROOT=Path(__file__).resolve().parents[2]
 ENV_KEY=re.compile(r'[A-Z][A-Z0-9_]{0,159}')
 IDENT=re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,159}')
+MANAGED_RELEASES=Path('/data/blockscout-dev-private/releases')
+
+
+def load_tool(name):
+ spec=importlib.util.spec_from_file_location(name,ROOT/('deploy/scripts/'+name+'.py'))
+ module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
+
+
+def release_context(backend,manifest):
+ return load_tool('release').active_context(sys.modules[__name__],backend,manifest)
+
+
+def release_model(model,context):
+ return load_tool('release').active_model(sys.modules[__name__],model,context)
 
 
 class ConfigError(Exception):pass
@@ -67,7 +81,7 @@ def env_map(row):
  return result
 
 
-def inspect_project(manifest):
+def inspect_project(manifest,require_running=True,allow_missing_backend=False):
  project=manifest['compose_project']
  ids=run(['docker','container','ls','--all','--no-trunc','--quiet','--filter','label=com.docker.compose.project='+project]).split()
  require(1<=len(ids)<=64 and len(ids)==len(set(ids)) and all(re.fullmatch(r'[a-f0-9]{64}',v) for v in ids),'Unexpected project container inventory')
@@ -80,10 +94,13 @@ def inspect_project(manifest):
   require(labels.get('com.docker.compose.project')==project and bool(IDENT.fullmatch(service)),'Unexpected project/service identity')
   require(service not in by_service,'Multiple containers for one service require explicit review')
   by_service[service]=row
- require(set(by_service)==set(manifest['baseline_image_ids']),'Live service set differs from the captured dev inventory')
+ expected=set(manifest['baseline_image_ids'])
+ require(set(by_service)==expected or (allow_missing_backend and set(by_service)==expected-{'backend'}),
+  'Live service set differs from the captured dev inventory')
+ if 'backend' not in by_service:return by_service
  backend=by_service['backend'];values=env_map(backend)
  require(values.get('CHAIN_ID')==manifest['chain_id'] and values.get('CHAIN_TYPE')==manifest['chain_type'],'Live backend is not the captured dev chain')
- require(backend.get('State',{}).get('Running') is True,'Dev backend must be running for these checks')
+ if require_running:require(backend.get('State',{}).get('Running') is True,'Dev backend must be running for these checks')
  return by_service
 
 
@@ -255,6 +272,8 @@ def managed_model(root,manifest,values):
 
 
 def live_files(directory,backend,manifest):
+ context=release_context(backend,manifest)
+ if context is not None:return [context['file']]
  labels=backend.get('Config',{}).get('Labels') or {}
  raw=labels.get('com.docker.compose.project.config_files','').split(',')
  require(1<=len(raw)<=16 and all(raw),'Backend Compose file labels are unavailable')
@@ -457,19 +476,21 @@ def rpc_chain(manifest):
 
 def plan(root,manifest,requirements,values,live_directory):
  before=inspect_project(manifest);collect_values(requirements,before)
+ context=release_context(before['backend'],manifest)
  current_files=live_files(live_directory,before['backend'],manifest)
- current=compose_model(live_directory,manifest,values,current_files,False)
- managed=managed_model(root,manifest,values)
+ current=compose_model(live_directory,manifest,values,current_files,context is not None)
+ managed=release_model(managed_model(root,manifest,values),context)
  require(set(managed['services'])==set(manifest['baseline_image_ids']),'Resolved managed service set changed')
  diff=model_differences(current,managed);drift=live_environment_differences(current,before)
- image_drift=sorted(name for name,row in before.items() if row.get('Image')!=manifest['baseline_image_ids'][name])
+ expected_images=context['image_ids'] if context is not None else manifest['baseline_image_ids']
+ image_drift=sorted(name for name,row in before.items() if row.get('Image')!=expected_images[name])
  private_drift=[ref for ref,origin in requirements.items() if env_map(before[origin['service']]).get(origin['environment_key'])!=values[ref]]
  require(not private_drift,'Private inputs differ from live values; capture to a new private file and review before adoption')
  chain=rpc_chain(manifest)
  after=inspect_project(manifest)
  ensure_stable(before,after,'Container/configuration/topology changed during comparison; inspect changed_containers')
- require(compose_model(live_directory,manifest,values,current_files,False)==current,'Live resolved model changed during comparison')
- require(managed_model(root,manifest,values)==managed,'Managed resolved model changed during comparison')
+ require(compose_model(live_directory,manifest,values,current_files,context is not None)==current,'Live resolved model changed during comparison')
+ require(release_model(managed_model(root,manifest,values),context)==managed,'Managed resolved model changed during comparison')
  intended='services.backend.environment.INDEXER_UNCATALOGED_TOKEN_TRANSFERS_ENABLED'
  return {'status':'differences_require_review' if diff or drift or image_drift else 'runtime_model_comparison_passed',
   'environment':'dev','rpc_chain_id':chain,'services':len(managed['services']),
@@ -500,6 +521,14 @@ def main():
  evidence.add_argument('--private-file',type=Path,required=True)
  evidence.add_argument('--receipt',type=Path,required=True)
  evidence.add_argument('--live-compose-dir',type=Path,default=Path('/data/blockscout/docker-compose'))
+ activation=sub.add_parser('deploy',help='Plan/apply a targeted backend release with startup migrations disabled')
+ activation.add_argument('--private-file',type=Path,required=True);activation.add_argument('--receipt',type=Path,required=True)
+ activation.add_argument('--live-compose-dir',type=Path,default=Path('/data/blockscout/docker-compose'))
+ mode=activation.add_mutually_exclusive_group(required=True);mode.add_argument('--check',action='store_true');mode.add_argument('--apply',action='store_true')
+ status=sub.add_parser('status',help='Verify a saved managed release without modifying it');status.add_argument('--state',type=Path,required=True)
+ undo=sub.add_parser('rollback',help='Plan/apply the previous backend image and settings without startup migrations')
+ undo.add_argument('--state',type=Path,required=True)
+ mode=undo.add_mutually_exclusive_group(required=True);mode.add_argument('--check',action='store_true');mode.add_argument('--apply',action='store_true')
  args=parser.parse_args()
  try:
   manifest,requirements,_=configuration(ROOT,args.environment)
@@ -513,18 +542,23 @@ def main():
    values=load_private(args.private_file,requirements)
    report=plan(ROOT,manifest,requirements,values,args.live_compose_dir)
   else:
+   builder=load_tool('candidate_build');checker=load_tool('deploy_check');releases=load_tool('release')
+   api=sys.modules[__name__]
+   if args.operation in ('status','rollback'):
+    report=(releases.status(api,builder,checker,manifest,args.state) if args.operation=='status' else
+     releases.rollback(api,builder,checker,ROOT,manifest,args.state,apply=args.apply))
+    print(json.dumps(report,indent=2));return 0 if report['status'] in ('verified','rollback_plan_ready','not_activated') else 1
    values=load_private(args.private_file,requirements)
-   spec=importlib.util.spec_from_file_location('candidate_build',ROOT/'deploy/scripts/candidate_build.py')
-   builder=importlib.util.module_from_spec(spec);spec.loader.exec_module(builder)
    if args.operation=='build':
-    report=builder.build_candidate(sys.modules[__name__],ROOT,manifest,requirements,values,args.private_file,
+    report=builder.build_candidate(api,ROOT,manifest,requirements,values,args.private_file,
      args.live_compose_dir,args.state_dir,check_only=args.check,reuse=args.reuse)
+   elif args.operation=='deploy':
+    report=releases.deploy(api,builder,checker,ROOT,manifest,requirements,values,args.private_file,args.receipt,
+     args.live_compose_dir,apply=args.apply)
    else:
-    spec=importlib.util.spec_from_file_location('deploy_check',ROOT/'deploy/scripts/deploy_check.py')
-    checker=importlib.util.module_from_spec(spec);spec.loader.exec_module(checker)
-    report=checker.check(sys.modules[__name__],builder,ROOT,manifest,requirements,values,args.private_file,
+    report=checker.check(api,builder,ROOT,manifest,requirements,values,args.private_file,
      args.receipt,args.live_compose_dir)
-  print(json.dumps(report,indent=2));return 0
+  print(json.dumps(report,indent=2));return 1 if report.get('status')=='needs_attention' else 0
  except (ConfigError,OSError,ValueError,KeyError,TypeError,IndexError,AttributeError,subprocess.SubprocessError) as error:
   report={'status':'stopped','reason':str(error) if isinstance(error,ConfigError) else 'Configuration check failed; raw values suppressed'}
   if isinstance(error,StabilityError):

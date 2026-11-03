@@ -137,9 +137,10 @@ and TLS assets still require their own source/config backup and comparison.
 
 Current backend/NFT image pins reproduce the observed deployment, not the newly
 committed application code. The candidate build below prepares a replacement
-backend image; it preserves the existing NFT worker. This tool does not provide
-`upgrade`, `deploy`, `up` or `rollback` commands yet. Do not activate this profile
-directly or remove the eight server layers before adoption checks succeed.
+backend image; it preserves the existing NFT worker. Targeted dev `deploy`,
+`status` and `rollback` are described below. Fetch/ref selection and a combined
+`upgrade` command remain unimplemented. Keep the eight server layers and their
+private inputs for comparison and recovery.
 
 Test and prod profiles remain unconfigured because their actual inventories
 have not been supplied. The CLI refuses those environments instead of selecting
@@ -198,7 +199,7 @@ and candidate tag are checked again before a success receipt is written.
 startup, migration compatibility, live mount permissions or NFT connectivity.
 `runtime_user_matches_baseline` reports only the declared image-user comparison.
 The CLI creates a candidate image without restarting any running service. Actual
-activation and rollback remain a separate implementation step.
+activation and rollback use the separate commands below.
 
 ## Collect pre-activation evidence
 
@@ -211,7 +212,7 @@ review checkout, using the receipt path printed by that build:
   --receipt /data/blockscout-dev-private/releases/candidate-<id>/candidate.json
 ```
 
-This command collects evidence before implementing/enabling activation. It
+This command collects evidence before activation. It
 compares the migration-file contents in the candidate and current backend images,
 checks candidate-inherited image defaults, tests existing log/DETS directory
 access, compares numeric users/groups and probes current readiness/NFT
@@ -245,13 +246,100 @@ repositories selected by the existing release are queried.
 candidate is deployed or that DB backups/restore have been proven. Otherwise,
 review `blockers`. The existing startup command includes `create_and_migrate`;
 new/changed or pending migrations require a separate recovery/compatibility plan.
-Actual activation, full application startup and rollback remain unavailable.
+The targeted start-only deployment below can defer only the two exact reviewed
+index migrations; it does not turn a pending schema migration into an applied one.
 
 A newer tooling commit may check the already-built candidate if it descends
 from the candidate's source commit and changes only deploy tools or their
 documentation. Changes to application code, Docker recipes or environment
 profiles require a new candidate build. The command rechecks source, receipt,
 inputs, image identity and live stability before accepting its evidence.
+
+## Deploy the existing dev backend without startup migrations
+
+The clean candidate contains two additional index-only migrations:
+`20260721000000` (five block/transaction indexes) and `20260812000000` (the logs
+covering index). The observed live DB has the five former index names valid and
+ready, but no logs covering index. Neither migration version is recorded as
+applied. Index presence alone does not establish that its definition matches the
+migration. A normal migration-enabled startup could therefore start a large logs
+index build while the API is waiting for startup.
+
+The managed dev release policy uses `bin/blockscout start` for both deployment
+and rollback, separating schema/index work from application restart. This policy
+is in `deploy/scripts/release.py`. It accepts only the reviewed migration files
+with their exact hashes and pending version IDs. Removed/modified migrations,
+additional pending structural migrations, unknown source changes and unrelated
+pre-activation blockers stop deployment. Existing DBs only: this command cannot
+bootstrap a fresh database. No migration version is marked as applied, no index
+is built, and no migration file is removed from the candidate.
+
+From the clean review checkout on the dev explorer server:
+
+```bash
+./deploy.sh dev deploy \
+  --private-file /data/blockscout-dev-private/private-20261103.json \
+  --receipt /data/blockscout-dev-private/releases/candidate-<id>/candidate.json \
+  --check
+
+./deploy.sh dev deploy \
+  --private-file /data/blockscout-dev-private/private-20261103.json \
+  --receipt /data/blockscout-dev-private/releases/candidate-<id>/candidate.json \
+  --apply
+```
+
+`--check` performs read-only preflight and reports the exact start-only policy and
+deferred versions without writing release state or changing services. `--apply`
+repeats preflight, acquires the same default state-root lock used by builds, saves
+private forward/rollback Compose snapshots, and recreates only `backend` with
+`--no-deps --no-build --pull never`. API/indexing pauses during replacement,
+including the existing stop grace period. Runtime private values are frozen as
+data, with dollar escaping tested through Compose and actual fixture containers.
+All service images are pinned in the snapshots; only backend is selected for
+recreation. DB, worker, frontend, proxy and other containers are preserved.
+
+Each release lives under
+`/data/blockscout-dev-private/releases/release-<timestamp>-<id>/`. Keep the entire
+directory server-local: it contains secrets in the `0600` snapshots/state and
+private logs, inside a `0700` directory. A rollback tag preserves the previous
+backend image. Never prune images or remove these snapshots while needed for
+live operation or recovery. Snapshot hashes remain private; edits stop replay.
+The source checkout can move to a newer reviewed commit without changing saved
+release inputs. Existing absolute data mounts and the project/network identity
+stay in use; Nginx/TLS mount contents are not replaced by this backend deployment.
+
+The CLI prints the state path and rollback command before service recreation.
+It checks readiness, RPC chain identity, runtime count/backoff/range settings,
+disabled historical scanner, NFT connectivity, mounts/ports/networks and the
+preservation of other containers. `verified` is scoped to those checks; chain
+indexing progress and representative API requests still need observation.
+Normal indexing continues to write application data. There is no automatic
+rollback or database restore on a failed readiness check.
+
+Use the printed state path to inspect or roll back:
+
+```bash
+./deploy.sh dev status --state /data/blockscout-dev-private/releases/release-<id>/state.json
+./deploy.sh dev rollback --state /data/blockscout-dev-private/releases/release-<id>/state.json --check
+./deploy.sh dev rollback --state /data/blockscout-dev-private/releases/release-<id>/state.json --apply
+```
+
+Rollback restores the previous image/environment while retaining start-only
+startup. It can resume the previous image's historical scanner policy. It performs
+no schema downgrade or DB restore. State is saved before recreation so an
+interrupted deployment can be inspected and recovered, including when backend
+removal completed but replacement did not. A newer release's backend or changed
+unrelated services stop rollback rather than being overwritten.
+
+The managed backend records its private release snapshot in Compose labels.
+Subsequent `plan` and `build` commands recognize this context and compare against
+the selected images and start-only policy. The public source still consists of
+the generic base plus dev profile; the runtime snapshot adds the private inputs,
+release image selection and reviewed startup policy. Do not use a bare `compose
+up` against the old files to manage this adopted backend: it could restore the
+old image and migration-enabled startup. Use the release commands instead.
+Test/prod remain unconfigured. Index migration/backup/recovery operations are
+separate work and are not automated by this dev adoption command.
 
 ## Checks
 
@@ -265,6 +353,9 @@ python3 deploy/tests/check_candidate_smoke.py
 python3 deploy/tests/test_deploy_check.py
 # Optional: exercise the exact migration expression in an isolated Elixir fixture.
 python3 deploy/tests/test_deploy_check.py --docker
+python3 deploy/tests/test_release.py --compose
+# Optional: two disposable containers in a unique fixture project; no database.
+python3 deploy/tests/test_release.py --compose --docker
 ```
 
 The tests use synthetic private values, mocked daemon metadata and actual Compose

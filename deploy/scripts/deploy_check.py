@@ -39,7 +39,9 @@ def candidate(api,builder,root,manifest,requirements,values,private_path,receipt
   and receipt.get('activation_performed') is False,'Unrecognized candidate receipt')
  api.require(receipt.get('smoke_checks')==[{'mode':mode,'passed':True} for mode in ('unset','false','true')],
   'Candidate receipt is missing successful release checks')
- api.require(receipt.get('baseline_image_ids')==manifest['baseline_image_ids'],'Candidate baseline differs from captured dev images')
+ api.require(set(receipt.get('baseline_image_ids',{}))==set(manifest['baseline_image_ids'])
+  and all(re.fullmatch(r'sha256:[a-f0-9]{64}',value) for value in receipt['baseline_image_ids'].values()),
+  'Candidate baseline image inventory differs from dev services')
  api.require(receipt.get('private_input_file')==str(private_path.resolve()),'Use the original server-only private input file for this candidate')
  commit,version=builder.clean_source(api,root)
  original=receipt.get('source_commit','')
@@ -274,8 +276,10 @@ IO.puts("BLOCKSCOUT_DEPLOY_CHECK=" <> Jason.encode!(%{connected: ok}))
 def check(api,builder,root,manifest,requirements,values,private_path,receipt_path,live_directory):
  source_state=builder.clean_source(api,root)
  builder.approved_preflight(api,api.plan(root,manifest,requirements,values,live_directory))
- before=api.inspect_project(manifest);model=api.managed_model(root,manifest,values)
+ before=api.inspect_project(manifest);context=api.release_context(before['backend'],manifest)
+ model=api.release_model(api.managed_model(root,manifest,values),context)
  receipt,image=candidate(api,builder,root,manifest,requirements,values,private_path,receipt_path)
+ api.require(receipt['baseline_image_ids']=={name:row['Image'] for name,row in before.items()},'Live image identities changed since candidate build')
  baseline=builder.image_info(api,before['backend']['Image'])
  defaults=inherited_image_changes(api,baseline,image,model['services']['backend'],before['backend'])
  old=image_inventory(api,baseline['Id']);new=image_inventory(api,image['Id'])
@@ -283,7 +287,7 @@ def check(api,builder,root,manifest,requirements,values,private_path,receipt_pat
  mounts=mount_access(api,model['services']['backend'],before['backend'],new['identity'])
  health=live_health(api,before)
  api.ensure_stable(before,api.inspect_project(manifest),'Live deployment changed during candidate pre-activation checks')
- api.require(api.managed_model(root,manifest,values)==model and api.load_private(private_path,requirements)==values,
+ api.require(api.release_model(api.managed_model(root,manifest,values),context)==model and api.load_private(private_path,requirements)==values,
   'Managed profile or private inputs changed during pre-activation checks')
  api.require(builder.image_info(api,receipt['candidate_tag'])['Id']==image['Id'],'Candidate tag changed during pre-activation checks')
  api.require(builder.clean_source(api,root)==source_state and private_receipt(api,receipt_path,root)==receipt,
@@ -297,7 +301,8 @@ def check(api,builder,root,manifest,requirements,values,private_path,receipt_pat
  command=model['services']['backend'].get('command')
  migration_startup=isinstance(command,(list,str)) and 'Explorer.ReleaseTasks.create_and_migrate()' in str(command)
  command_matches=command==before['backend'].get('Config',{}).get('Cmd')
- if not migration_startup or not command_matches:blockers.append('startup_command_requires_review')
+ start_only=context is not None and command==['bin/blockscout','start']
+ if not (migration_startup or start_only) or not command_matches:blockers.append('startup_command_requires_review')
  return {'status':'preactivation_evidence_passed' if not blockers else 'preactivation_review_required',
   'environment':'dev','candidate_image':image['Id'],'candidate_source_commit':receipt['source_commit'],
   'activation_performed':False,'blockers':blockers,'inherited_image_changes':defaults,
