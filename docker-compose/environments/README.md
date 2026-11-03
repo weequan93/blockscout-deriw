@@ -60,9 +60,13 @@ The report also includes `runtime_difference_details`: it separates equivalent
 empty network attachments (`null` versus `{}`), compares bind-mount policies
 without exposing source paths, and shows only allowlisted numeric/boolean
 PostgreSQL tuning options plus shared-memory sizes. Unknown command arguments
-and sensitive-value overlaps are withheld. Nonempty aliases, static addresses
-and other real network changes remain differences. Mount policy differences are
-reported even when the source path is unchanged; do not discard them as cosmetic.
+and sensitive-value overlaps are withheld. The integer rate-limit setting
+`API_RATE_LIMIT_UI_V2_WITH_TOKEN` is not treated as a credential just because of
+its name. Actual credential values remain protected, including numeric ones.
+Nonempty aliases, static addresses and other real network changes remain
+differences. Omitted `read_only` versus explicit false, and omitted versus empty
+bind option objects, compare as defaults; explicit bind policies, changed paths,
+read-only mounts and mount ordering remain differences.
 
 The comparison uses the backend's recorded file list and defaults to live Compose
 directory `/data/blockscout/docker-compose`. A different live path requires an

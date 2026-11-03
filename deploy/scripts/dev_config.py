@@ -206,6 +206,7 @@ def model_differences(before,after):
    if key=='build':continue
    if a.get(key)==b.get(key):continue
    if key=='networks' and canonical_networks(a.get(key))==canonical_networks(b.get(key)):continue
+   if key=='volumes' and canonical_volumes(a.get(key))==canonical_volumes(b.get(key)):continue
    if key=='environment':
     av=a.get(key) or {};bv=b.get(key) or {}
     for env in sorted(set(av)|set(bv)):
@@ -228,6 +229,18 @@ def canonical_networks(networks):
  return result
 
 
+def canonical_volumes(volumes):
+ result=[]
+ for row in volumes or []:
+  item=dict(row)
+  # Read/write is the default. An empty bind-options object supplies no override.
+  # Preserve every explicit bind policy, nondefault value and mount ordering.
+  if item.get('read_only') is False:item.pop('read_only')
+  if item.get('type')=='bind' and item.get('bind') in (None,{}):item.pop('bind',None)
+  result.append(item)
+ return result
+
+
 PUBLIC_PG_PARAMETERS=frozenset(('max_connections shared_buffers effective_cache_size maintenance_work_mem work_mem '
  'wal_buffers min_wal_size max_wal_size checkpoint_timeout checkpoint_completion_target effective_io_concurrency '
  'max_worker_processes max_parallel_workers max_parallel_workers_per_gather max_parallel_maintenance_workers '
@@ -240,6 +253,8 @@ def sensitive_values(requirements,values):
  result=set()
  for ref,origin in requirements.items():
   key=origin['environment_key'];value=values[ref]
+  # This runtime setting is an integer rate limit, despite its TOKEN suffix.
+  if key=='API_RATE_LIMIT_UI_V2_WITH_TOKEN' and re.fullmatch(r'[0-9]+',value):continue
   if re.search(r'PASSWORD|PASSWD|SECRET|COOKIE|CREDENTIAL|PRIVATE.?KEY|API.?KEY|BEARER|(?:^|_)TOKEN$',key,re.I) and value:
    result.add(value)
   # URLs can carry credentials even when the environment key looks public.
@@ -298,7 +313,8 @@ def volume_details(current,managed,live,sensitive):
  before=current.get('volumes') or [];after=managed.get('volumes') or []
  a={row.get('target'):row for row in before};b={row.get('target'):row for row in after}
  observed={row.get('Destination'):row for row in live.get('Mounts',[]) or []}
- details={'target_sets_equal':set(a)==set(b),'current_count':len(before),'proposed_count':len(after),'mounts':[]}
+ details={'target_sets_equal':set(a)==set(b),'mount_order_equal':[v.get('target') for v in before]==[v.get('target') for v in after],
+  'current_count':len(before),'proposed_count':len(after),'mounts':[]}
  for target,row in b.items():
   old=a.get(target)
   if not isinstance(target,str) or not re.fullmatch(r'/[A-Za-z0-9_./-]{0,511}',target) or any(v in target for v in sensitive):
@@ -325,7 +341,9 @@ def difference_details(current,managed,rows,requirements,values):
   if before.get('networks')!=after.get('networks') and canonical_networks(before.get('networks'))==canonical_networks(after.get('networks')):
    output['representation_only_fields'].append('services.'+name+'.networks')
   if before.get('volumes')!=after.get('volumes'):
-   output['volumes'][name]=volume_details(before,after,rows.get(name,{}),sensitive)
+   if canonical_volumes(before.get('volumes'))==canonical_volumes(after.get('volumes')):
+    output['representation_only_fields'].append('services.'+name+'.volumes')
+   else:output['volumes'][name]=volume_details(before,after,rows.get(name,{}),sensitive)
   if name in ('db','stats-db'):
    item={}
    if before.get('command')!=after.get('command'):

@@ -140,6 +140,26 @@ class ConfigTests(unittest.TestCase):
   for options in ({'aliases':['different']},{'ipv4_address':'172.19.0.99'},{'priority':1}):
    b={'services':{'backend':{'networks':{'default':options}}}}
    self.assertEqual(T.model_differences(a,b),['services.backend.networks'])
+ def test_default_volume_representation_is_equivalent(self):
+  a={'services':{'backend':{'volumes':[{'type':'bind','source':'/data/logs','target':'/app/logs','read_only':False,'bind':{}}]}}}
+  b=deepcopy(a);b['services']['backend']['volumes'][0].pop('read_only');b['services']['backend']['volumes'][0].pop('bind')
+  self.assertEqual(T.model_differences(a,b),[])
+  details=T.difference_details(a,b,{},self.requirements,self.values)
+  self.assertEqual(details['representation_only_fields'],['services.backend.volumes'])
+ def test_real_volume_policies_and_paths_remain_differences(self):
+  a={'services':{'backend':{'volumes':[{'type':'bind','source':'/data/logs','target':'/app/logs'}]}}}
+  for changed in ({'read_only':True},{'source':'/other/logs'},{'bind':{'create_host_path':False}},{'bind':{'propagation':'rshared'}}):
+   b=deepcopy(a);b['services']['backend']['volumes'][0].update(changed)
+   self.assertEqual(T.model_differences(a,b),['services.backend.volumes'])
+ def test_numeric_token_rate_limit_is_not_a_secret_but_password_is(self):
+  values=deepcopy(self.values)
+  for ref,origin in self.requirements.items():
+   if origin['environment_key']=='API_RATE_LIMIT_UI_V2_WITH_TOKEN':values[ref]='2'
+  sensitive=T.sensitive_values(self.requirements,values)
+  self.assertEqual(T.public_tuning_value('512MB',sensitive),'512MB')
+  for ref,origin in self.requirements.items():
+   if origin['service']=='db' and origin['environment_key']=='POSTGRES_PASSWORD':values[ref]='2'
+  self.assertEqual(T.public_tuning_value('512MB',T.sensitive_values(self.requirements,values)),'[withheld]')
  def test_postgres_tuning_summary_withholds_unclassified_arguments(self):
   command=['postgres','-c','max_connections=800','-c','shared_buffers=16GB','-c','password='+SECRET,'--opaque='+SECRET]
   result=T.postgres_command_summary(command,{SECRET})
