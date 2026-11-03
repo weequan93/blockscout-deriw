@@ -341,6 +341,62 @@ old image and migration-enabled startup. Use the release commands instead.
 Test/prod remain unconfigured. Index migration/backup/recovery operations are
 separate work and are not automated by this dev adoption command.
 
+## Repair the dev HTTP stats route
+
+The public homepage requests `/statsapi/api/v1/pages/main`. A CDN can use HTTP
+for its origin connection even when the browser uses HTTPS. The legacy default
+template routed this prefix only in the HTTPS server. Direct stats-service HTTP
+200 combined with an HTTP-proxy 404 identifies a proxy-path problem, without
+requiring a stats image upgrade or a backend/database restart.
+
+The default template now includes the prefix on port 80. Use the targeted helper
+to update the existing mounted template and its rendered counterpart:
+
+```bash
+./deploy.sh dev proxy-stats --check
+./deploy.sh dev proxy-stats --apply
+```
+
+`--check` reads container metadata and Nginx configuration in memory, compares
+bounded GET probes, reports only route classifications and certificate expiry
+metadata, and writes nothing. It requires the expected dev template mount,
+standard Nginx master arguments, a working direct stats endpoint and a working
+main backend API route. The live default HTTP frontend server must be
+unambiguous. Existing custom settings are preserved; unknown stats destinations
+require review. It can add a missing prefix location or correct a missing URI
+slash in an existing stats upstream. A route already configured correctly is
+retained; graceful reload also refreshes Nginx's upstream DNS resolution.
+
+`--apply` takes the shared release lock and saves private originals under
+`/data/blockscout-dev-private/releases/proxy-stats-<timestamp>-<id>/`. It changes
+only the matching HTTP stats route in the mounted `default.conf.template` and
+rendered `/etc/nginx/conf.d/default.conf`, runs `nginx -t`, and gracefully reloads
+Nginx. It verifies HTTP stats JSON shape against the direct service and checks
+the existing main API. Containers are not recreated. Backend, NFT, database,
+Compose snapshots and TLS files are not modified. On a failed syntax/route test,
+it restores the originals and reloads the old configuration if needed.
+
+The helper prints a private backup path and restore command before file changes:
+
+```bash
+./deploy.sh dev proxy-stats --restore /data/blockscout-dev-private/releases/proxy-stats-<id>/state.json
+```
+
+Keep the entire backup directory on the server; configurations and metadata can
+contain private values. Later unknown edits are never overwritten. A partial
+interruption can be restored when each file still matches its saved original or
+patched version. This changes an existing mount's file contents, separately from
+the backend release configuration comparison. Retain both backups.
+
+Origin TLS is a separate check. The server probe reported an expired certificate
+on the proxy HTTPS listener. This helper reports the certificate date where it
+can read the public certificate file, retains TLS verification for HTTPS probes,
+and does not renew or replace certificates or keys. A working public HTTP/CDN
+route does not establish that origin HTTPS trust is valid. Renew the certificate
+through the existing certificate-management process and verify origin TLS before
+selecting HTTPS as the CDN origin protocol. Check the public browser URL after
+repair; the helper's HTTP check is inside the Docker network.
+
 ## Checks
 
 ```bash
@@ -356,6 +412,9 @@ python3 deploy/tests/test_deploy_check.py --docker
 python3 deploy/tests/test_release.py --compose
 # Optional: two disposable containers in a unique fixture project; no database.
 python3 deploy/tests/test_release.py --compose --docker
+python3 deploy/tests/test_proxy_stats.py
+# Optional: isolated Nginx, generated test certificates and fake upstreams.
+python3 deploy/tests/test_proxy_stats.py --docker
 ```
 
 The tests use synthetic private values, mocked daemon metadata and actual Compose

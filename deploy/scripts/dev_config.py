@@ -529,6 +529,9 @@ def main():
  undo=sub.add_parser('rollback',help='Plan/apply the previous backend image and settings without startup migrations')
  undo.add_argument('--state',type=Path,required=True)
  mode=undo.add_mutually_exclusive_group(required=True);mode.add_argument('--check',action='store_true');mode.add_argument('--apply',action='store_true')
+ proxy=sub.add_parser('proxy-stats',help='Plan/repair only the dev Nginx HTTP stats route, or restore its private backup')
+ mode=proxy.add_mutually_exclusive_group(required=True);mode.add_argument('--check',action='store_true');mode.add_argument('--apply',action='store_true')
+ mode.add_argument('--restore',type=Path)
  args=parser.parse_args()
  try:
   manifest,requirements,_=configuration(ROOT,args.environment)
@@ -544,6 +547,11 @@ def main():
   else:
    builder=load_tool('candidate_build');checker=load_tool('deploy_check');releases=load_tool('release')
    api=sys.modules[__name__]
+   if args.operation=='proxy-stats':
+    proxy=load_tool('proxy_stats')
+    report=(proxy.restore(api,builder,releases,ROOT,manifest,args.restore) if args.restore is not None else
+     proxy.apply(api,builder,releases,ROOT,manifest,do_apply=args.apply))
+    print(json.dumps(report,indent=2));return 1 if report['status']=='proxy_stats_needs_attention' else 0
    if args.operation in ('status','rollback'):
     report=(releases.status(api,builder,checker,manifest,args.state) if args.operation=='status' else
      releases.rollback(api,builder,checker,ROOT,manifest,args.state,apply=args.apply))
