@@ -343,7 +343,8 @@ config :explorer, Explorer.Chain.Cache.Counters.AddressesCount,
   update_interval_in_milliseconds: ConfigHelper.parse_time_env_var("CACHE_ADDRESS_COUNT_PERIOD", "30m")
 
 config :explorer, Explorer.Chain.Cache.Counters.TransactionsCount,
-  global_ttl: ConfigHelper.parse_time_env_var("CACHE_TXS_COUNT_PERIOD", "2h")
+  global_ttl: ConfigHelper.parse_time_env_var("CACHE_TXS_COUNT_PERIOD", "2h"),
+  approximate?: ConfigHelper.parse_bool_env_var("CACHE_TXS_COUNT_APPROXIMATE")
 
 config :explorer, Explorer.Chain.Cache.Counters.PendingBlockOperationCount,
   global_ttl: ConfigHelper.parse_time_env_var("CACHE_PBO_COUNT_PERIOD", "20m")
@@ -924,6 +925,9 @@ config :indexer,
   system_memory_percentage: ConfigHelper.parse_integer_env_var("INDEXER_SYSTEM_MEMORY_PERCENTAGE", 60),
   receipts_batch_size: ConfigHelper.parse_integer_env_var("INDEXER_RECEIPTS_BATCH_SIZE", 250),
   receipts_concurrency: ConfigHelper.parse_integer_env_var("INDEXER_RECEIPTS_CONCURRENCY", 10),
+  receipts_retry_delay: ConfigHelper.parse_time_env_var("INDEXER_RECEIPTS_RETRY_DELAY", "5s"),
+  contract_code_retry_delay: ConfigHelper.parse_time_env_var("INDEXER_CONTRACT_CODE_RETRY_DELAY", "5s"),
+  contract_code_concurrency: ConfigHelper.parse_integer_env_var("INDEXER_CONTRACT_CODE_CONCURRENCY", 4),
   hide_indexing_progress_alert: ConfigHelper.parse_bool_env_var("INDEXER_HIDE_INDEXING_PROGRESS_ALERT"),
   fetcher_init_limit: ConfigHelper.parse_integer_env_var("INDEXER_FETCHER_INIT_QUERY_LIMIT", 100),
   token_balances_fetcher_init_limit:
@@ -965,6 +969,11 @@ config :indexer, Indexer.Fetcher.TransactionAction,
 
 config :indexer, Indexer.PendingTransactionsSanitizer,
   interval: ConfigHelper.parse_time_env_var("INDEXER_PENDING_TRANSACTIONS_SANITIZER_INTERVAL", "1h")
+
+# This repair scans existing logs across the chain. Keep it opt-in so ordinary
+# backend restarts do not repeatedly launch a full historical pass.
+config :indexer, Indexer.Temporary.UncatalogedTokenTransfers.Supervisor,
+  disabled?: not ConfigHelper.parse_bool_env_var("INDEXER_UNCATALOGED_TOKEN_TRANSFERS_ENABLED")
 
 config :indexer, Indexer.Fetcher.PendingTransaction.Supervisor,
   disabled?: ConfigHelper.parse_bool_env_var("INDEXER_DISABLE_PENDING_TRANSACTIONS_FETCHER")

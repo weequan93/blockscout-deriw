@@ -2403,6 +2403,14 @@ defmodule Explorer.Chain do
   end
 
   def fetch_transaction_revert_reason(transaction) do
+    if is_integer(transaction.block_number) and RangesHelper.traceable_block_number?(transaction.block_number) do
+      do_fetch_transaction_revert_reason(transaction)
+    else
+      nil
+    end
+  end
+
+  defp do_fetch_transaction_revert_reason(transaction) do
     json_rpc_named_arguments = Application.get_env(:explorer, :json_rpc_named_arguments)
 
     hash_string = to_string(transaction.hash)

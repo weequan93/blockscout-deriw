@@ -108,6 +108,26 @@ After all deployed instances get all needed data, these fetchers should be depre
 - `uncles_without_index`: adds previously unfetched `index` field for unfetched blocks in `block_second_degree_relations`
 - `blocks_transactions_mismatch`: refetches each block once and revokes consensus for those whose transaction number mismatches with the number currently stored. This is meant to force the correction of a race condition that caused successfully fetched transactions to be overwritten by a following non-consensus block: [#1911](https://github.com/blockscout/blockscout/issues/1911).
 
+### Historical token-transfer repair
+
+The `uncataloged_token_transfers` worker is disabled by default. Set
+`INDEXER_UNCATALOGED_TOKEN_TRANSFERS_ENABLED=true` for a maintenance startup to
+enable it. Its scan can be expensive on a large log history and starts again
+from the newest logs after a backend restart; it has no persisted scan cursor.
+
+This setting controls only the temporary historical repair worker. Normal block
+indexing continues to parse and import token transfers from fetched logs. Stored
+data is preserved, while historical parser gaps remain unrepaired until the
+worker is explicitly enabled.
+
+An enabled worker makes one discovery pass, stopping at the beginning of history
+or after finding 1,000 missing block numbers. It queues discovered blocks for
+repair and then stops; worker termination alone does not prove all historical
+transfers have been repaired. Return the setting to `false` for ordinary future
+deployments. The setting takes effect at startup and does not stop an already
+running scan. Apply a rebuilt release after the current pass finishes if its
+in-memory progress needs to be preserved.
+
 ## Memory Usage
 
 The work queues for building the index of all blocks, balances (coin and token), and internal transactions can grow quite large.   By default, the soft-limit is 1 GiB, which can be changed by setting `INDEXER_MEMORY_LIMIT` environment variable https://docs.blockscout.com/for-developers/developer-faqs/how-do-i-update-memory-consumption-to-fix-indexer-memory-errors#updating-memory-consumption.

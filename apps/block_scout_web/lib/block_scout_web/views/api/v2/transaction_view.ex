@@ -601,7 +601,9 @@ defmodule BlockScoutWeb.API.V2.TransactionView do
   end
 
   defp prepare_revert_reason_for_single_transaction(transaction) do
-    case TransactionView.transaction_revert_reason(transaction, @api_true) do
+    raw_revert_reason = Chain.transaction_to_revert_reason(transaction)
+
+    case TransactionView.decoded_revert_reason(raw_revert_reason, transaction, @api_true) do
       {:error, _contract_not_verified, candidates} when candidates != [] ->
         {:ok, method_id, text, mapping} = Enum.at(candidates, 0)
         render(__MODULE__, "decoded_input.json", method_id: method_id, text: text, mapping: mapping, error?: true)
@@ -610,8 +612,7 @@ defmodule BlockScoutWeb.API.V2.TransactionView do
         render(__MODULE__, "decoded_input.json", method_id: method_id, text: text, mapping: mapping, error?: true)
 
       _ ->
-        hex = TransactionView.get_pure_transaction_revert_reason(transaction)
-        render(__MODULE__, "revert_reason.json", raw: hex)
+        render(__MODULE__, "revert_reason.json", raw: raw_revert_reason)
     end
   end
 
