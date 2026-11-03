@@ -3,7 +3,8 @@
 
 Uses synthetic rows, an internal Docker network, tmpfs data, no published ports,
 no host mounts and no supplied database credentials or environment profiles.
-This does not qualify a full-size database upgrade or test background backfills.
+The optional background check runs five selected workers on synthetic traces.
+This does not qualify a full-size database upgrade.
 """
 import argparse
 import hashlib
@@ -51,6 +52,11 @@ def baseline_inventory():
     ])).hexdigest() for name in names if "/migrations/" in name and name.endswith(".exs")}
 
 
+def elixir_string(value):
+    # JSON string escaping also needs Elixir's interpolation marker escaped.
+    return json.dumps(value).replace("#{", r"\#{")
+
+
 def expression(stage, token, versions):
     common = (ROOT / "deploy/tests/schema_fixture/migrate.exs").read_text()
     return common.replace("FIXTURE_TOKEN", json.dumps(token)).replace(
@@ -84,8 +90,12 @@ def evaluate(image, stage, token, network, password, versions, directory):
     script = expression(stage, token, versions)
     seed = (ROOT / "deploy/tests/schema_fixture/seed.sql").read_text()
     verify = (ROOT / "deploy/tests/schema_fixture/verify.exs").read_text()
+    background = (ROOT / "deploy/tests/schema_fixture/background.exs").read_text()
+    history = module("upgrade_plan")
     # Embed test inputs as Elixir strings without shell interpolation.
-    script = script.replace("FIXTURE_SEED", json.dumps(seed)).replace("FIXTURE_VERIFY", json.dumps(verify))
+    script = script.replace("FIXTURE_SEED", elixir_string(seed)).replace("FIXTURE_VERIFY", elixir_string(verify))
+    script = script.replace("FIXTURE_BACKGROUND", elixir_string(background))
+    script = script.replace("FIXTURE_HISTORY_PROBE", elixir_string(history.history_body()))
     try:
         result = subprocess.run(command, input=script, capture_output=True, text=True, timeout=240)
         (directory / (stage + ".log")).write_text(result.stdout + result.stderr)
@@ -94,7 +104,23 @@ def evaluate(image, stage, token, network, password, versions, directory):
         marked = [line[len(MARKER):] for line in result.stdout.splitlines() if line.startswith(MARKER)]
         if len(marked) != 1:
             raise RuntimeError(stage + " fixture result marker unavailable")
-        return json.loads(marked[0])
+        report = json.loads(marked[0])
+        for key in ("history_metadata_before", "history_metadata_after"):
+            if report.get(key) is not None:
+                report[key] = history.safe_history(report[key])
+        if stage in ("baseline", "background"):
+            before = [index["key_columns"] for index in report["history_metadata_before"]["indexes"] if index["primary"]]
+            if before != [["block_hash", "block_index"]]:
+                raise RuntimeError("History metadata probe did not recognize the old primary key")
+        if stage == "background":
+            after = report["history_metadata_after"]
+            keys = [index["key_columns"] for index in after["indexes"] if index["primary"]]
+            if keys != [["block_number", "transaction_index", "index"]] or not all(
+                row["status"] == "completed" for row in after["background_migrations"]
+            ):
+                raise RuntimeError("History metadata probe did not recognize the completed worker transition")
+        report["history_metadata_checked"] = stage in ("baseline", "background")
+        return report
     finally:
         cleanup_container(name, token)
 
@@ -113,7 +139,7 @@ def summary(report):
     result = dict(report)
     if "results" in result:
         result["results"] = [
-            {**{key: value for key, value in row.items() if key != "migrated"},
+            {**{key: value for key, value in row.items() if key not in ("migrated", "history_metadata_before", "history_metadata_after")},
              "applied_counts": {item["directory"]: item["count"] for item in row["migrated"]}}
             for row in result["results"]
         ]
@@ -125,6 +151,7 @@ def main():
     parser.add_argument("--baseline-image", default="deriw-blockscout:v9-upgrade-baseline")
     parser.add_argument("--candidate-image", default="deriw-blockscout:v10-upgrade-local-validation")
     parser.add_argument("--postgres-image", default="postgres:15-alpine")
+    parser.add_argument("--background", action="store_true", help="Also run the selected v10 backfills and primary-key workers")
     args = parser.parse_args()
     token = uuid.uuid4().hex[:16]
     directory = Path(tempfile.mkdtemp(prefix="blockscout-schema-"))
@@ -168,11 +195,15 @@ def main():
         else:
             raise RuntimeError("Temporary PostgreSQL did not become ready")
         results = []
-        for stage, image in (("baseline", baseline["Id"]), ("upgrade", candidate["Id"]), ("repeat", candidate["Id"])):
+        stages = [("baseline", baseline["Id"]), ("upgrade", candidate["Id"]), ("repeat", candidate["Id"])]
+        if args.background:
+            stages.append(("background", candidate["Id"]))
+        for stage, image in stages:
             print(json.dumps({"phase": stage}), flush=True)
             results.append(evaluate(image, stage, token, network, password, versions, directory))
         report.update(status="passed", postgres_image=pg["Id"], baseline_image=baseline["Id"],
-                      candidate_image=candidate["Id"], architecture=candidate["Architecture"], results=results)
+                      candidate_image=candidate["Id"], architecture=candidate["Architecture"], results=results,
+                      background_backfills_tested=args.background)
     except Exception as error:
         report["reason"] = str(error)
     finally:

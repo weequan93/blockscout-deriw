@@ -3,6 +3,8 @@ stage = FIXTURE_STAGE
 target_versions = FIXTURE_VERSIONS
 seed = FIXTURE_SEED
 verify = FIXTURE_VERIFY
+background = FIXTURE_BACKGROUND
+history_probe = FIXTURE_HISTORY_PROBE
 
 ^token = System.get_env("UPGRADE_SCHEMA_FIXTURE")
 %URI{host: "pg", path: "/fixture", port: 5432} = URI.parse(System.fetch_env!("DATABASE_URL"))
@@ -87,6 +89,26 @@ else
   Code.eval_string(verify, q: q)
 end
 
+history_metadata_before =
+  if stage in ["baseline", "background"] do
+    {data, _} = Code.eval_string(history_probe)
+    data
+  end
+
+background_checks =
+  if stage == "background" do
+    {checks, _} = Code.eval_string(background, q: q)
+    checks
+  else
+    nil
+  end
+
+history_metadata_after =
+  if stage == "background" do
+    {data, _} = Code.eval_string(history_probe)
+    data
+  end
+
 IO.puts(
   "BLOCKSCOUT_SCHEMA_FIXTURE=" <>
     Jason.encode!(%{
@@ -97,6 +119,9 @@ IO.puts(
       synthetic_checks_passed: stage != "baseline",
       postgres_version_num: version,
       full_database_rehearsal: false,
-      background_backfills_tested: false
+      background_backfills_tested: stage == "background",
+      background_checks: background_checks,
+      history_metadata_before: history_metadata_before,
+      history_metadata_after: history_metadata_after
     })
 )

@@ -2,6 +2,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+from copy import deepcopy
 import subprocess
 import tarfile
 import tempfile
@@ -117,6 +118,7 @@ Process.register(self(), Explorer.Repo)
 '''
         script += U.background_expression()
         script += '\nProcess.put(:fail, true)\n' + U.background_expression()
+        script += '\nCode.string_to_quoted!(' + json.dumps(U.history_expression()) + ')\n'
         payload = io.BytesIO()
         with tarfile.open(fileobj=payload, mode="w") as archive:
             raw = script.encode()
@@ -133,6 +135,62 @@ Process.register(self(), Explorer.Repo)
         self.assertEqual(result.stdout.decode().splitlines(), [
             "BLOCKSCOUT_DEPLOY_CHECK=READ_ONLY_OK", "BLOCKSCOUT_DEPLOY_CHECK=UNAVAILABLE_OK"
         ])
+
+
+class HistoryEvidenceTests(unittest.TestCase):
+    def setUp(self):
+        self.data = {
+            "relation": [[-1, 8192, 16384]],
+            "indexes": [["internal_transactions_pkey", True, True, True, True, ["block_hash", "block_index"], False]],
+            "statuses": [[U.HISTORY_WORKERS[0], "completed"]],
+            "runtime": {"trace_block_ranges": "176114083..latest", "internal_fetcher_disabled": True,
+                        "historical_scanner_disabled": True},
+        }
+
+    def test_estimates_and_missing_statuses_remain_explicit(self):
+        result = U.safe_history(self.data)
+        self.assertEqual(result["internal_transactions"]["estimated_rows"], -1)
+        self.assertEqual(result["indexes"][0]["key_columns"], ["block_hash", "block_index"])
+        self.assertEqual(result["background_migrations"][0]["status"], "completed")
+        self.assertEqual(result["background_migrations"][1]["status"], "not_recorded")
+        self.assertEqual(result["duplicate_presence"], "not_measured")
+
+    def test_private_or_unexpected_runtime_and_status_values_are_withheld(self):
+        self.data["runtime"] = {"trace_block_ranges": "private-fixture-value", "password": "private-fixture-value"}
+        self.data["statuses"][0][1] = "private-fixture-value"
+        result = U.safe_history(self.data)
+        self.assertNotIn("private-fixture-value", json.dumps(result))
+        self.assertIsNone(result["runtime"]["internal_fetcher_disabled"])
+
+    def test_broken_sizes_unknown_states_and_raw_index_expressions_are_rejected(self):
+        for mutate in (
+            lambda d: d.update(relation=[]),
+            lambda d: d.update(relation=[[0, -1, 1]]),
+            lambda d: d.update(statuses=[["unknown", "completed"]]),
+            lambda d: d["indexes"][0].__setitem__(5, ["private expression (secret)"]),
+        ):
+            data = deepcopy(self.data)
+            mutate(data)
+            with self.assertRaises(ValueError):
+                U.safe_history(data)
+
+    def test_live_history_read_is_single_existing_repo_rpc_with_stability_check(self):
+        checker = SimpleNamespace(marked_json=Mock(return_value=self.data))
+        rows = {"backend": {"Image": "sha256:" + "a" * 64}}
+        api = SimpleNamespace(
+            load_tool=Mock(return_value=checker), configuration=Mock(return_value=({"chain_id": "18417507517"}, {}, {})),
+            inspect_project=Mock(return_value=rows), ensure_stable=Mock(),
+            lifecycle_summary=Mock(return_value={"status": "running"}), run=Mock(return_value="suppressed"),
+        )
+        result = U.history_report(ROOT, api)
+        self.assertFalse(result["deployment_permitted"])
+        api.run.assert_called_once()
+        api.ensure_stable.assert_called_once()
+        command = api.run.call_args.args[0]
+        self.assertEqual(command[:5], ["docker", "exec", "backend", "/app/bin/blockscout", "rpc"])
+        self.assertIn("SET TRANSACTION READ ONLY", command[5])
+        self.assertIn("statement_timeout = '1500ms'", command[5])
+        self.assertNotIn("GROUP BY", command[5])
 
 
 if __name__ == "__main__":
