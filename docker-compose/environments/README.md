@@ -350,7 +350,8 @@ template routed this prefix only in the HTTPS server. Direct stats-service HTTP
 requiring a stats image upgrade or a backend/database restart.
 
 The default template now includes the prefix on port 80. Use the targeted helper
-to update the existing mounted template and its rendered counterpart:
+to update matching HTTP frontend blocks in the existing mounted templates and
+their rendered counterparts:
 
 ```bash
 ./deploy.sh dev proxy-stats --check
@@ -361,16 +362,21 @@ to update the existing mounted template and its rendered counterpart:
 bounded GET probes, reports only route classifications and certificate expiry
 metadata, and writes nothing. It requires the expected dev template mount,
 standard Nginx master arguments, a working direct stats endpoint and a working
-main backend API route. The live default HTTP frontend server must be
-unambiguous. Existing custom settings are preserved; unknown stats destinations
-require review. It can add a missing prefix location or correct a missing URI
+main backend API route. It inspects the loaded `default.conf` and `explorer.conf`
+and matches HTTP frontend blocks against the declared frontend destination or
+the corresponding template variable. The observed dev layout has two such
+blocks in `default.conf` plus another in `explorer.conf`; all three need the
+prefix. Existing server/TLS definitions and unrelated upstreams are preserved.
+The template/rendered match counts must agree, and matching frontends in other
+loaded files require review. Unknown stats destinations or multiple stats
+locations within one server also stop the check. It can add a missing prefix location or correct a missing URI
 slash in an existing stats upstream. A route already configured correctly is
 retained; graceful reload also refreshes Nginx's upstream DNS resolution.
 
 `--apply` takes the shared release lock and saves private originals under
 `/data/blockscout-dev-private/releases/proxy-stats-<timestamp>-<id>/`. It changes
-only the matching HTTP stats route in the mounted `default.conf.template` and
-rendered `/etc/nginx/conf.d/default.conf`, runs `nginx -t`, and gracefully reloads
+only matching HTTP stats routes in the loaded `default.conf`/`explorer.conf`
+files and their corresponding mounted `.template` files, runs `nginx -t`, and gracefully reloads
 Nginx. It verifies HTTP stats JSON shape against the direct service and checks
 the existing main API. Containers are not recreated. Backend, NFT, database,
 Compose snapshots and TLS files are not modified. On a failed syntax/route test,
@@ -385,7 +391,9 @@ The helper prints a private backup path and restore command before file changes:
 Keep the entire backup directory on the server; configurations and metadata can
 contain private values. Later unknown edits are never overwritten. A partial
 interruption can be restored when each file still matches its saved original or
-patched version. This changes an existing mount's file contents, separately from
+patched version. The private v2 backup captures every selected file pair, and
+restore still accepts the earlier single-file v1 backup format. A failed write,
+syntax check or route check restores the full selected set. This changes an existing mount's file contents, separately from
 the backend release configuration comparison. Retain both backups.
 
 Origin TLS is a separate check. The server probe reported an expired certificate

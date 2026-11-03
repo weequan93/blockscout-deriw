@@ -10,9 +10,11 @@ import stat
 import time
 import uuid
 
-FORMAT='blockscout-dev-proxy-stats-v1'
+FORMAT='blockscout-dev-proxy-stats-v2'
+LEGACY_FORMAT='blockscout-dev-proxy-stats-v1'
 TEMPLATE='/etc/nginx/templates/default.conf.template'
 RUNTIME='/etc/nginx/conf.d/default.conf'
+RUNTIMES={name:'/etc/nginx/conf.d/'+name for name in ('default.conf','explorer.conf')}
 HOST='explorer.dev.deriw.com'
 BLOCK='''
     # CDN origin requests can arrive over HTTP.
@@ -89,7 +91,7 @@ def listens(node,port):
  return False
 
 
-def patch(api,text,frontend):
+def frontend_servers(api,text,frontend):
  eligible=[]
  for server in servers(parse(api,text)):
   if not listens(server,80):continue
@@ -98,23 +100,31 @@ def patch(api,text,frontend):
   target=directives(roots[0],'proxy_pass')
   if len(target)==1 and values(target[0])[1] in (frontend,'${FRONT_PROXY_PASS}','$FRONT_PROXY_PASS'):
    eligible.append(server)
- api.require(len(eligible)==1,'Expected exactly one HTTP frontend server in default.conf; live routing requires review')
- server=eligible[0]
- routes=[node for node in directives(server,'location') if values(node)[-1]=='/statsapi/']
- api.require(len(routes)<=1,'Multiple HTTP stats locations require review')
- if not routes:
-  offset=server['end']-1
-  return text[:offset]+BLOCK+text[offset:],{'action':'add_http_stats_location','changed':True}
- api.require(values(routes[0]) in (['location','/statsapi/'],['location','^~','/statsapi/']),
-  'Unexpected stats location policy')
- targets=directives(routes[0],'proxy_pass')
- api.require(len(targets)==1,'Stats proxy_pass is ambiguous')
- target=targets[0];args=values(target)
- api.require(len(args)==2 and args[1] in ('http://stats:8050','http://stats:8050/'),
-  'Unexpected HTTP stats upstream; no existing policy was overwritten')
- if args[1].endswith('/'):return text,{'action':'refresh_upstream_resolution','changed':False}
- _,start,end=target['args'][1]
- return text[:start]+'http://stats:8050/'+text[end:],{'action':'strip_stats_prefix','changed':True}
+ return eligible
+
+
+def patch(api,text,frontend):
+ eligible=frontend_servers(api,text,frontend)
+ api.require(bool(eligible),'No matching HTTP frontend server in this configuration; live routing requires review')
+ edits=[];actions=[]
+ for server in eligible:
+  routes=[node for node in directives(server,'location') if values(node)[-1]=='/statsapi/']
+  api.require(len(routes)<=1,'Multiple HTTP stats locations in one server require review')
+  if not routes:
+   offset=server['end']-1;edits.append((offset,offset,BLOCK));actions.append('add_http_stats_location');continue
+  api.require(values(routes[0]) in (['location','/statsapi/'],['location','^~','/statsapi/']),
+   'Unexpected stats location policy')
+  targets=directives(routes[0],'proxy_pass')
+  api.require(len(targets)==1,'Stats proxy_pass is ambiguous')
+  target=targets[0];args=values(target)
+  api.require(len(args)==2 and args[1] in ('http://stats:8050','http://stats:8050/'),
+   'Unexpected HTTP stats upstream; no existing policy was overwritten')
+  if args[1].endswith('/'):actions.append('refresh_upstream_resolution');continue
+  _,start,end=target['args'][1];edits.append((start,end,'http://stats:8050/'));actions.append('strip_stats_prefix')
+ for start,end,value in sorted(edits,reverse=True):text=text[:start]+value+text[end:]
+ return text,{'action':actions[0] if len(set(actions))==1 else 'update_http_stats_locations','changed':bool(edits),
+  'http_frontend_servers':len(eligible),'locations_added':actions.count('add_http_stats_location'),
+  'uri_slashes_added':actions.count('strip_stats_prefix')}
 
 
 def route_facts(api,text):
@@ -134,12 +144,14 @@ def route_facts(api,text):
  return facts
 
 
-def read_runtime(api):
- return api.run(['docker','exec','proxy','sh','-c','test ! -L '+RUNTIME+' && cat '+RUNTIME])
+def read_runtime(api,path=RUNTIME):
+ api.require(path in RUNTIMES.values(),'Unexpected runtime proxy configuration path')
+ return api.run(['docker','exec','proxy','sh','-c','test ! -L '+path+' && cat '+path])
 
 
-def write_runtime(api,text):
- api.run(['docker','exec','-i','proxy','sh','-c','test ! -L '+RUNTIME+' && cat > '+RUNTIME],input_text=text)
+def write_runtime(api,text,path=RUNTIME):
+ api.require(path in RUNTIMES.values(),'Unexpected runtime proxy configuration path')
+ api.run(['docker','exec','-i','proxy','sh','-c','test ! -L '+path+' && cat > '+path],input_text=text)
 
 
 def write_template(path,text,metadata):
@@ -171,6 +183,7 @@ def probes(api):
   probe(api,'proxy_http','http://proxy:80/statsapi/api/v1/pages/main',('-H','Host: '+HOST)),
   probe(api,'proxy_stats_port','http://proxy:8080/api/v1/pages/main'),
   probe(api,'proxy_https_verified','https://'+HOST+'/statsapi/api/v1/pages/main',('--connect-to',HOST+':443:proxy:443')),
+  probe(api,'stats_direct_public_host','http://stats:8050/api/v1/pages/main',('-H','Host: '+HOST)),
   probe(api,'proxy_backend_api','http://proxy:80/api/v2/stats',('-H','Host: '+HOST))]
 
 
@@ -180,13 +193,40 @@ def public_probes(rows):return [{key:value for key,value in row.items() if not k
 def certificate(api,text,mount):
  try:
   entries=[item for node in servers(parse(api,text)) if listens(node,443) for item in directives(node,'ssl_certificate')]
-  if len(entries)!=1:return {'status':'unavailable'}
-  container_path=Path(values(entries[0])[1]);relative=container_path.relative_to('/etc/nginx/templates')
-  if '..' in relative.parts:return {'status':'unavailable'}
-  path=Path(mount['Source'])/relative
-  decoded=ssl._ssl._test_decode_cert(str(path));end=ssl.cert_time_to_seconds(decoded['notAfter'])
-  return {'status':'read','not_after_utc':datetime.fromtimestamp(end,timezone.utc).isoformat(),'expired':end<time.time()}
+  names=sorted({values(entry)[1] for entry in entries});results=[]
+  for name in names:
+   relative=Path(name).relative_to('/etc/nginx/templates')
+   if '..' in relative.parts:return {'status':'unavailable'}
+   path=Path(mount['Source'])/relative
+   decoded=ssl._ssl._test_decode_cert(str(path));end=ssl.cert_time_to_seconds(decoded['notAfter'])
+   results.append({'not_after_utc':datetime.fromtimestamp(end,timezone.utc).isoformat(),'expired':end<time.time()})
+  if not results:return {'status':'unavailable'}
+  if len(results)==1:return {'status':'read',**results[0]}
+  return {'status':'read','certificate_count':len(results),'expired_count':sum(item['expired'] for item in results),'certificates':results}
  except (OSError,ValueError,KeyError,ssl.SSLError):return {'status':'unavailable'}
+
+
+def loaded_sections(api,dump):
+ headers=list(re.finditer(r'(?m)^# configuration file (/.+):[ \t]*$',dump))
+ api.require(bool(headers),'Loaded Nginx file inventory is unavailable')
+ result={}
+ for index,header in enumerate(headers):
+  path=header[1];api.require(path not in result,'Repeated loaded configuration file record')
+  end=headers[index+1].start() if index+1<len(headers) else len(dump)
+  result[path]=dump[header.end():end]
+ return result
+
+
+def file_entries(state):
+ if 'files' in state:return state['files']
+ return [{'name':'default.conf','runtime_path':RUNTIME,**{key:state[key] for key in (
+  'template_path','template_before','runtime_before','template_after','runtime_after','template_metadata')}}]
+
+
+def files_match(api,files,side):
+ return all(not Path(item['template_path']).is_symlink()
+  and Path(item['template_path']).read_text()==item['template_'+side]
+  and read_runtime(api,item['runtime_path'])==item['runtime_'+side] for item in files)
 
 
 def prepare(api,root,manifest):
@@ -194,37 +234,59 @@ def prepare(api,root,manifest):
  mount=[row for row in proxy.get('Mounts') or [] if row.get('Destination')=='/etc/nginx/templates']
  api.require(len(mount)==1 and mount[0].get('Type')=='bind' and mount[0].get('RW') is True,
   'Expected the writable proxy template directory bind mount')
- mount=mount[0];path=Path(mount['Source'])/'default.conf.template'
+ mount=mount[0]
  profile=api.read_json(root/'docker-compose/environments/dev/compose.json')
  expected=[row['source'] for row in profile['services']['proxy']['volumes'] if row['target']=='/etc/nginx/templates']
- api.require(expected==[str(Path(mount['Source']))] and not path.is_symlink() and path.is_file(),
+ api.require(expected==[str(Path(mount['Source']))],
   'Proxy template path differs from the dev profile')
  api.require(proxy.get('Config',{}).get('Cmd')==['nginx','-g','daemon off;'],'Custom Nginx master arguments require review')
  for row in proxy.get('Mounts') or []:
   destination=Path(row['Destination'])
-  api.require(destination!=Path(RUNTIME) and destination not in Path(RUNTIME).parents,'Rendered config has an unexpected host mount')
+  api.require(all(destination!=Path(path) and destination not in Path(path).parents for path in RUNTIMES.values()),
+   'Rendered config has an unexpected host mount')
  dumped=api.run(['docker','exec','proxy','nginx','-T'])
- api.require('# configuration file '+RUNTIME+':' in dumped,'default.conf is not in the loaded Nginx configuration')
- template=path.read_text();runtime=read_runtime(api)
+ sections=loaded_sections(api,dumped)
+ api.require(RUNTIME in sections,'default.conf is not in the loaded Nginx configuration')
  frontend=api.env_map(proxy).get('FRONT_PROXY_PASS')
  api.require(isinstance(frontend,str) and frontend!='','Proxy frontend destination is unavailable')
- after_template,template_action=patch(api,template,frontend);after_runtime,runtime_action=patch(api,runtime,frontend)
+ for name,text in sections.items():
+  if name not in RUNTIMES.values():
+   api.require(not frontend_servers(api,text,frontend),'HTTP frontend exists in an unsupported loaded file; no partial repair was applied')
+ files=[];public_files=[]
+ for name,runtime_path in RUNTIMES.items():
+  if runtime_path not in sections:continue
+  runtime=read_runtime(api,runtime_path);path=Path(mount['Source'])/(name+'.template')
+  api.require(not path.is_symlink() and path.is_file(),'Loaded frontend configuration requires its corresponding mounted template')
+  template=path.read_text()
+  template_count=len(frontend_servers(api,template,frontend));runtime_count=len(frontend_servers(api,runtime,frontend))
+  api.require(template_count==runtime_count,'Template and rendered HTTP frontend server counts differ; no partial repair was applied')
+  if not runtime_count:continue
+  after_template,template_action=patch(api,template,frontend);after_runtime,runtime_action=patch(api,runtime,frontend)
+  info=path.stat()
+  files.append({'name':name,'runtime_path':runtime_path,'template_path':str(path),
+   'template_before':template,'runtime_before':runtime,'template_after':after_template,'runtime_after':after_runtime,
+   'template_metadata':{'mode':stat.S_IMODE(info.st_mode),'uid':info.st_uid,'gid':info.st_gid}})
+  public_files.append({'configuration':name,'http_frontend_servers':runtime_count,'template_change':template_action,
+   'runtime_change':runtime_action,'live_routes':route_facts(api,runtime)})
+ api.require(bool(files),'No matching HTTP frontend servers in supported loaded configurations')
  results=probes(api);api.require(results[0]['status']==200 and results[0]['json_object'],'Direct stats main endpoint must return JSON HTTP 200')
+ api.require(results[-2]['status']==200 and results[-2]['json_object'],'Direct stats endpoint rejects the forwarded public Host; upstream header review is required')
  api.require(results[-1]['status']==200 and results[-1]['json_object'],'Existing HTTP backend API route must work before proxy repair')
  api.ensure_stable(before,api.inspect_project(manifest),'Container/configuration changed during proxy preflight')
- api.require(path.read_text()==template and read_runtime(api)==runtime,'Proxy files changed during preflight')
- info=path.stat()
- return {'before':before,'template_path':str(path),'template_before':template,'runtime_before':runtime,
-  'template_after':after_template,'runtime_after':after_runtime,'template_metadata':{'mode':stat.S_IMODE(info.st_mode),'uid':info.st_uid,'gid':info.st_gid},
-  'public':{'status':'proxy_stats_plan_ready','environment':'dev','template_change':template_action,'runtime_change':runtime_action,
-   'live_routes':route_facts(api,runtime),'probes':public_probes(results),'origin_certificate':certificate(api,runtime,mount),
-   'effect':'Apply backs up and updates only the HTTP stats route in the mounted template and default.conf, tests Nginx and gracefully reloads it. '
+ api.require(files_match(api,files,'before'),'Proxy files changed during preflight')
+ api.require(api.run(['docker','exec','proxy','nginx','-T'])==dumped,'Loaded Nginx configuration changed during preflight')
+ return {'before':before,'files':files,'loaded_config_before':dumped,
+  'public':{'status':'proxy_stats_plan_ready','environment':'dev','configurations':public_files,
+   'http_frontend_servers':sum(item['http_frontend_servers'] for item in public_files),
+   'probes':public_probes(results),'origin_certificate':certificate(api,read_runtime(api),mount),
+   'effect':'Apply backs up and updates matching HTTP stats routes in the loaded default/explorer templates and rendered files, tests Nginx and gracefully reloads it. '
     'No container recreation, backend/DB change or TLS certificate replacement.'}}
 
 
 def restore_files(api,state):
- write_template(Path(state['template_path']),state['template_before'],state['template_metadata'])
- write_runtime(api,state['runtime_before'])
+ for item in file_entries(state):
+  write_template(Path(item['template_path']),item['template_before'],item['template_metadata'])
+  write_runtime(api,item['runtime_before'],item['runtime_path'])
  api.run(['docker','exec','proxy','nginx','-t'])
 
 
@@ -246,12 +308,13 @@ def _apply(api,releases,root,manifest,do_apply):
   'restore_command':'./deploy.sh dev proxy-stats --restore '+str(path),
   'note':'Keep this private backup on the server; it may contain private configuration.'}),flush=True)
  api.ensure_stable(prepared['before'],api.inspect_project(manifest),'Deployment changed before proxy apply')
- api.require(not Path(state['template_path']).is_symlink() and Path(state['template_path']).read_text()==state['template_before']
-  and read_runtime(api)==state['runtime_before'],
-  'Proxy files changed before apply')
+ api.require(files_match(api,state['files'],'before'),'Proxy files changed before apply')
+ api.require(api.run(['docker','exec','proxy','nginx','-T'])==state['loaded_config_before'],'Loaded Nginx configuration changed before apply')
  reloaded=False
  try:
-  write_template(Path(state['template_path']),state['template_after'],state['template_metadata']);write_runtime(api,state['runtime_after'])
+  for item in state['files']:
+   write_template(Path(item['template_path']),item['template_after'],item['template_metadata'])
+   write_runtime(api,item['runtime_after'],item['runtime_path'])
   api.run(['docker','exec','proxy','nginx','-t'])
   state['status']='reload_requested';releases.update_state(path,state)
   reloaded=True;api.run(['docker','exec','proxy','nginx','-s','reload'])
@@ -274,7 +337,8 @@ def _apply(api,releases,root,manifest,do_apply):
   raise
  results=probes(api)
  api.ensure_stable(prepared['before'],api.inspect_project(manifest),'Container changed during proxy apply; inspect status before further action')
- ok=all(results[i]['status']==200 and results[i]['json_object'] for i in (0,1,4))
+ required={'stats_direct','stats_direct_public_host','proxy_http','proxy_backend_api'}
+ ok=all(row['status']==200 and row['json_object'] for row in results if row['name'] in required)
  state['status']='applied' if ok else 'needs_attention';releases.update_state(path,state)
  return {'status':'proxy_stats_verified' if ok else 'proxy_stats_needs_attention','state':str(path),'probes':public_probes(results),
   'containers_unchanged':True,'nginx_gracefully_reloaded':True,'origin_certificate':prepared['public']['origin_certificate'],
@@ -287,12 +351,19 @@ def restore(api,builder,releases,root,manifest,path):
    and bool(re.fullmatch(r'proxy-stats-[0-9TZ-]+-[a-f0-9]{8}',path.parent.name))
    and not path.is_symlink() and not path.parent.is_symlink() and path.is_file(), 'Unexpected proxy backup path')
   api.require(stat.S_IMODE(path.stat().st_mode)==0o600 and stat.S_IMODE(path.parent.stat().st_mode)==0o700,'Proxy backup permissions differ')
-  state=api.read_json(path);api.require(state.get('format')==FORMAT,'Unrecognized proxy backup')
+  state=api.read_json(path);api.require(state.get('format') in (FORMAT,LEGACY_FORMAT),'Unrecognized proxy backup')
   before=api.inspect_project(manifest);api.require(before['proxy']['Id']==state.get('proxy_id'),'Proxy container changed; do not restore an older configuration automatically')
-  template=Path(state['template_path'])
-  api.require(not template.is_symlink() and template.read_text() in (state['template_after'],state['template_before'])
-   and read_runtime(api) in (state['runtime_after'],state['runtime_before']),
-   'Proxy files changed after repair; restore will not overwrite later edits')
+  mounts=[row for row in before['proxy'].get('Mounts') or [] if row.get('Destination')=='/etc/nginx/templates' and row.get('Type')=='bind']
+  api.require(len(mounts)==1,'Proxy template mount changed')
+  files=file_entries(state)
+  api.require(bool(files) and len(files)<=len(RUNTIMES) and len({item['name'] for item in files})==len(files),'Unexpected proxy backup file inventory')
+  for item in files:
+   api.require(item['name'] in RUNTIMES and item['runtime_path']==RUNTIMES[item['name']]
+    and Path(item['template_path'])==Path(mounts[0]['Source'])/(item['name']+'.template'),'Unexpected proxy backup target')
+   template=Path(item['template_path'])
+   api.require(not template.is_symlink() and template.read_text() in (item['template_after'],item['template_before'])
+    and read_runtime(api,item['runtime_path']) in (item['runtime_after'],item['runtime_before']),
+    'Proxy files changed after repair; restore will not overwrite later edits')
   restore_files(api,state);api.run(['docker','exec','proxy','nginx','-s','reload'])
   api.ensure_stable(before,api.inspect_project(manifest),'Container changed during proxy restore')
   state['status']='restored';releases.update_state(path,state)
