@@ -5,6 +5,8 @@ seed = FIXTURE_SEED
 verify = FIXTURE_VERIFY
 background = FIXTURE_BACKGROUND
 history_probe = FIXTURE_HISTORY_PROBE
+in_place_probe = FIXTURE_IN_PLACE_PROBE
+defer_indexes? = FIXTURE_DEFER_INDEXES
 
 ^token = System.get_env("UPGRADE_SCHEMA_FIXTURE")
 %URI{host: "pg", path: "/fixture", port: 5432} = URI.parse(System.fetch_env!("DATABASE_URL"))
@@ -43,7 +45,7 @@ if stage != "baseline" do
   expected =
     if stage == "upgrade",
       do: %{"repo" => 28, "account" => 2, "arbitrum" => 1},
-      else: %{"repo" => 0, "account" => 0, "arbitrum" => 0}
+      else: %{"repo" => if(defer_indexes?, do: 2, else: 0), "account" => 0, "arbitrum" => 0}
 
   ^expected = Map.new(pending.(), fn {directory, versions} -> {directory, length(versions)} end)
 end
@@ -55,16 +57,21 @@ migrated =
     {directory, path} = path_for.(repo)
 
     options =
-      if stage == "baseline" and directory == "repo" do
-        versions =
-          Path.wildcard(Path.join(path, "*.exs"))
-          |> Enum.map(fn file ->
-            file |> Path.basename() |> String.split("_", parts: 2) |> hd() |> String.to_integer()
-          end)
+      cond do
+        stage == "baseline" and directory == "repo" ->
+          versions =
+            Path.wildcard(Path.join(path, "*.exs"))
+            |> Enum.map(fn file ->
+              file |> Path.basename() |> String.split("_", parts: 2) |> hd() |> String.to_integer()
+            end)
 
-        [to: Enum.max(versions -- deferred), log: false]
-      else
-        [all: true, log: false]
+          [to: Enum.max(versions -- deferred), log: false]
+
+        defer_indexes? and directory == "repo" ->
+          [to: 20_260_220_073_250, log: false]
+
+        true ->
+          [all: true, log: false]
       end
 
     applied = Ecto.Migrator.run(repo, path, :up, options)
@@ -83,10 +90,11 @@ if stage == "baseline" do
 
   for statement <- String.split(seed, ";", trim: true), do: q.(statement)
 else
-  expected = if stage == "upgrade", do: [28, 2, 1], else: [0, 0, 0]
+  expected = if stage == "upgrade", do: [if(defer_indexes?, do: 26, else: 28), 2, 1], else: [0, 0, 0]
   ^expected = Enum.map(migrated, & &1.count)
-  true = Enum.all?(pending.(), fn {_, versions} -> versions == [] end)
-  Code.eval_string(verify, q: q)
+  expected_pending = %{"repo" => if(defer_indexes?, do: deferred, else: []), "account" => [], "arbitrum" => []}
+  ^expected_pending = pending.()
+  Code.eval_string(verify, q: q, defer_indexes?: defer_indexes?)
 end
 
 history_metadata_before =
@@ -109,6 +117,12 @@ history_metadata_after =
     data
   end
 
+in_place_metadata =
+  if stage in ["baseline", "background"] do
+    {data, _} = Code.eval_string(in_place_probe)
+    data
+  end
+
 IO.puts(
   "BLOCKSCOUT_SCHEMA_FIXTURE=" <>
     Jason.encode!(%{
@@ -117,11 +131,13 @@ IO.puts(
       migration_elapsed_ms_on_fixture: elapsed,
       pending_counts: Map.new(pending.(), fn {directory, versions} -> {directory, length(versions)} end),
       synthetic_checks_passed: stage != "baseline",
+      deferred_custom_indexes: defer_indexes?,
       postgres_version_num: version,
       full_database_rehearsal: false,
       background_backfills_tested: stage == "background",
       background_checks: background_checks,
       history_metadata_before: history_metadata_before,
-      history_metadata_after: history_metadata_after
+      history_metadata_after: history_metadata_after,
+      in_place_metadata: in_place_metadata
     })
 )

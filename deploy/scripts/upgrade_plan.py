@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inspect the v10 rehearsal source, optionally reading bounded live dev metadata.
+"""Inspect the v10 upgrade source, optionally reading bounded live dev metadata.
 
 This tool has no build, migration, application-start, or deployment operation.
 """
@@ -51,7 +51,7 @@ def source_report(root, plan):
         "source_migrations": plan["migration_changes"],
         "live_pending_counts_known": False,
         "deployment_permitted": False,
-        "required_next_step": "Bounded metadata review, followed by backup/restore rehearsal on separate storage",
+        "required_next_step": "Bounded metadata review and recovery/working-space checks for the selected rehearsal or in-place route",
     }
 
 
@@ -212,16 +212,19 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--live", action="store_true", help="Read dev schema versions and two background status records")
     mode.add_argument("--history-risk", action="store_true", help="Read internal transaction sizes/indexes, selected migration states and trace policy")
+    mode.add_argument("--in-place-preflight", action="store_true", help="Read PostgreSQL data/WAL/tablespace placement and selected WAL settings")
     args = parser.parse_args()
     try:
         plan = json.loads(PLAN.read_text())
         report = source_report(ROOT, plan)
-        if args.live or args.history_risk:
+        if args.live or args.history_risk or args.in_place_preflight:
             spec = importlib.util.spec_from_file_location("upgrade_dev_config", ROOT / "deploy/scripts/dev_config.py")
             api = importlib.util.module_from_spec(spec)
             sys.modules[spec.name] = api
             spec.loader.exec_module(api)
-            if args.history_risk:
+            if args.in_place_preflight:
+                report = api.load_tool("in_place_preflight").report(api, ROOT)
+            elif args.history_risk:
                 report = history_report(ROOT, api)
             else:
                 report.update(live_report(ROOT, plan, api))

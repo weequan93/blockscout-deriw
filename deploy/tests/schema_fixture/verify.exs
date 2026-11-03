@@ -66,7 +66,9 @@ end
     "SELECT EXISTS(SELECT 1 FROM pg_enum e JOIN pg_type t ON t.oid=e.enumtypid WHERE t.typname='arbitrum_da_containers_types' AND e.enumlabel='in_eigenda')"
   ).rows
 
-[[6]] =
+expected_custom_indexes = if defer_indexes?, do: 0, else: 6
+
+[[^expected_custom_indexes]] =
   q.(
     "SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid WHERE i.indisvalid AND i.indisready AND c.relname IN ('blocks_consensus_number_timestamp_hash_idx','blocks_empty_sanitizer_hash_number_idx','transactions_status_created_contract_code_indexed_at_index','transactions_consensus_timestamp_stats_idx','transactions_consensus_block_number_gas_used_idx','logs_token_transfer_topics_block_number_cover_idx')"
   ).rows

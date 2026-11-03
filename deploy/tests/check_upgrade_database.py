@@ -66,7 +66,7 @@ def expression(stage, token, versions):
     ) + "}")
 
 
-def evaluate(image, stage, token, network, password, versions, directory):
+def evaluate(image, stage, token, network, password, versions, directory, defer_indexes=False):
     name = "blockscout-schema-" + stage + "-" + token
     environment = {
         "UPGRADE_SCHEMA_FIXTURE": token, "CHAIN_TYPE": "arbitrum", "CHAIN_ID": "18417507517",
@@ -96,6 +96,9 @@ def evaluate(image, stage, token, network, password, versions, directory):
     script = script.replace("FIXTURE_SEED", elixir_string(seed)).replace("FIXTURE_VERIFY", elixir_string(verify))
     script = script.replace("FIXTURE_BACKGROUND", elixir_string(background))
     script = script.replace("FIXTURE_HISTORY_PROBE", elixir_string(history.history_body()))
+    preflight = module("in_place_preflight")
+    script = script.replace("FIXTURE_IN_PLACE_PROBE", elixir_string(preflight.body()))
+    script = script.replace("FIXTURE_DEFER_INDEXES", "true" if defer_indexes else "false")
     try:
         result = subprocess.run(command, input=script, capture_output=True, text=True, timeout=240)
         (directory / (stage + ".log")).write_text(result.stdout + result.stderr)
@@ -108,6 +111,11 @@ def evaluate(image, stage, token, network, password, versions, directory):
         for key in ("history_metadata_before", "history_metadata_after"):
             if report.get(key) is not None:
                 report[key] = history.safe_history(report[key])
+        if report.get("in_place_metadata") is not None:
+            public, connection, tablespaces = preflight.safe_database(report["in_place_metadata"])
+            if public["in_recovery"] or connection[1] != 5432 or tablespaces:
+                raise RuntimeError("In-place metadata probe did not recognize the isolated primary database")
+            report["in_place_metadata"] = public
         if stage in ("baseline", "background"):
             before = [index["key_columns"] for index in report["history_metadata_before"]["indexes"] if index["primary"]]
             if before != [["block_hash", "block_index"]]:
@@ -139,7 +147,7 @@ def summary(report):
     result = dict(report)
     if "results" in result:
         result["results"] = [
-            {**{key: value for key, value in row.items() if key not in ("migrated", "history_metadata_before", "history_metadata_after")},
+            {**{key: value for key, value in row.items() if key not in ("migrated", "history_metadata_before", "history_metadata_after", "in_place_metadata")},
              "applied_counts": {item["directory"]: item["count"] for item in row["migrated"]}}
             for row in result["results"]
         ]
@@ -152,6 +160,7 @@ def main():
     parser.add_argument("--candidate-image", default="deriw-blockscout:v10-upgrade-local-validation")
     parser.add_argument("--postgres-image", default="postgres:15-alpine")
     parser.add_argument("--background", action="store_true", help="Also run the selected v10 backfills and primary-key workers")
+    parser.add_argument("--defer-indexes", action="store_true", help="Test 29 upstream versions while retaining the two deferred custom index versions")
     args = parser.parse_args()
     token = uuid.uuid4().hex[:16]
     directory = Path(tempfile.mkdtemp(prefix="blockscout-schema-"))
@@ -200,10 +209,10 @@ def main():
             stages.append(("background", candidate["Id"]))
         for stage, image in stages:
             print(json.dumps({"phase": stage}), flush=True)
-            results.append(evaluate(image, stage, token, network, password, versions, directory))
+            results.append(evaluate(image, stage, token, network, password, versions, directory, args.defer_indexes))
         report.update(status="passed", postgres_image=pg["Id"], baseline_image=baseline["Id"],
                       candidate_image=candidate["Id"], architecture=candidate["Architecture"], results=results,
-                      background_backfills_tested=args.background)
+                      background_backfills_tested=args.background, deferred_custom_indexes=args.defer_indexes)
     except Exception as error:
         report["reason"] = str(error)
     finally:
