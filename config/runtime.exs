@@ -776,6 +776,10 @@ config :explorer, Explorer.TokenInstanceOwnerAddressMigration,
   batch_size: ConfigHelper.parse_integer_env_var("MIGRATION_TOKEN_INSTANCE_OWNER_BATCH_SIZE", 50),
   enabled: ConfigHelper.parse_bool_env_var("MIGRATION_TOKEN_INSTANCE_OWNER_ENABLED")
 
+config :explorer,
+  :background_migrations_autostart_disabled,
+  ConfigHelper.parse_bool_env_var("MIGRATION_BACKGROUND_AUTOSTART_DISABLED", "false")
+
 config :explorer, Explorer.Migrator.TransactionsDenormalization,
   batch_size: ConfigHelper.parse_integer_env_var("MIGRATION_TRANSACTIONS_TABLE_DENORMALIZATION_BATCH_SIZE", 500),
   concurrency: ConfigHelper.parse_integer_env_var("MIGRATION_TRANSACTIONS_TABLE_DENORMALIZATION_CONCURRENCY", 10)

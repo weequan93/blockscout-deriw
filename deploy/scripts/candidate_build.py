@@ -133,7 +133,7 @@ def compile_image(api,root,source,log_path):
    terminate(build);terminate(archive)
 
 
-def smoke_expression(mode):
+def smoke_expression(mode,extra_expression=''):
  expected='false' if mode=='true' else 'true'
  return ('true = Application.get_env(:explorer, Explorer.Chain.Cache.Counters.TransactionsCount)[:approximate?]; '
   '"18417507517" = Application.get_env(:block_scout_web, :chain_id); '
@@ -145,10 +145,10 @@ def smoke_expression(mode):
   '{:module, _} = Code.ensure_loaded(sup); '+expected+' = sup.disabled?(); '
   +('' if mode=='true' else ':ignore = sup.start_link([]); ')
   +'nil = Explorer.Chain.fetch_transaction_revert_reason(%{block_number: 1335744}); '
-  +market_policy().smoke_expression()+'IO.puts("'+MARKER+'")')
+  +market_policy().smoke_expression()+extra_expression+'IO.puts("'+MARKER+'")')
 
 
-def smoke_script(mode):
+def smoke_script(mode,extra_expression=''):
  # jq @sh quotes values rather than executing their contents. Runtime config must
  # see this environment before release eval loads Config.Provider.
  return ("set -eu\numask 077\ncat > /tmp/candidate-env.json\n"
@@ -157,10 +157,10 @@ def smoke_script(mode):
   'rm /tmp/candidate-env.json\n'
   'test -s "/app/releases/$RELEASE_VERSION/config_helper.exs"\n'
   'test -s "/app/releases/$RELEASE_VERSION/runtime.exs"\n'
-  "exec /app/bin/blockscout eval '"+smoke_expression(mode)+"'\n")
+  "exec /app/bin/blockscout eval '"+smoke_expression(mode,extra_expression)+"'\n")
 
 
-def smoke_image(api,image,source,backend_environment,directory):
+def smoke_image(api,image,source,backend_environment,directory,extra_expression=''):
  results=[]
  for mode in ('unset','false','true'):
   environment={k:v for k,v in backend_environment.items() if v is not None}
@@ -170,7 +170,7 @@ def smoke_image(api,image,source,backend_environment,directory):
   if mode!='unset':environment[FLAG]=mode
   name='blockscout-dev-smoke-'+uuid.uuid4().hex[:12]
   command=['docker','run','--rm','--name',name,'--network','none','--read-only',
-   '--tmpfs','/tmp:rw,mode=1777','--cpus','2','--memory','512m','--entrypoint','sh','-i',image,'-c',smoke_script(mode)]
+   '--tmpfs','/tmp:rw,mode=1777','--cpus','2','--memory','512m','--entrypoint','sh','-i',image,'-c',smoke_script(mode,extra_expression)]
   try:
    result=subprocess.run(command,input=json.dumps(environment),capture_output=True,text=True,errors='replace',timeout=120)
    with private_log(directory/('smoke-'+mode+'.log.private')) as log:

@@ -10,6 +10,7 @@ import io
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tarfile
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -19,6 +20,7 @@ TESTS = [
     "apps/explorer/test/explorer/market/native_coin_price_only_test.exs",
     "apps/indexer/test/indexer/block/fetcher/receipt_fallback_test.exs",
     "apps/indexer/test/indexer/temporary/uncataloged_token_transfers_config_test.exs",
+    "apps/explorer/test/explorer/migrator/startup_control_test.exs",
 ]
 
 
@@ -26,7 +28,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", default="deriw-blockscout:v10-upgrade-compile")
     parser.add_argument("--runtime-image", help="Also load release config in the final runtime image using synthetic inputs")
+    parser.add_argument("--background-migrations-held", action="store_true", help="Assert the upgrade image inherits the startup hold")
     args = parser.parse_args()
+    if args.background_migrations_held and not args.runtime_image:
+        parser.error("--background-migrations-held requires --runtime-image")
     script = '''
 Code.require_file("config/config_helper.exs")
 ExUnit.start(autorun: false)
@@ -71,20 +76,34 @@ ExUnit.start(autorun: false)
             "TRACE_BLOCK_RANGES": "176114083..latest",
             "RELEASE_DISTRIBUTION": "none", "RELEASE_TMP": "/tmp",
         }
-        for mode in ("unset", "false", "true"):
+        cases = [(mode, False) for mode in ("unset", "false", "true")]
+        if args.background_migrations_held:
+            cases.append(("false", True))
+            sys.path.insert(0, str(ROOT / "deploy/scripts"))
+            from v10_candidate import held_expression
+        for mode, opt_out in cases:
             values = dict(environment)
+            extra = ""
+            if args.background_migrations_held:
+                if opt_out:
+                    values["MIGRATION_BACKGROUND_AUTOSTART_DISABLED"] = "false"
+                    extra = "false = Explorer.Migrator.StartupControl.disabled?(); "
+                else:
+                    extra = held_expression()
             if mode != "unset":
                 values[builder.FLAG] = mode
             result = subprocess.run([
                 "docker", "run", "--rm", "--pull", "never", "-i", "--network", "none", "--read-only",
                 "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--cpus", "2", "--memory", "512m",
-                "--tmpfs", "/tmp:rw,mode=1777", "--entrypoint", "sh", args.runtime_image, "-c", builder.smoke_script(mode),
+                "--tmpfs", "/tmp:rw,mode=1777", "--entrypoint", "sh", args.runtime_image, "-c", builder.smoke_script(mode, extra),
             ], input=json.dumps(values).encode(), capture_output=True, timeout=90)
             if result.returncode or builder.MARKER not in result.stdout.decode().splitlines():
                 print(result.stdout.decode(errors="replace")[-3000:], end="")
                 print(result.stderr.decode(errors="replace")[-6000:], end="")
                 return 1
             print("Release config passed with historical scanner " + mode)
+            if args.background_migrations_held:
+                print("Background migration startup hold checked: " + ("explicit false" if opt_out else "image default true"))
     return result.returncode
 
 
