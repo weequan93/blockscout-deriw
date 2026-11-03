@@ -5,8 +5,8 @@ defmodule Explorer.Chain.Import do
 
   alias Ecto.Changeset
   alias Explorer.Account.Notify
-  alias Explorer.Chain.Events.Publisher
   alias Explorer.Chain.{Block, Import}
+  alias Explorer.Chain.Events.Publisher
   alias Explorer.Chain.Import.Stage
   alias Explorer.Repo
 
@@ -17,6 +17,7 @@ defmodule Explorer.Chain.Import do
       Import.Stage.Blocks
     ],
     [
+      Import.Stage.Addresses,
       Import.Stage.Main
     ],
     [
@@ -26,6 +27,9 @@ defmodule Explorer.Chain.Import do
       Import.Stage.Logs,
       Import.Stage.InternalTransactions,
       Import.Stage.ChainTypeSpecific
+    ],
+    [
+      Import.Stage.Stats
     ]
   ]
 
@@ -342,7 +346,7 @@ defmodule Explorer.Chain.Import do
         end)
       end)
 
-    unless Enum.empty?(final_runner_to_changes_list) do
+    if !Enum.empty?(final_runner_to_changes_list) do
       raise ArgumentError,
             "No stages consumed the following runners: #{final_runner_to_changes_list |> Map.keys() |> inspect()}"
     end
@@ -441,7 +445,7 @@ defmodule Explorer.Chain.Import do
   end
 
   defp handle_partially_imported_blocks(%{blocks: %{params: blocks_params}}) do
-    block_numbers = Enum.map(blocks_params, & &1.number)
+    block_numbers = blocks_params |> Enum.map(& &1.number) |> Enum.uniq()
     Block.set_refetch_needed(block_numbers)
     Import.Runner.Blocks.process_blocks_consensus(blocks_params)
 

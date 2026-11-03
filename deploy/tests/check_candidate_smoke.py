@@ -13,14 +13,19 @@ B=importlib.util.module_from_spec(SPEC);SPEC.loader.exec_module(B)
 IMAGE='elixir@sha256:0ff6cbfc498e86d21d1f8939672f32acaffe9e5be8924da7942ce69fd34e2c68'
 FILES=['config/runtime.exs','config/config_helper.exs','apps/utils/lib/utils/config_helper.ex',
  'apps/indexer/lib/indexer/fetcher.ex','apps/indexer/lib/indexer/temporary/uncataloged_token_transfers.ex',
- 'apps/indexer/lib/indexer/block/fetcher/receipt_fallback.ex','apps/explorer/lib/explorer/chain.ex',
+ 'apps/indexer/lib/indexer/block/fetcher/receipt_fallback.ex','apps/explorer/lib/explorer/chain/transaction.ex',
  'apps/ethereum_jsonrpc/lib/ethereum_jsonrpc/utility/ranges_helper.ex',
  'apps/indexer/test/indexer/temporary/uncataloged_token_transfers_config_test.exs']
 SCRIPT='''
 ExUnit.start()
 defmodule Extract do
  def functions(path,names) do
-  {:defmodule,_,[_,[do: {:__block__,_,body}]]}=path |> File.read!() |> Code.string_to_quoted!()
+  ast=path |> File.read!() |> Code.string_to_quoted!()
+  modules=case ast do
+   {:__block__,_,nodes} -> Enum.filter(nodes, &match?({:defmodule,_,_}, &1))
+   node -> [node]
+  end
+  {:defmodule,_,[_,[do: {:__block__,_,body}]]}=List.last(modules)
   Enum.filter(body,fn
    {kind,_,[{name,_,_},_]} when kind in [:def,:defp] -> name in names
    _ -> false
@@ -43,12 +48,14 @@ Module.create(Indexer.Temporary.UncatalogedTokenTransfers,quote do
 end,Macro.Env.location(__ENV__))
 Code.require_file("apps/indexer/lib/indexer/block/fetcher/receipt_fallback.ex")
 Code.require_file("apps/ethereum_jsonrpc/lib/ethereum_jsonrpc/utility/ranges_helper.ex")
-wrapper=Extract.functions("apps/explorer/lib/explorer/chain.ex",[:fetch_transaction_revert_reason])
-Module.create(Explorer.Chain,quote do
- alias EthereumJSONRPC.Utility.RangesHelper
+wrapper=Extract.functions("apps/explorer/lib/explorer/chain/transaction.ex",[:fetch_transaction_revert_reason])
+Module.create(Explorer.Chain.Transaction,quote do
  unquote_splicing(wrapper)
  defp do_fetch_transaction_revert_reason(_),do: raise("unexpected historical RPC in candidate check")
 end,Macro.Env.location(__ENV__))
+defmodule Explorer.Chain do
+ defdelegate fetch_transaction_revert_reason(transaction), to: Explorer.Chain.Transaction
+end
 Code.require_file("apps/indexer/test/indexer/temporary/uncataloged_token_transfers_config_test.exs")
 {:__block__,_,expressions}="config/runtime.exs" |> File.read!() |> Code.string_to_quoted!()
 System.put_env("CHAIN_ID","18417507517")

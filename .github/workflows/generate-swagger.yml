@@ -1,4 +1,4 @@
-name: Generate Swagger
+name: Generate OpenAPI Specs
 
 on:
   push:
@@ -15,9 +15,9 @@ on:
     types: [published]
 
 env:
-  OTP_VERSION: ${{ vars.OTP_VERSION }}
-  ELIXIR_VERSION: ${{ vars.ELIXIR_VERSION }}
-  RELEASE_VERSION: 9.0.1
+  OTP_VERSION: '27.3.4.6'
+  ELIXIR_VERSION: '1.19.4'
+  RELEASE_VERSION: 10.2.6
 
 jobs:
   matrix-builder:
@@ -31,32 +31,28 @@ jobs:
           echo "matrix=$(node -e '
 
             // Add/remove CI matrix chain types here
-            const defaultChainTypes = ["default"];
-
             const chainTypes = [
+              "default",
               "arbitrum",
+              "arc",
               "blackfort",
-              "celo",
               "ethereum",
               "filecoin",
+              "neon",
               "optimism",
+              "optimism-celo",
               "polygon_zkevm",
               "rsk",
               "scroll",
               "shibarium",
               "stability",
+              "suave",
               "zetachain",
               "zilliqa",
-              "zksync",
-              "neon"
+              "zksync"
             ];
 
-            const extraChainTypes = ["suave", "polygon_edge"];
-
-            // Chain type matrix we use in master branch
-            const allChainTypes = [].concat(defaultChainTypes, chainTypes, extraChainTypes);
-
-            const matrix = { "chain-type": ${{ 'allChainTypes' }} };
+            const matrix = { "chain-type": ${{ 'chainTypes' }} };
             console.log(JSON.stringify(matrix));
           ')" >> $GITHUB_OUTPUT
 
@@ -64,7 +60,7 @@ jobs:
     name: Build and Cache deps
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: erlef/setup-beam@v1
         with:
           otp-version: ${{ env.OTP_VERSION }}
@@ -108,7 +104,7 @@ jobs:
       - build-and-cache
       - matrix-builder
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: erlef/setup-beam@v1
         with:
           otp-version: ${{ env.OTP_VERSION }}
@@ -130,15 +126,32 @@ jobs:
 
       - name: mix openapi.spec.yaml
         run: |
-          mix openapi.spec.yaml --spec BlockScoutWeb.ApiSpec openapi.${{ matrix.chain-type }}.yaml --start-app=false
+          mix openapi.spec.yaml --spec BlockScoutWeb.Specs.Public openapi.${{ matrix.chain-type }}.yaml --start-app=false
         env:
           CHAIN_TYPE: ${{ matrix.chain-type != 'default' && matrix.chain-type || '' }}
+          MUD_INDEXER_ENABLED: false
+
+      - name: Generate MUD-enabled spec for Optimism
+        if: matrix.chain-type == 'optimism'
+        run: |
+          mix openapi.spec.yaml --spec BlockScoutWeb.Specs.Public openapi.mud.yaml --start-app=false
+        env:
+          CHAIN_TYPE: optimism
+          MUD_INDEXER_ENABLED: true
 
       - name: Upload OpenAPI spec
         uses: actions/upload-artifact@v4
         with:
           name: openapi-spec-${{ matrix.chain-type }}
           path: openapi.${{ matrix.chain-type }}.yaml
+          retention-days: 1
+
+      - name: Upload MUD-enabled spec
+        if: matrix.chain-type == 'optimism'
+        uses: actions/upload-artifact@v4
+        with:
+          name: openapi-spec-mud
+          path: openapi.mud.yaml
           retention-days: 1
 
   push-specs:
@@ -156,14 +169,14 @@ jobs:
           fi
 
       - name: Checkout specs repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ vars.API_SPECS_REPOSITORY }}
           token: ${{ secrets.API_SPECS_PAT }}
           path: api-specs
 
       - name: Download all swagger specs
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           pattern: openapi-spec-*
           merge-multiple: true
@@ -175,14 +188,18 @@ jobs:
 
           for SPEC_FILE in temp-specs/*; do
             if [ -f "$SPEC_FILE" ]; then
-              # Extract chain type from filename
-              CHAIN_TYPE=$(echo $SPEC_FILE | cut -d'.' -f2)
+              FILENAME=$(basename "$SPEC_FILE")
               
-              # Create directory
-              mkdir -p "api-specs/blockscout/${VERSION}/${CHAIN_TYPE}"
-              
-              # Copy spec files
-              cp "$SPEC_FILE" "api-specs/blockscout/${VERSION}/${CHAIN_TYPE}/swagger.yaml"
+              # Handle MUD spec specially
+              if [ "$FILENAME" = "openapi.mud.yaml" ]; then
+                mkdir -p "api-specs/blockscout/${VERSION}/mud"
+                cp "$SPEC_FILE" "api-specs/blockscout/${VERSION}/mud/swagger.yaml"
+              else
+                # Extract chain type from filename (openapi.CHAINTYPE.yaml)
+                CHAIN_TYPE=$(echo "$FILENAME" | sed 's/openapi\.\(.*\)\.yaml/\1/')
+                mkdir -p "api-specs/blockscout/${VERSION}/${CHAIN_TYPE}"
+                cp "$SPEC_FILE" "api-specs/blockscout/${VERSION}/${CHAIN_TYPE}/swagger.yaml"
+              fi
             fi
           done
 

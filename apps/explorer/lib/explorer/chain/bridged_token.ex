@@ -6,12 +6,12 @@ defmodule Explorer.Chain.BridgedToken do
 
   import Ecto.Changeset
   import EthereumJSONRPC, only: [json_rpc: 2]
+  import Explorer.Chain.Address.Reputation, only: [reputation_association: 0]
 
   import Ecto.Query,
     only: [
       from: 2,
-      limit: 2,
-      where: 2
+      limit: 2
     ]
 
   alias ABI.{TypeDecoder, TypeEncoder}
@@ -943,7 +943,7 @@ defmodule Explorer.Chain.BridgedToken do
         where: t.total_supply > ^0,
         where: t.bridged,
         select: {t, bt},
-        preload: [:contract_address]
+        preload: [:contract_address, ^reputation_association()]
       )
 
     base_query_with_paging =
@@ -956,7 +956,7 @@ defmodule Explorer.Chain.BridgedToken do
         case Search.prepare_search_term(filter) do
           {:some, filter_term} ->
             base_query_with_paging
-            |> where(fragment("to_tsvector('english', symbol || ' ' || name) @@ to_tsquery(?)", ^filter_term))
+            |> Token.apply_fts_filter(filter_term)
 
           _ ->
             base_query_with_paging

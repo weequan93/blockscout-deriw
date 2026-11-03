@@ -14,16 +14,17 @@ defmodule Indexer.Fetcher.EmptyBlocksSanitizer do
 
   alias EthereumJSONRPC.Block.ByNumber
   alias EthereumJSONRPC.Blocks
-  alias Explorer.Repo
   alias Explorer.Chain.{Block, Hash, PendingOperationsHelper, Transaction}
   alias Explorer.Chain.Cache.BlockNumber
+  alias Explorer.Repo
 
   @update_timeout 60_000
 
   @interval :timer.seconds(10)
+  @batch_size 10
+  @head_offset 1000
 
-  defstruct interval: @interval,
-            json_rpc_named_arguments: []
+  defstruct json_rpc_named_arguments: []
 
   def child_spec([init_arguments]) do
     child_spec([init_arguments, []])
@@ -44,14 +45,13 @@ defmodule Indexer.Fetcher.EmptyBlocksSanitizer do
 
   @impl GenServer
   def init(opts) when is_list(opts) do
-    interval = Application.get_env(:indexer, __MODULE__)[:interval]
+    # For the first call we want it to start immediately
+    # (don't affect implementation in any way, but helps tests not to flake)
+    Kernel.send(self(), :sanitize_empty_blocks)
 
     state = %__MODULE__{
-      json_rpc_named_arguments: Keyword.fetch!(opts, :json_rpc_named_arguments),
-      interval: interval || @interval
+      json_rpc_named_arguments: Keyword.fetch!(opts, :json_rpc_named_arguments)
     }
-
-    Process.send_after(self(), :sanitize_empty_blocks, state.interval)
 
     {:ok, state}
   end
@@ -59,7 +59,7 @@ defmodule Indexer.Fetcher.EmptyBlocksSanitizer do
   @impl GenServer
   def handle_info(
         :sanitize_empty_blocks,
-        %{interval: interval, json_rpc_named_arguments: json_rpc_named_arguments} = state
+        %{json_rpc_named_arguments: json_rpc_named_arguments} = state
       ) do
     Logger.info("Start sanitizing of empty blocks. Batch size is #{limit()}",
       fetcher: :empty_blocks_to_refetch
@@ -67,7 +67,7 @@ defmodule Indexer.Fetcher.EmptyBlocksSanitizer do
 
     sanitize_empty_blocks(json_rpc_named_arguments)
 
-    Process.send_after(self(), :sanitize_empty_blocks, interval)
+    Process.send_after(self(), :sanitize_empty_blocks, interval())
 
     {:noreply, state}
   end
@@ -80,15 +80,16 @@ defmodule Indexer.Fetcher.EmptyBlocksSanitizer do
         block in Block,
         where: block.hash in subquery(unprocessed_non_empty_blocks_query)
       ),
-      set: [is_empty: false, updated_at: Timex.now()]
+      [set: [is_empty: false, updated_at: Timex.now()]],
+      timeout: :infinity
     )
 
     unprocessed_empty_blocks_list = unprocessed_empty_blocks_list_query(limit())
 
-    unless Enum.empty?(unprocessed_empty_blocks_list) do
+    if !Enum.empty?(unprocessed_empty_blocks_list) do
       blocks_response =
         unprocessed_empty_blocks_list
-        |> Enum.map(fn {block_number, _} -> %{number: integer_to_quantity(block_number)} end)
+        |> Enum.map(fn %{number: block_number} -> %{number: integer_to_quantity(block_number)} end)
         |> id_to_params()
         |> Blocks.requests(&ByNumber.request(&1, false, false))
         |> json_rpc(json_rpc_named_arguments)
@@ -208,62 +209,77 @@ defmodule Indexer.Fetcher.EmptyBlocksSanitizer do
       {:error, %{exception: postgrex_error}}
   end
 
-  @head_offset 1000
   defp consensus_blocks_with_nil_is_empty_query(limit) do
-    safe_block_number = BlockNumber.get_max() - @head_offset
+    safe_block_number = BlockNumber.get_max() - head_offset()
 
     from(block in Block,
+      as: :block,
+      select: %{hash: block.hash, number: block.number},
       where: is_nil(block.is_empty),
       where: block.number <= ^safe_block_number,
       where: block.consensus == true,
       where: block.refetch_needed == false,
-      order_by: [asc: block.hash],
       limit: ^limit
     )
   end
 
-  defp unprocessed_non_empty_blocks_query(limit) do
-    blocks_query = consensus_blocks_with_nil_is_empty_query(limit)
+  defp any_block_transactions_query do
+    # NOTE: relies on parent_as(:block) set by the caller query (see consensus_blocks_with_nil_is_empty_query/1)
+    if Explorer.Chain.DenormalizationHelper.transactions_denormalization_finished?() do
+      from(t in Transaction,
+        select: 1,
+        where: t.block_number == parent_as(:block).number and t.block_consensus == true
+      )
+    else
+      from(t in Transaction, select: 1, where: parent_as(:block).hash == t.block_hash)
+    end
+  end
 
-    transaction_exists_query =
-      from(transaction in Transaction,
-        where: transaction.block_number == parent_as(:block).number,
-        where: transaction.block_consensus == true,
-        select: 1
+  defp unprocessed_non_empty_blocks_query(limit) do
+    candidate_blocks_query = consensus_blocks_with_nil_is_empty_query(limit)
+
+    non_empty_blocks_query =
+      from(
+        block in candidate_blocks_query,
+        where: exists(any_block_transactions_query())
       )
 
-    from(q in subquery(blocks_query),
-      as: :block,
-      where: exists(transaction_exists_query),
-      select: q.hash,
-      order_by: [asc: q.hash],
-      lock: fragment("FOR NO KEY UPDATE OF ?", q)
+    # Inner Join is required in order to lock only `blocks` table.
+    # As `non_empty_blocks_query` has WHERE condition on `transactions` table,
+    # if you apply lock to the query, the `transactions` table is also locked
+    # and that results in obtaining locks before the sort.
+    from(
+      block in Block,
+      inner_join: non_empty_block in subquery(non_empty_blocks_query),
+      on: block.hash == non_empty_block.hash,
+      select: %{hash: block.hash},
+      order_by: [asc: block.hash],
+      lock: fragment("FOR NO KEY UPDATE OF ?", block)
     )
   end
 
   defp unprocessed_empty_blocks_list_query(limit) do
-    blocks_query = consensus_blocks_with_nil_is_empty_query(limit)
+    candidate_blocks_query = consensus_blocks_with_nil_is_empty_query(limit)
 
-    transaction_exists_query =
-      from(transaction in Transaction,
-        where: transaction.block_number == parent_as(:block).number,
-        where: transaction.block_consensus == true,
-        select: 1
+    empty_blocks_query =
+      from(
+        block in candidate_blocks_query,
+        where: not exists(any_block_transactions_query())
       )
 
-    query =
-      from(q in subquery(blocks_query),
-        as: :block,
-        where: not exists(transaction_exists_query),
-        select: {q.number, q.hash},
-        order_by: [asc: q.hash]
-      )
-
-    query
+    empty_blocks_query
     |> Repo.all(timeout: :infinity)
   end
 
   defp limit do
-    Application.get_env(:indexer, __MODULE__)[:batch_size]
+    Application.get_env(:indexer, __MODULE__)[:batch_size] || @batch_size
+  end
+
+  defp interval do
+    Application.get_env(:indexer, __MODULE__)[:interval] || @interval
+  end
+
+  defp head_offset do
+    Application.get_env(:indexer, __MODULE__)[:head_offset] || @head_offset
   end
 end

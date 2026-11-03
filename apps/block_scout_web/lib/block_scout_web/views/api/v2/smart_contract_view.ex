@@ -5,10 +5,10 @@ defmodule BlockScoutWeb.API.V2.SmartContractView do
   import Explorer.SmartContract.Reader, only: [zip_tuple_values_with_types: 2]
 
   alias ABI.FunctionSelector
+  alias BlockScoutWeb.{AddressContractView, SmartContractView}
   alias BlockScoutWeb.API.V2.Helper, as: APIV2Helper
   alias BlockScoutWeb.API.V2.TransactionView
-  alias BlockScoutWeb.{AddressContractView, SmartContractView}
-  alias Ecto.Changeset
+  alias BlockScoutWeb.ErrorHelper
   alias Explorer.Chain
   alias Explorer.Chain.{Address, SmartContract, SmartContractAdditionalSource}
   alias Explorer.Chain.SmartContract.Proxy
@@ -38,11 +38,7 @@ defmodule BlockScoutWeb.API.V2.SmartContractView do
   end
 
   def render("changeset_errors.json", %{changeset: changeset}) do
-    Changeset.traverse_errors(changeset, fn {msg, opts} ->
-      Regex.replace(~r"%{(\w+)}", msg, fn _, key ->
-        opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
-      end)
-    end)
+    ErrorHelper.changeset_to_errors(changeset)
   end
 
   def render("audit_reports.json", %{reports: reports}) do
@@ -172,7 +168,7 @@ defmodule BlockScoutWeb.API.V2.SmartContractView do
 
     proxy_type = implementations && implementations.proxy_type
 
-    minimal_proxy? = proxy_type in ["eip1167", "clone_with_immutable_arguments", "erc7760"]
+    minimal_proxy? = proxy_type in [:eip1167, :eip7702, :clone_with_immutable_arguments, :erc7760]
 
     target_contract =
       if smart_contract_verified, do: smart_contract, else: bytecode_twin_contract
@@ -195,6 +191,7 @@ defmodule BlockScoutWeb.API.V2.SmartContractView do
       "is_verified_via_verifier_alliance" => smart_contract.verified_via_verifier_alliance,
       "proxy_type" => proxy_type,
       "implementations" => Proxy.proxy_object_info(implementations),
+      "conflicting_implementations" => Proxy.conflicting_implementations_info(implementations),
       "sourcify_repo_url" =>
         if(smart_contract_verified_via_sourcify,
           do: AddressContractView.sourcify_repo_url(address.hash, smart_contract.partially_verified)
@@ -237,7 +234,8 @@ defmodule BlockScoutWeb.API.V2.SmartContractView do
   defp prepare_smart_contract(%Address{proxy_implementations: implementations} = address, _conn) do
     %{
       "proxy_type" => implementations && implementations.proxy_type,
-      "implementations" => Proxy.proxy_object_info(implementations)
+      "implementations" => Proxy.proxy_object_info(implementations),
+      "conflicting_implementations" => Proxy.conflicting_implementations_info(implementations)
     }
     |> Map.merge(bytecode_info(address))
   end
@@ -304,7 +302,8 @@ defmodule BlockScoutWeb.API.V2.SmartContractView do
   defp prepare_smart_contract_address_for_list(
          %Address{
            smart_contract: %SmartContract{} = smart_contract,
-           token: token
+           token: token,
+           reputation: reputation
          } = address
        ) do
     smart_contract_info =
@@ -319,7 +318,8 @@ defmodule BlockScoutWeb.API.V2.SmartContractView do
         "has_constructor_args" => !is_nil(smart_contract.constructor_arguments),
         "coin_balance" => if(address.fetched_coin_balance, do: address.fetched_coin_balance.value),
         "license_type" => smart_contract.license_type,
-        "certified" => if(smart_contract.certified, do: smart_contract.certified, else: false)
+        "certified" => if(smart_contract.certified, do: smart_contract.certified, else: false),
+        "reputation" => reputation
       }
 
     smart_contract_info
