@@ -1,6 +1,9 @@
 import importlib.util
+import io
 import json
 from pathlib import Path
+import subprocess
+import tarfile
 from types import SimpleNamespace
 import tempfile
 import unittest
@@ -82,9 +85,37 @@ class PreflightTests(unittest.TestCase):
             inspect_project=Mock(return_value={"backend": backend, "db": db}), run=Mock(return_value="withheld"),
             require=require,
         )
-        with self.assertRaisesRegex(ValueError, "unconfirmed"):
+        with self.assertRaises(P.PreflightError) as caught:
             P.report(api, ROOT)
+        self.assertEqual(caught.exception.stage, "database_route")
         api.run.assert_called_once()
+
+    def test_rpc_diagnostics_export_only_fixed_stage_and_error_labels(self):
+        checker = SimpleNamespace(marked_json=Mock(return_value={
+            "status": "unavailable", "stage": "wal_settings", "error_kind": "permission_denied",
+            "message": "private-fixture-value",
+        }))
+        api = SimpleNamespace(
+            load_tool=Mock(return_value=checker), configuration=Mock(return_value=({}, {}, {})),
+            inspect_project=Mock(return_value={}), run=Mock(return_value="withheld"),
+        )
+        with self.assertRaises(P.PreflightError) as caught:
+            P.report(api, ROOT)
+        self.assertEqual(caught.exception.public(), {"stage": "wal_settings", "error_kind": "permission_denied"})
+        self.assertNotIn("private-fixture-value", str(caught.exception))
+        api.run.assert_called_once()
+        rejected = P.PreflightError("private-fixture-value", "private-fixture-value")
+        self.assertEqual(rejected.public(), {"stage": "backend_rpc", "error_kind": "check_failed"})
+
+    def test_command_failure_withholds_raw_error_and_identifies_failed_stage(self):
+        api = SimpleNamespace(
+            load_tool=Mock(), configuration=Mock(return_value=({}, {}, {})),
+            inspect_project=Mock(side_effect=RuntimeError("private-fixture-value")),
+        )
+        with self.assertRaises(P.PreflightError) as caught:
+            P.report(api, ROOT)
+        self.assertEqual(caught.exception.public(), {"stage": "inspect_project", "error_kind": "check_failed"})
+        self.assertNotIn("private-fixture-value", str(caught.exception))
 
     def test_full_storage_report_deduplicates_devices_and_never_confirms_snapshot(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -121,6 +152,61 @@ class PreflightTests(unittest.TestCase):
             self.assertFalse(report["deployment_permitted"])
             self.assertNotIn("private-fixture-value", json.dumps(report))
             api.ensure_stable.assert_called_once()
+
+
+class ElixirFailureTests(unittest.TestCase):
+    def test_exact_rpc_expression_reports_sql_stage_without_private_error_fields(self):
+        script = '''
+defmodule Postgrex.Error do
+  defexception [:postgres, :message]
+end
+defmodule Explorer.Repo do
+  def transaction(fun, opts) do
+    [timeout: 5000] = opts
+    {:ok, fun.()}
+  end
+end
+defmodule Ecto.Adapters.SQL do
+  def query!(Explorer.Repo, query, _params, opts) do
+    [timeout: 2000, log: false] = opts
+    if String.contains?(query, Process.get(:fail_query)) do
+      raise Postgrex.Error, postgres: %{code: Process.get(:fail_code), detail: "private-fixture-value"},
+        message: "private-fixture-value"
+    end
+    %{rows: []}
+  end
+end
+defmodule Jason do
+  def encode!(%{status: "unavailable", stage: stage, error_kind: kind}), do: stage <> ":" <> kind
+end
+Process.register(self(), Explorer.Repo)
+'''
+        for query, code in (
+            ("data_directory", "insufficient_privilege"),
+            ("pg_settings", "query_canceled"),
+            ("pg_tablespace", "undefined_column"),
+        ):
+            script += '\nProcess.put(:fail_query, ' + json.dumps(query) + ')\n'
+            script += 'Process.put(:fail_code, :' + code + ')\n' + P.expression()
+        payload = io.BytesIO()
+        with tarfile.open(fileobj=payload, mode="w") as archive:
+            raw = script.encode()
+            entry = tarfile.TarInfo("read.exs")
+            entry.size = len(raw)
+            archive.addfile(entry, io.BytesIO(raw))
+        result = subprocess.run([
+            "docker", "run", "--rm", "--pull", "never", "-i", "--network", "none", "--read-only",
+            "--tmpfs", "/work:rw,exec,size=16m", "--workdir", "/work", "--cpus", "2", "--memory", "256m",
+            "-e", "ERL_FLAGS=+S 2:2", "elixir@sha256:0ff6cbfc498e86d21d1f8939672f32acaffe9e5be8924da7942ce69fd34e2c68",
+            "sh", "-c", "tar -xf - && exec elixir read.exs",
+        ], input=payload.getvalue(), capture_output=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+        self.assertEqual(result.stdout.decode().splitlines(), [
+            "BLOCKSCOUT_DEPLOY_CHECK=server_metadata:permission_denied",
+            "BLOCKSCOUT_DEPLOY_CHECK=wal_settings:statement_timeout_or_cancel",
+            "BLOCKSCOUT_DEPLOY_CHECK=tablespace_metadata:unsupported_database_schema",
+        ])
+        self.assertNotIn("private-fixture-value", result.stdout.decode())
 
 
 if __name__ == "__main__":

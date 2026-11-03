@@ -214,25 +214,34 @@ def main():
     mode.add_argument("--history-risk", action="store_true", help="Read internal transaction sizes/indexes, selected migration states and trace policy")
     mode.add_argument("--in-place-preflight", action="store_true", help="Read PostgreSQL data/WAL/tablespace placement and selected WAL settings")
     args = parser.parse_args()
+    preflight = None
+    stage = "source_inventory"
     try:
         plan = json.loads(PLAN.read_text())
         report = source_report(ROOT, plan)
         if args.live or args.history_risk or args.in_place_preflight:
+            stage = "load_dev_tooling"
             spec = importlib.util.spec_from_file_location("upgrade_dev_config", ROOT / "deploy/scripts/dev_config.py")
             api = importlib.util.module_from_spec(spec)
             sys.modules[spec.name] = api
             spec.loader.exec_module(api)
             if args.in_place_preflight:
-                report = api.load_tool("in_place_preflight").report(api, ROOT)
+                preflight = api.load_tool("in_place_preflight")
+                report = preflight.report(api, ROOT)
             elif args.history_risk:
                 report = history_report(ROOT, api)
             else:
                 report.update(live_report(ROOT, plan, api))
         print(json.dumps(report, indent=2))
         return 0
-    except Exception:
+    except Exception as error:
         # Docker/Repo exception strings can include private configuration.
-        print(json.dumps({"status": "stopped", "reason": "Upgrade source or bounded metadata check failed; raw values suppressed", "deployment_permitted": False}))
+        failure = {"status": "stopped", "reason": "Upgrade source or bounded metadata check failed; raw values suppressed", "deployment_permitted": False}
+        if args.in_place_preflight:
+            failure.update(stage=stage, error_kind="check_failed")
+            if preflight is not None and isinstance(error, preflight.PreflightError):
+                failure.update(error.public())
+        print(json.dumps(failure))
         return 1
 
 
