@@ -82,11 +82,12 @@ That recovery must preserve the newer store and use a cold reconciliation or
 another reviewed recovery method. Do not call the old directory a current backup
 after writes resume. Bind-mounted PostgreSQL data remains a separate resource.
 
-The helper deliberately has **no apply, restart, copy, cleanup or rollback command**.
-The maintenance executor and its recovery checks remain to be finalized after
-the live plan confirms the active paths and complete host workload scope. The
-local tests validate configuration preservation, relevant process/mount parsing
-and private output handling; they do not rehearse a live daemon/storage move.
+The preparation helper has **no apply, restart, copy, cleanup or rollback command**.
+The operator subsequently saved `plan-4xiv4wmt/state.json`. The separate
+[maintenance executor and recovery procedure](containerd-dev-maintenance.md)
+now provide the staged move using that private plan. Neither helper authorizes
+automatic cleanup of the original store. Local tests do not rehearse the real
+host's systemd or full store size.
 
 References:
 

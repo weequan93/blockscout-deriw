@@ -121,7 +121,8 @@ def validate_candidate(before, after):
     require(str(SOURCE) not in replace_root(after, TARGET), 'plugin_retains_old_storage_path')
 
 
-def root_upperdir(mountinfo):
+def root_upperdir(mountinfo, root=None):
+    root = SOURCE if root is None else root
     for line in mountinfo.splitlines():
         left, separator, right = line.partition(' - ')
         fields, data = left.split(), right.split()
@@ -129,7 +130,7 @@ def root_upperdir(mountinfo):
             for option in data[2].split(','):
                 if option.startswith('upperdir='):
                     value = option[len('upperdir='):]
-                    require('\\' not in value and value.startswith(str(SOURCE) + '/'), 'unexpected_active_snapshot_path')
+                    require('\\' not in value and value.startswith(str(root) + '/'), 'unexpected_active_snapshot_path')
                     return value
     raise PlanError('active_snapshot_path_unavailable')
 

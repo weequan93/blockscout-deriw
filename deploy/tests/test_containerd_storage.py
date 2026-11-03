@@ -91,6 +91,8 @@ class ProcessTests(unittest.TestCase):
         path = '/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/9/fs'
         mount = '40 20 0:1 / / rw - overlay overlay rw,lowerdir=/lower,upperdir=' + path + ',workdir=/work\n'
         self.assertEqual(S.root_upperdir(mount), path)
+        self.assertEqual(S.root_upperdir(mount.replace('/var/lib/containerd/', '/data/containerd/'), root=Path('/data/containerd')),
+                         path.replace('/var/lib/containerd/', '/data/containerd/'))
         for changed in (mount.replace('/var/lib/containerd/', '/var/lib/containerd-other/'),
                         mount.replace(' / / ', ' / /other ')):
             with self.assertRaises(S.PlanError):
