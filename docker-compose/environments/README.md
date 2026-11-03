@@ -218,6 +218,10 @@ access, compares numeric users/groups and probes current readiness/NFT
 connectivity. Temporary inventory containers are isolated from the network and
 host storage, use read-only root filesystems and are removed. Image default
 differences are reported as field/env names; private values are never printed.
+Migration differences now include the added/removed/changed relative filenames
+(up to 32 of each). The command also reads presence, validity, readiness and size
+metadata for the six known performance indexes in the two fork migrations; it
+does not build an index or execute a table scan.
 
 Migration status uses the existing backend Repo connections in short read-only
 transactions with statement/lock timeouts. It directly reads
@@ -227,6 +231,15 @@ source/prefix or unavailable DB route requires review. No Repo or application is
 started, and no schema, persistent setting or data is changed. Mount checks run
 `test` under the existing backend user without creating files; they do not prove
 ongoing write success under the new image.
+
+The `migration_files` and `pending_count` fields describe the live image and are
+explicitly labeled `pending_count_basis: live_image`. The candidate's file
+versions are checked against the same database route separately, with
+`candidate_migration_files`, `candidate_pending_count` and
+`candidate_pending_versions`. Zero pending live-image migrations does not show
+that additional candidate migrations have been applied. The candidate comparison
+must also pass. Inactive chain/feature directories are inventoried, but only the
+repositories selected by the existing release are queried.
 
 `preactivation_evidence_passed` means these limited checks passed, not that the
 candidate is deployed or that DB backups/restore have been proven. Otherwise,

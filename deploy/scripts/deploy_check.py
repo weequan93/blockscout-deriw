@@ -10,6 +10,14 @@ import subprocess
 import uuid
 
 MARKER='BLOCKSCOUT_DEPLOY_CHECK='
+PERFORMANCE_INDEXES=(
+ 'blocks_consensus_number_timestamp_hash_idx',
+ 'blocks_empty_sanitizer_hash_number_idx',
+ 'transactions_status_created_contract_code_indexed_at_index',
+ 'transactions_consensus_timestamp_stats_idx',
+ 'transactions_consensus_block_number_gas_used_idx',
+ 'logs_token_transfer_topics_block_number_cover_idx',
+)
 IMAGE_SCRIPT='''set -eu
 printf 'IDENTITY %s %s %s\n' "$(id -u)" "$(id -g)" "$(id -G | tr ' ' ',')"
 find /app/lib/explorer-*/priv -type f -path '*/migrations/*.exs' -exec sha256sum {} +
@@ -87,9 +95,24 @@ def image_inventory(api,image):
 
 def migration_diff(before,after):
  a=before['migrations'];b=after['migrations']
+ added=sorted(b.keys()-a.keys());removed=sorted(a.keys()-b.keys());changed=sorted(key for key in a.keys()&b.keys() if a[key]!=b[key])
  return {'baseline_files':len(a),'candidate_files':len(b),'added':len(b.keys()-a.keys()),
-  'removed':len(a.keys()-b.keys()),'changed':sum(a[key]!=b[key] for key in a.keys()&b.keys()),
+  'removed':len(a.keys()-b.keys()),'changed':len(changed),
+  'added_files':added[:32],'removed_files':removed[:32],'changed_files':changed[:32],
+  'file_lists_truncated':any(len(items)>32 for items in (added,removed,changed)),
   'identical':a==b}
+
+
+def migration_versions(api,inventory):
+ result={}
+ for path in inventory['migrations']:
+  match=re.fullmatch(r'([a-z_]+)/migrations/([0-9]+)_[A-Za-z0-9_.-]+\.exs',path)
+  api.require(match is not None,'Migration path/version is unsupported for candidate comparison')
+  version=int(match[2]);api.require(0<version<2**63,'Migration version is outside PostgreSQL bigint bounds')
+  versions=result.setdefault(match[1],[])
+  api.require(version not in versions,'Duplicate candidate migration version in one repository')
+  versions.append(version)
+ return {directory:sorted(versions) for directory,versions in sorted(result.items())}
 
 
 def inherited_image_changes(api,baseline,image,service,live):
@@ -113,10 +136,13 @@ def marked_json(api,text):
  except ValueError:raise api.ConfigError('Runtime evidence was invalid; raw values suppressed') from None
 
 
-def migration_expression():
+def migration_expression(candidate_versions):
  # Ecto.Migrator.migrations/2 can create schema_migrations. Read it directly in
  # existing Repo connections with READ ONLY instead; never start a Repo here.
- return '''
+ # Directory keys and positive integer versions are validated before embedding
+ # this public inventory in the fixed expression. No runtime input is shell code.
+ source='%{'+', '.join(json.dumps(key)+' => '+repr(versions) for key,versions in candidate_versions.items())+'}'
+ return 'candidate_versions = '+source+';\n'+'''
 main = Explorer.Repo;
 route_keys = [:url, :hostname, :port, :database, :username, :password, :ssl, :socket_dir, :parameters];
 main_route = Map.take(Map.new(main.config()), route_keys);
@@ -125,8 +151,9 @@ rows = Enum.map(Explorer.ReleaseTasks.repos(), fn repo ->
     config = repo.config();
     true = Keyword.get(config, :migration_source, "schema_migrations") == "schema_migrations";
     true = Keyword.get(config, :migration_default_prefix, "public") in [nil, "public"];
-    path = Path.join([to_string(:code.priv_dir(Keyword.fetch!(config, :otp_app))),
-      repo |> Module.split() |> List.last() |> Macro.underscore(), "migrations"]);
+    directory = repo |> Module.split() |> List.last() |> Macro.underscore();
+    expected = Map.fetch!(candidate_versions, directory);
+    path = Path.join([to_string(:code.priv_dir(Keyword.fetch!(config, :otp_app))), directory, "migrations"]);
     files = Path.wildcard(Path.join(path, "*.exs"));
     true = files != [];
     versions = Enum.map(files, fn file -> file |> Path.basename() |> String.split("_", parts: 2) |> hd() |> String.to_integer() end);
@@ -139,8 +166,10 @@ rows = Enum.map(Explorer.ReleaseTasks.repos(), fn repo ->
       Ecto.Adapters.SQL.query!(reader, "SET LOCAL lock_timeout = '500ms'", [], timeout: 2000, log: false);
       Ecto.Adapters.SQL.query!(reader, "SELECT version FROM public.schema_migrations", [], timeout: 2000, log: false).rows |> List.flatten()
     end, timeout: 5000);
-    %{repository: inspect(repo), status: "ok", migration_files: length(versions),
-      pending_count: length(versions -- applied)}
+    %{repository: inspect(repo), migration_directory: directory, status: "ok", migration_files: length(versions),
+      pending_count: length(versions -- applied), pending_count_basis: "live_image",
+      candidate_migration_files: length(expected), candidate_pending_count: length(expected -- applied),
+      candidate_pending_versions: Enum.sort(expected -- applied)}
   rescue
     _ -> %{repository: inspect(repo), status: "unavailable"}
   catch
@@ -151,8 +180,9 @@ IO.puts("BLOCKSCOUT_DEPLOY_CHECK=" <> Jason.encode!(rows))
 '''
 
 
-def pending_migrations(api):
- rows=marked_json(api,api.run(['docker','exec','backend','/app/bin/blockscout','rpc',migration_expression()],timeout=40))
+def pending_migrations(api,inventory):
+ versions=migration_versions(api,inventory)
+ rows=marked_json(api,api.run(['docker','exec','backend','/app/bin/blockscout','rpc',migration_expression(versions)],timeout=40))
  api.require(isinstance(rows,list) and 1<=len(rows)<=10,'Unexpected migration repository inventory')
  allowed=[]
  for row in rows:
@@ -161,11 +191,45 @@ def pending_migrations(api):
   api.require(row.get('status') in ('ok','unavailable'),'Unexpected migration evidence status')
   item={key:row[key] for key in ('repository','status')}
   if row['status']=='ok':
-   api.require(all(type(row.get(key)) is int and row[key]>=0 for key in ('migration_files','pending_count')),'Unexpected migration count')
-   item.update({key:row[key] for key in ('migration_files','pending_count')})
+   keys=('migration_files','pending_count','candidate_migration_files','candidate_pending_count')
+   api.require(all(type(row.get(key)) is int and row[key]>=0 for key in keys),'Unexpected migration count')
+   api.require(row.get('pending_count_basis')=='live_image','Migration count scope is unavailable')
+   pending=row.get('candidate_pending_versions')
+   api.require(isinstance(pending,list) and all(type(v) is int and 0<v<2**63 for v in pending)
+    and len(pending)==len(set(pending))==row['candidate_pending_count'],'Unexpected candidate pending versions')
+   directory=row.get('migration_directory')
+   api.require(isinstance(directory,str) and directory in versions and row['candidate_migration_files']==len(versions[directory])
+    and set(pending)<=set(versions[directory]),'Candidate versions differ from the image inventory')
+   item.update({key:row[key] for key in (*keys,'pending_count_basis')})
+   item['migration_directory']=directory
+   item['candidate_pending_versions']=sorted(pending)
   allowed.append(item)
  api.require(len({row['repository'] for row in allowed})==len(allowed),'Duplicate migration repository evidence')
  return allowed
+
+
+def performance_expression():
+ return '''
+repo = Explorer.Repo;
+{:ok, rows} = repo.transaction(fn ->
+  Ecto.Adapters.SQL.query!(repo, "SET TRANSACTION READ ONLY", [], timeout: 2000, log: false);
+  Ecto.Adapters.SQL.query!(repo, "SET LOCAL statement_timeout = '1500ms'", [], timeout: 2000, log: false);
+  Ecto.Adapters.SQL.query!(repo, "SET LOCAL lock_timeout = '500ms'", [], timeout: 2000, log: false);
+  Ecto.Adapters.SQL.query!(repo, "SELECT c.relname, i.indisvalid, i.indisready, pg_relation_size(c.oid) FROM pg_catalog.pg_index i JOIN pg_catalog.pg_class c ON c.oid = i.indexrelid JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relname = ANY($1::text[])", [NAMES], timeout: 2000, log: false).rows
+end, timeout: 5000);
+IO.puts("BLOCKSCOUT_DEPLOY_CHECK=" <> Jason.encode!(rows))
+'''.replace('NAMES',json.dumps(list(PERFORMANCE_INDEXES)))
+
+
+def performance_indexes(api):
+ rows=marked_json(api,api.run(['docker','exec','backend','/app/bin/blockscout','rpc',performance_expression()],timeout=15))
+ api.require(isinstance(rows,list) and len(rows)<=len(PERFORMANCE_INDEXES),'Unexpected performance index inventory')
+ present={}
+ for row in rows:
+  api.require(isinstance(row,list) and len(row)==4 and row[0] in PERFORMANCE_INDEXES and row[0] not in present
+   and type(row[1]) is bool and type(row[2]) is bool and type(row[3]) is int and row[3]>=0,'Unexpected performance index metadata')
+  present[row[0]]={'name':row[0],'present':True,'valid':row[1],'ready':row[2],'bytes':row[3]}
+ return [present.get(name,{'name':name,'present':False}) for name in PERFORMANCE_INDEXES]
 
 
 def mount_access(api,service,row,identity):
@@ -215,7 +279,7 @@ def check(api,builder,root,manifest,requirements,values,private_path,receipt_pat
  baseline=builder.image_info(api,before['backend']['Image'])
  defaults=inherited_image_changes(api,baseline,image,model['services']['backend'],before['backend'])
  old=image_inventory(api,baseline['Id']);new=image_inventory(api,image['Id'])
- migrations=migration_diff(old,new);pending=pending_migrations(api)
+ migrations=migration_diff(old,new);pending=pending_migrations(api,new);indexes=performance_indexes(api)
  mounts=mount_access(api,model['services']['backend'],before['backend'],new['identity'])
  health=live_health(api,before)
  api.ensure_stable(before,api.inspect_project(manifest),'Live deployment changed during candidate pre-activation checks')
@@ -227,7 +291,7 @@ def check(api,builder,root,manifest,requirements,values,private_path,receipt_pat
  blockers=[]
  if defaults['fields'] or defaults['unexpected_environment_keys']:blockers.append('inherited_image_defaults_require_review')
  if not migrations['identical']:blockers.append('migration_file_differences_require_review')
- if any(row['status']!='ok' or row['pending_count'] for row in pending):blockers.append('pending_or_unavailable_migration_status')
+ if any(row['status']!='ok' or row['pending_count'] or row['candidate_pending_count'] for row in pending):blockers.append('pending_or_unavailable_migration_status')
  if not mounts['numeric_user_and_groups_match']:blockers.append('candidate_numeric_user_or_groups_differ')
  if not all(health.values()):blockers.append('live_readiness_or_nft_check_failed')
  command=model['services']['backend'].get('command')
@@ -238,6 +302,7 @@ def check(api,builder,root,manifest,requirements,values,private_path,receipt_pat
   'environment':'dev','candidate_image':image['Id'],'candidate_source_commit':receipt['source_commit'],
   'activation_performed':False,'blockers':blockers,'inherited_image_changes':defaults,
   'migration_inventory':migrations,'current_database_migrations':pending,'mount_access':mounts,**health,
+  'reviewed_performance_index_metadata':indexes,
   'startup_includes_create_and_migrate':migration_startup,
   'startup_command_matches_live':command_matches,
   'note':'Evidence collection only. No deployment, database creation/migration, mount writes or service restart. '
