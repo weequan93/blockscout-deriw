@@ -51,6 +51,13 @@ class ConfigTests(unittest.TestCase):
   for name in ('backend','nft_media_handler'):self.assertEqual(self.profile['services'][name]['build']['args']['CHAIN_TYPE'],'arbitrum')
   verifier=self.profile['services']['sc-verifier']['environment']
   self.assertIn('5de16fa32acc6b55707188922d5366915aec21af',verifier['SMART_CONTRACT_VERIFIER__VYPER__FETCHER__LIST__LIST_URL'])
+ def test_confirmed_database_settings_are_versioned(self):
+  db=self.profile['services']['db'];parameters=T.postgres_command_summary(db['command'],set())['parameters']
+  self.assertEqual(parameters,{'max_connections':'80','shared_buffers':'4GB','effective_cache_size':'18GB',
+   'work_mem':'16MB','maintenance_work_mem':'512MB','max_worker_processes':'4',
+   'max_parallel_workers':'0','max_parallel_workers_per_gather':'0'})
+  self.assertEqual(db['shm_size'],6442450944)
+  self.assertEqual(self.manifest['expected_database']['postgres_parameters'],parameters)
  def test_test_and_prod_refuse_without_inventory(self):
   for env in ('test','prod'):
    with self.assertRaises(T.ConfigError):T.configuration(ROOT,env)
@@ -208,6 +215,15 @@ class ComposeTests(ConfigTests):
   for name in ('backend','nft_media_handler'):
    self.assertEqual(model['services'][name]['build']['args']['CHAIN_TYPE'],'arbitrum')
   self.assertEqual(model['services']['backend']['volumes'][0]['source'],'/data/blockscout/docker-compose/services/logs')
+  self.assertEqual(model['services']['db']['command'],self.profile['services']['db']['command'])
+  self.assertEqual(str(model['services']['db']['shm_size']),'6442450944')
+  self.assertNotIn('client_connection_check_interval',T.postgres_command_summary(model['services']['db']['command'],set())['parameters'])
+ def test_database_contract_rejects_legacy_defaults(self):
+  model=T.managed_model(ROOT,self.manifest,self.values)
+  for field,value in (('command',['postgres','-c','max_connections=200']),('shm_size','268435456')):
+   invalid=deepcopy(model);invalid['services']['db'][field]=value
+   with patch.object(T,'compose_model',return_value=invalid):
+    with self.assertRaises(T.ConfigError):T.managed_model(ROOT,self.manifest,self.values)
  def test_real_eight_to_two_layer_comparison(self):
   model=T.managed_model(ROOT,self.manifest,self.values)
   current=deepcopy(model)
@@ -230,5 +246,6 @@ if __name__=='__main__':
  if '--compose' in sys.argv:
   suite.addTest(ComposeTests('test_real_profile_and_literal_private_value_round_trip'))
   suite.addTest(ComposeTests('test_real_eight_to_two_layer_comparison'))
+  suite.addTest(ComposeTests('test_database_contract_rejects_legacy_defaults'))
  result=unittest.TextTestRunner(verbosity=2).run(suite)
  raise SystemExit(not result.wasSuccessful())

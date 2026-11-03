@@ -30,6 +30,20 @@
   "chain_type": "arbitrum",
   "compose_project": "docker-compose",
   "environment": "dev",
+  "expected_database": {
+    "postgres_parameters": {
+      "effective_cache_size": "18GB",
+      "maintenance_work_mem": "512MB",
+      "max_connections": "80",
+      "max_parallel_workers": "0",
+      "max_parallel_workers_per_gather": "0",
+      "max_worker_processes": "4",
+      "shared_buffers": "4GB",
+      "work_mem": "16MB"
+    },
+    "service": "db",
+    "shm_size_bytes": 6442450944
+  },
   "expected_ports": {
     "backend": [],
     "db": [

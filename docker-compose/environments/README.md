@@ -22,6 +22,25 @@ manifest, avoiding duplicate port declarations during Compose merging. The dev p
 preserves absolute data paths and the existing project/network identity. Do not
 reuse it for a second stack or a different server environment.
 
+The dev DB explicitly retains the confirmed server startup tuning, rather than
+inheriting different defaults from the generic service definition:
+
+| PostgreSQL setting | Dev value |
+| --- | --- |
+| `max_connections` | `80` |
+| `shared_buffers` | `4GB` |
+| `effective_cache_size` | `18GB` |
+| `work_mem` | `16MB` |
+| `maintenance_work_mem` | `512MB` |
+| `max_worker_processes` | `4` |
+| `max_parallel_workers` | `0` |
+| `max_parallel_workers_per_gather` | `0` |
+| Docker `shm_size` | `6442450944` bytes (6 GiB) |
+
+The manifest also checks these settings during managed resolution. The selected
+DB image remains `postgres:15`; no database service has been restarted by adding
+this profile, and this does not perform a PostgreSQL version upgrade.
+
 ## First server comparison
 
 After these commits are available in the server's source checkout, run there:

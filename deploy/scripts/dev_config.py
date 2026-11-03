@@ -175,6 +175,13 @@ def managed_model(root,manifest,values):
  require(set(manifest.get('expected_ports',{}))==set(model['services']),'Captured port contract is incomplete')
  for name,service in model['services'].items():
   require(ports(service.get('ports') or [])==ports(manifest['expected_ports'][name]),'Inherited ports differ from captured dev settings: '+name)
+ database=manifest.get('expected_database') or {}
+ require(database.get('service')=='db' and isinstance(database.get('postgres_parameters'),dict),'Captured database contract is incomplete')
+ db=model['services'].get('db') or {};tuning=postgres_command_summary(db.get('command'),set())
+ require(tuning.get('recognized') and tuning.get('unclassified_argument_count')==0
+  and tuning.get('parameters')==database['postgres_parameters']
+  and len(tuning.get('ordered_parameters',[]))==len(database['postgres_parameters']),'Resolved PostgreSQL tuning differs from confirmed dev settings')
+ require(str(db.get('shm_size'))==str(database.get('shm_size_bytes')),'Resolved PostgreSQL shared-memory limit differs from confirmed dev settings')
  for key in ('CHAIN_ID','ETHEREUM_JSONRPC_HTTP_URL','ETHEREUM_JSONRPC_TRACE_URL'):
   require('rpc.prod.deriw.com' not in str(backend.get(key,'')),'Production RPC leaked into dev backend selection')
  return model
