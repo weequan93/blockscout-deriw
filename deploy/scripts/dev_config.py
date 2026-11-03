@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect dev inputs, compare configuration or build an isolated candidate. No activation."""
+"""Collect dev inputs, compare, build or inspect a candidate. No activation."""
 import argparse
 import importlib.util
 from functools import lru_cache
@@ -496,6 +496,10 @@ def main():
  build.add_argument('--live-compose-dir',type=Path,default=Path('/data/blockscout/docker-compose'))
  build.add_argument('--state-dir',type=Path,default=Path('/data/blockscout-dev-private/releases'))
  mode=build.add_mutually_exclusive_group();mode.add_argument('--check',action='store_true');mode.add_argument('--reuse',action='store_true')
+ evidence=sub.add_parser('deploy-check',help='Check candidate migrations, image defaults, mount access and live readiness without activation')
+ evidence.add_argument('--private-file',type=Path,required=True)
+ evidence.add_argument('--receipt',type=Path,required=True)
+ evidence.add_argument('--live-compose-dir',type=Path,default=Path('/data/blockscout/docker-compose'))
  args=parser.parse_args()
  try:
   manifest,requirements,_=configuration(ROOT,args.environment)
@@ -512,8 +516,14 @@ def main():
    values=load_private(args.private_file,requirements)
    spec=importlib.util.spec_from_file_location('candidate_build',ROOT/'deploy/scripts/candidate_build.py')
    builder=importlib.util.module_from_spec(spec);spec.loader.exec_module(builder)
-   report=builder.build_candidate(sys.modules[__name__],ROOT,manifest,requirements,values,args.private_file,
-    args.live_compose_dir,args.state_dir,check_only=args.check,reuse=args.reuse)
+   if args.operation=='build':
+    report=builder.build_candidate(sys.modules[__name__],ROOT,manifest,requirements,values,args.private_file,
+     args.live_compose_dir,args.state_dir,check_only=args.check,reuse=args.reuse)
+   else:
+    spec=importlib.util.spec_from_file_location('deploy_check',ROOT/'deploy/scripts/deploy_check.py')
+    checker=importlib.util.module_from_spec(spec);spec.loader.exec_module(checker)
+    report=checker.check(sys.modules[__name__],builder,ROOT,manifest,requirements,values,args.private_file,
+     args.receipt,args.live_compose_dir)
   print(json.dumps(report,indent=2));return 0
  except (ConfigError,OSError,ValueError,KeyError,TypeError,IndexError,AttributeError,subprocess.SubprocessError) as error:
   report={'status':'stopped','reason':str(error) if isinstance(error,ConfigError) else 'Configuration check failed; raw values suppressed'}

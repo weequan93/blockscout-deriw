@@ -200,6 +200,46 @@ startup, migration compatibility, live mount permissions or NFT connectivity.
 The CLI creates a candidate image without restarting any running service. Actual
 activation and rollback remain a separate implementation step.
 
+## Collect pre-activation evidence
+
+After `candidate_verified`, retain its image and receipt. Run from the clean
+review checkout, using the receipt path printed by that build:
+
+```bash
+./deploy.sh dev deploy-check \
+  --private-file /data/blockscout-dev-private/private-20261103.json \
+  --receipt /data/blockscout-dev-private/releases/candidate-<id>/candidate.json
+```
+
+This command collects evidence before implementing/enabling activation. It
+compares the migration-file contents in the candidate and current backend images,
+checks candidate-inherited image defaults, tests existing log/DETS directory
+access, compares numeric users/groups and probes current readiness/NFT
+connectivity. Temporary inventory containers are isolated from the network and
+host storage, use read-only root filesystems and are removed. Image default
+differences are reported as field/env names; private values are never printed.
+
+Migration status uses the existing backend Repo connections in short read-only
+transactions with statement/lock timeouts. It directly reads
+`public.schema_migrations`; it does not use Ecto migration-status APIs that can
+create that table. A missing/unavailable schema table, unsupported migration
+source/prefix or unavailable DB route requires review. No Repo or application is
+started, and no schema, persistent setting or data is changed. Mount checks run
+`test` under the existing backend user without creating files; they do not prove
+ongoing write success under the new image.
+
+`preactivation_evidence_passed` means these limited checks passed, not that the
+candidate is deployed or that DB backups/restore have been proven. Otherwise,
+review `blockers`. The existing startup command includes `create_and_migrate`;
+new/changed or pending migrations require a separate recovery/compatibility plan.
+Actual activation, full application startup and rollback remain unavailable.
+
+A newer tooling commit may check the already-built candidate if it descends
+from the candidate's source commit and changes only deploy tools or their
+documentation. Changes to application code, Docker recipes or environment
+profiles require a new candidate build. The command rechecks source, receipt,
+inputs, image identity and live stability before accepting its evidence.
+
 ## Checks
 
 ```bash
@@ -209,6 +249,9 @@ python3 deploy/tests/test_candidate_build.py
 python3 deploy/tests/test_candidate_build.py --docker
 # Requires Docker and the pinned Elixir fixture image, but no Mix deps or DB.
 python3 deploy/tests/check_candidate_smoke.py
+python3 deploy/tests/test_deploy_check.py
+# Optional: exercise the exact migration expression in an isolated Elixir fixture.
+python3 deploy/tests/test_deploy_check.py --docker
 ```
 
 The tests use synthetic private values, mocked daemon metadata and actual Compose

@@ -1,7 +1,8 @@
 # Server deployments for dev, test and prod
 
 Status: partially implemented, 3 November 2026. The versioned dev adoption
-profile and `./deploy.sh dev capture-private`, `plan` and candidate `build` now exist;
+profile and `./deploy.sh dev capture-private`, `plan`, candidate `build` and
+read-only `deploy-check` now exist;
 see [environment configuration](../docker-compose/environments/README.md).
 Candidate build uses the current clean committed checkout and requires
 `--private-file`; it has no `--ref` option and performs no activation. Upgrade,
@@ -21,6 +22,7 @@ Give every server the same entry point, with an explicit environment:
 ./deploy.sh dev plan --private-file /server/private.json
 ./deploy.sh dev build --private-file /server/private.json --check
 ./deploy.sh dev build --private-file /server/private.json
+./deploy.sh dev deploy-check --private-file /server/private.json --receipt /server/candidate.json
 
 # Proposed commands, available after further implementation.
 ./deploy.sh dev plan --ref origin/dev
