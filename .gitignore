@@ -63,6 +63,11 @@ dump.rdb
 /docker-compose/tmp
 /docker-compose/docker-compose.override.yml
 /docker-compose/.env
+/docker-compose/environments/**/private.json
+/docker-compose/environments/**/*.private.json
+/deploy/**/private.json
+/deploy/**/*.private.json
+/deploy/**/__pycache__/
 
 .idea/
 *.iml

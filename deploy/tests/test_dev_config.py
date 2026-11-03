@@ -1,0 +1,171 @@
+#!/usr/bin/env python3
+"""Read-only adoption workflow: synthetic private data, mocked daemon and real Compose resolution."""
+import contextlib
+from copy import deepcopy
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+import stat
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+ROOT=Path(__file__).resolve().parents[2]
+SPEC=importlib.util.spec_from_file_location('dev_config',ROOT/'deploy/scripts/dev_config.py')
+T=importlib.util.module_from_spec(SPEC);SPEC.loader.exec_module(T)
+SECRET='fixture-private-do-not-export-X29'
+
+
+class ConfigTests(unittest.TestCase):
+ def setUp(self):
+  self.manifest,self.requirements,self.profile=T.configuration(ROOT,'dev')
+  self.values={key:'fixture-value-'+key for key in self.requirements}
+  self.values['DEV_FRONTEND_NEXT_PUBLIC_NETWORK_ID']='18417507517'
+  for key,origin in self.requirements.items():
+   if origin['environment_key']=='RELEASE_COOKIE':self.values[key]=SECRET
+  self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
+  self.parent=Path(self.tmp.name).resolve();self.live_dir=self.parent/'live';self.live_dir.mkdir()
+  self.paths=[self.live_dir/name for name in self.manifest['baseline_compose_layers']]
+  for path in self.paths:path.write_text('{}')
+  self.rows={}
+  for i,(name,service) in enumerate(self.profile['services'].items(),1):
+   env={key:value for key,value in service['environment'].items() if not str(value).startswith('${DEV_')}
+   for ref,origin in self.requirements.items():
+    if origin['service']==name:env[origin['environment_key']]=self.values[ref]
+   self.rows[name]={'Id':format(i,'064x'),'Image':self.manifest['baseline_image_ids'][name],
+    'State':{'Running':True,'StartedAt':'2026-11-03T03:02:19Z'},'RestartCount':0,
+    'Config':{'Env':[k+'='+v for k,v in env.items()],
+     'Labels':{'com.docker.compose.project':'docker-compose','com.docker.compose.service':name,
+      'com.docker.compose.project.config_files':','.join(map(str,self.paths))}}}
+ def test_versioned_public_selections(self):
+  env=self.profile['services']['backend']['environment']
+  self.assertEqual(env['CHAIN_ID'],'18417507517');self.assertEqual(env['CACHE_TXS_COUNT_APPROXIMATE'],'true')
+  self.assertEqual(env['TRACE_BLOCK_RANGES'],'176114083..latest')
+  self.assertEqual(env['INDEXER_CONTRACT_CODE_RETRY_DELAY'],'60s')
+  self.assertEqual(env['INDEXER_UNCATALOGED_TOKEN_TRANSFERS_ENABLED'],'false')
+  self.assertEqual(len(self.requirements),133);self.assertEqual(len(self.profile['services']),14)
+  for name in ('backend','nft_media_handler'):self.assertEqual(self.profile['services'][name]['build']['args']['CHAIN_TYPE'],'arbitrum')
+  verifier=self.profile['services']['sc-verifier']['environment']
+  self.assertIn('5de16fa32acc6b55707188922d5366915aec21af',verifier['SMART_CONTRACT_VERIFIER__VYPER__FETCHER__LIST__LIST_URL'])
+ def test_test_and_prod_refuse_without_inventory(self):
+  for env in ('test','prod'):
+   with self.assertRaises(T.ConfigError):T.configuration(ROOT,env)
+ def test_exact_private_collection_and_cookie_validation(self):
+  self.assertEqual(T.collect_values(self.requirements,self.rows),self.values)
+  self.rows['nft_media_handler']['Config']['Env']=[v.replace(SECRET,'fixture-other-cookie') for v in self.rows['nft_media_handler']['Config']['Env']]
+  with self.assertRaises(T.ConfigError):T.collect_values(self.requirements,self.rows)
+ def test_missing_private_value_refused(self):
+  first=next(iter(self.requirements.values()))
+  row=self.rows[first['service']];prefix=first['environment_key']+'='
+  row['Config']['Env']=[v for v in row['Config']['Env'] if not v.startswith(prefix)]
+  with self.assertRaises(T.ConfigError):T.collect_values(self.requirements,self.rows)
+ def test_private_output_permissions_and_no_overwrite(self):
+  path=self.parent/'private'/'private.json';T.save_private(path,self.values,ROOT)
+  self.assertEqual(stat.S_IMODE(path.stat().st_mode),0o600)
+  self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode),0o700)
+  self.assertEqual(T.load_private(path,self.requirements),self.values)
+  with self.assertRaises(T.ConfigError):T.save_private(path,self.values,ROOT)
+ def test_output_inside_checkout_refused(self):
+  with self.assertRaises(T.ConfigError):T.save_private(ROOT/'private-must-not-exist.json',self.values,ROOT)
+  self.assertFalse((ROOT/'private-must-not-exist.json').exists())
+ def test_symlink_and_loose_permissions_refused(self):
+  folder=self.parent/'private';folder.mkdir(mode=0o700)
+  path=folder/'link.json';path.symlink_to(folder/'missing')
+  with self.assertRaises(T.ConfigError):T.save_private(path,self.values,ROOT)
+  path=folder/'private.json';T.save_private(path,self.values,ROOT);path.chmod(0o644)
+  with self.assertRaises(T.ConfigError):T.load_private(path,self.requirements)
+ def test_private_file_shape_rejected(self):
+  path=self.parent/'private'/'private.json';T.save_private(path,self.values,ROOT)
+  data=json.loads(path.read_text());data['environment']='prod';path.write_text(json.dumps(data))
+  with self.assertRaises(T.ConfigError):T.load_private(path,self.requirements)
+ def test_ambient_profile_values_are_ignored(self):
+  with patch.dict(os.environ,{'DEV_BACKEND_DATABASE_URL':'wrong','COMPOSE_FILE':'wrong'}):
+   env=T.compose_environment(self.values)
+  self.assertEqual(env['DEV_BACKEND_DATABASE_URL'],self.values['DEV_BACKEND_DATABASE_URL']);self.assertNotIn('COMPOSE_FILE',env)
+ def test_model_diff_never_prints_values(self):
+  a={'services':{'backend':{'environment':{'DATABASE_URL':SECRET},'command':['echo',SECRET],'labels':{'secret':SECRET}}}}
+  b=deepcopy(a);b['services']['backend']['environment']['DATABASE_URL']='other';b['services']['backend']['command']=['other']
+  b['services']['backend']['labels']={'different':'value'}
+  result=T.model_differences(a,b)
+  self.assertNotIn(SECRET,json.dumps(result));self.assertIn('services.backend.environment.DATABASE_URL',result)
+  self.assertIn('services.backend.command',result);self.assertIn('services.backend.labels',result)
+ def test_compose_file_order_and_scope(self):
+  self.assertEqual(T.live_files(self.live_dir,self.rows['backend'],self.manifest),self.paths)
+  self.rows['backend']['Config']['Labels']['com.docker.compose.project.config_files']=str(self.parent/'outside.yml')
+  with self.assertRaises(T.ConfigError):T.live_files(self.live_dir,self.rows['backend'],self.manifest)
+ def test_wrong_live_chain_refused(self):
+  self.rows['backend']['Config']['Env']=[x.replace('CHAIN_ID=18417507517','CHAIN_ID=2886') for x in self.rows['backend']['Config']['Env']]
+  values=list(self.rows.values());ids='\n'.join(row['Id'] for row in values)
+  with patch.object(T,'run',side_effect=[ids,json.dumps(values)]):
+   with self.assertRaises(T.ConfigError):T.inspect_project(self.manifest)
+ def test_rpc_wrong_chain_refused(self):
+  with patch.object(T,'run',return_value='{"result":"0xb46"}'):
+   with self.assertRaises(T.ConfigError):T.rpc_chain(self.manifest)
+ def test_secret_collection_stops_on_restart_before_write(self):
+  after=deepcopy(self.rows);after['backend']['RestartCount']=1
+  output=self.parent/'private'/'private.json';text=io.StringIO()
+  with patch.object(sys,'argv',['deploy','dev','capture-private','--output',str(output)]),patch.object(T,'inspect_project',side_effect=[self.rows,after]),contextlib.redirect_stdout(text):
+   self.assertEqual(T.main(),1)
+  self.assertFalse(output.exists());self.assertNotIn(SECRET,text.getvalue())
+ def test_capture_stdout_contains_no_private_values(self):
+  output=self.parent/'private'/'private.json';text=io.StringIO()
+  with patch.object(sys,'argv',['deploy','dev','capture-private','--output',str(output)]),patch.object(T,'inspect_project',return_value=self.rows),contextlib.redirect_stdout(text):
+   self.assertEqual(T.main(),0)
+  self.assertNotIn(SECRET,text.getvalue());self.assertTrue(output.exists())
+ def test_raw_subprocess_errors_suppressed(self):
+  with patch.object(T.subprocess,'run',return_value=subprocess.CompletedProcess([],1,SECRET,SECRET)):
+   with self.assertRaises(T.ConfigError) as error:T.run(['docker','inspect'])
+  self.assertNotIn(SECRET,str(error.exception))
+ def test_plan_reports_differences_and_remains_read_only(self):
+  model={'services':{name:{'environment':T.env_map(row)} for name,row in self.rows.items()}}
+  planned=deepcopy(model);planned['services']['backend']['environment']['INDEXER_CONTRACT_CODE_RETRY_DELAY']='different'
+  with patch.object(T,'inspect_project',return_value=self.rows),patch.object(T,'live_files',return_value=self.paths),\
+   patch.object(T,'compose_model',return_value=model),patch.object(T,'managed_model',return_value=planned),patch.object(T,'rpc_chain',return_value=18417507517):
+   report=T.plan(ROOT,self.manifest,self.requirements,self.values,self.live_dir)
+  self.assertEqual(report['status'],'differences_require_review');self.assertNotIn(SECRET,json.dumps(report))
+  self.assertIn('services.backend.environment.INDEXER_CONTRACT_CODE_RETRY_DELAY',report['changed_runtime_fields'])
+
+
+class ComposeTests(ConfigTests):
+ def test_real_profile_and_literal_private_value_round_trip(self):
+  special='fixture $$literal $NOT_EXPANDED ${ALSO_NOT_EXPANDED} "quotes" and\nnewline'
+  self.values['DEV_BACKEND_SECRET_KEY_BASE']=special
+  with patch.dict(os.environ,{'DEV_BACKEND_SECRET_KEY_BASE':'ambient-wrong','NOT_EXPANDED':'wrong'}):
+   model=T.managed_model(ROOT,self.manifest,self.values)
+  self.assertEqual(len(model['services']),14)
+  self.assertEqual(model['services']['backend']['environment']['SECRET_KEY_BASE'],special)
+  for ref,origin in self.requirements.items():
+   self.assertEqual(model['services'][origin['service']]['environment'][origin['environment_key']],self.values[ref])
+  self.assertEqual(model['services']['backend']['environment']['CHAIN_ID'],'18417507517')
+  self.assertEqual(model['services']['nft_media_handler']['networks']['default']['aliases'],['nft-media.blockscout.internal'])
+  for name in ('backend','nft_media_handler'):
+   self.assertEqual(model['services'][name]['build']['args']['CHAIN_TYPE'],'arbitrum')
+  self.assertEqual(model['services']['backend']['volumes'][0]['source'],'/data/blockscout/docker-compose/services/logs')
+ def test_real_eight_to_two_layer_comparison(self):
+  model=T.managed_model(ROOT,self.manifest,self.values)
+  current=deepcopy(model)
+  current['services']['backend']['environment'].pop('INDEXER_UNCATALOGED_TOKEN_TRANSFERS_ENABLED')
+  # Escape a resolved model for a second Compose parse, just as Compose's config export does.
+  self.paths[0].write_text(json.dumps(current).replace('$','$$'))
+  for path in self.paths[1:]:path.write_text('{"services":{}}')
+  rows=deepcopy(self.rows)
+  rows['backend']['Config']['Env']=[v for v in rows['backend']['Config']['Env'] if not v.startswith('INDEXER_UNCATALOGED_TOKEN_TRANSFERS_ENABLED=')]
+  with patch.object(T,'inspect_project',return_value=rows),patch.object(T,'rpc_chain',return_value=18417507517):
+   report=T.plan(ROOT,self.manifest,self.requirements,self.values,self.live_dir)
+  self.assertEqual(report['current_compose_layers'],8);self.assertEqual(report['proposed_compose_layers'],2)
+  self.assertEqual(report['changed_runtime_fields'],['services.backend.environment.INDEXER_UNCATALOGED_TOKEN_TRANSFERS_ENABLED'])
+  self.assertEqual(report['live_declared_environment_drift'],[])
+  self.assertTrue(report['startup_policy_change_expected']);self.assertNotIn(SECRET,json.dumps(report))
+
+
+if __name__=='__main__':
+ suite=unittest.defaultTestLoader.loadTestsFromTestCase(ConfigTests)
+ if '--compose' in sys.argv:
+  suite.addTest(ComposeTests('test_real_profile_and_literal_private_value_round_trip'))
+  suite.addTest(ComposeTests('test_real_eight_to_two_layer_comparison'))
+ result=unittest.TextTestRunner(verbosity=2).run(suite)
+ raise SystemExit(not result.wasSuccessful())

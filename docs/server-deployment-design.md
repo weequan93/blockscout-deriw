@@ -1,8 +1,11 @@
 # Server deployments for dev, test and prod
 
-Status: proposed design, 3 November 2026. The commands and new file layout below
-are an implementation contract; `deploy.sh` and these deployment profiles do not
-exist yet. This document does not change a running deployment.
+Status: partially implemented, 3 November 2026. The versioned dev adoption
+profile and `./deploy.sh dev capture-private` / `./deploy.sh dev plan` now exist;
+see [environment configuration](../docker-compose/environments/README.md).
+Build, upgrade, deployment and rollback commands below remain an implementation
+contract, not available operations. Test/prod profiles are not configured.
+No running deployment has been changed by this repository work.
 
 The application repairs were committed first as
 `0d10d900419de5e2199f09a63e831d9d0ed74842` on `dev`.

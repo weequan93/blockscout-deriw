@@ -1,0 +1,293 @@
+#!/usr/bin/env python3
+"""Collect server-only inputs or compare the versioned dev profile. No deployment operations."""
+import argparse
+from functools import lru_cache
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import subprocess
+
+ROOT=Path(__file__).resolve().parents[2]
+ENV_KEY=re.compile(r'[A-Z][A-Z0-9_]{0,159}')
+IDENT=re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,159}')
+
+
+class ConfigError(Exception):pass
+
+
+def require(condition,message):
+ if not condition:raise ConfigError(message)
+
+
+def run(command,environment=None,timeout=30,input_text=None):
+ try:result=subprocess.run(command,capture_output=True,text=True,errors='replace',env=environment,timeout=timeout,input=input_text)
+ except (OSError,subprocess.SubprocessError):raise ConfigError('Docker/Compose read unavailable; raw output suppressed') from None
+ require(result.returncode==0 and len(result.stdout)<16*1024*1024,'Docker/Compose read failed or exceeded limit; raw output suppressed')
+ return result.stdout
+
+
+def read_json(path):
+ try:return json.loads(path.read_text())
+ except (OSError,ValueError):raise ConfigError('Required JSON input unavailable or invalid; raw values suppressed') from None
+
+
+def configuration(root,environment):
+ require(environment=='dev','Only dev has a captured profile. Test/prod need their own inventories; no defaults were selected.')
+ directory=root/'docker-compose/environments/dev'
+ manifest=read_json(directory/'manifest.json');requirements=read_json(directory/'requirements.json')
+ profile=read_json(directory/'compose.json')
+ require(manifest.get('environment')=='dev' and manifest.get('chain_id')=='18417507517'
+  and manifest.get('chain_type')=='arbitrum' and manifest.get('compose_project')=='docker-compose','Unexpected dev manifest identity')
+ require(isinstance(requirements,dict) and len(requirements)==manifest.get('private_variable_count'),'Private input registry differs from manifest')
+ for key,origin in requirements.items():
+  require(bool(ENV_KEY.fullmatch(key)) and key.startswith('DEV_'),'Unexpected private variable name')
+  require(isinstance(origin,dict) and set(origin)=={'service','environment_key'}
+   and bool(IDENT.fullmatch(origin['service'])) and bool(ENV_KEY.fullmatch(origin['environment_key'])),'Unexpected private input origin')
+ require(set(profile.get('services',{}))==set(manifest.get('baseline_image_ids',{})),'Profile service inventory differs from manifest')
+ return manifest,requirements,profile
+
+
+def env_map(row):
+ result={}
+ for item in row.get('Config',{}).get('Env',[]) or []:
+  require(isinstance(item,str) and '=' in item,'Unexpected container environment format')
+  key,value=item.split('=',1)
+  if ENV_KEY.fullmatch(key):result[key]=value
+ return result
+
+
+def inspect_project(manifest):
+ project=manifest['compose_project']
+ ids=run(['docker','container','ls','--all','--no-trunc','--quiet','--filter','label=com.docker.compose.project='+project]).split()
+ require(1<=len(ids)<=64 and len(ids)==len(set(ids)) and all(re.fullmatch(r'[a-f0-9]{64}',v) for v in ids),'Unexpected project container inventory')
+ try:rows=json.loads(run(['docker','inspect',*sorted(ids)]))
+ except ValueError:raise ConfigError('Invalid Docker metadata; raw output suppressed') from None
+ require(isinstance(rows,list) and sorted(row.get('Id','') for row in rows)==sorted(ids),'Project changed during inspection')
+ by_service={}
+ for row in rows:
+  labels=row.get('Config',{}).get('Labels') or {};service=labels.get('com.docker.compose.service','')
+  require(labels.get('com.docker.compose.project')==project and bool(IDENT.fullmatch(service)),'Unexpected project/service identity')
+  require(service not in by_service,'Multiple containers for one service require explicit review')
+  by_service[service]=row
+ require(set(by_service)==set(manifest['baseline_image_ids']),'Live service set differs from the captured dev inventory')
+ backend=by_service['backend'];values=env_map(backend)
+ require(values.get('CHAIN_ID')==manifest['chain_id'] and values.get('CHAIN_TYPE')==manifest['chain_type'],'Live backend is not the captured dev chain')
+ require(backend.get('State',{}).get('Running') is True,'Dev backend must be running for these checks')
+ return by_service
+
+
+def stable(rows):
+ return {name:(row.get('Id'),row.get('Image'),row.get('Config'),row.get('HostConfig'),
+  row.get('Mounts'),row.get('NetworkSettings',{}).get('Networks'),row.get('State',{}).get('StartedAt'),
+  row.get('RestartCount')) for name,row in rows.items()}
+
+
+def collect_values(requirements,rows):
+ values={}
+ for ref,origin in requirements.items():
+  env=env_map(rows[origin['service']]);value=env.get(origin['environment_key'])
+  require(isinstance(value,str) and value!='','Required live value missing: '+ref)
+  values[ref]=value
+ require(env_map(rows['backend']).get('RELEASE_COOKIE')==env_map(rows['nft_media_handler']).get('RELEASE_COOKIE')
+  and bool(env_map(rows['backend']).get('RELEASE_COOKIE')),'Backend and NFT worker release cookies must match')
+ return values
+
+
+def save_private(path,values,root):
+ require(not path.is_symlink(),'Private output cannot be a symlink')
+ resolved=path.resolve()
+ require(resolved!=root.resolve() and root.resolve() not in resolved.parents,'Private output must be outside the Git checkout')
+ require(not path.exists(),'Private output already exists; choose a new file')
+ path.parent.mkdir(parents=True,mode=0o700,exist_ok=True)
+ require(stat.S_IMODE(path.parent.stat().st_mode)&0o077==0,'Private output parent must have permissions 0700')
+ fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+ try:
+  with os.fdopen(fd,'w') as stream:
+   json.dump({'format':'blockscout-private-v1','environment':'dev','values':values},stream,indent=2,sort_keys=True)
+   stream.write('\n');stream.flush();os.fsync(stream.fileno())
+ except BaseException:
+  path.unlink();raise
+
+
+def load_private(path,requirements):
+ require(not path.is_symlink() and path.is_file(),'Expected a regular private input file')
+ require(stat.S_IMODE(path.stat().st_mode)&0o077==0,'Private input permissions must exclude group/other access')
+ data=read_json(path)
+ require(isinstance(data,dict) and data.get('format')=='blockscout-private-v1' and data.get('environment')=='dev','Private input format/environment mismatch')
+ values=data.get('values')
+ require(isinstance(values,dict) and set(values)==set(requirements),'Private input names differ from the versioned registry')
+ require(all(isinstance(v,str) and v!='' and '\x00' not in v for v in values.values()),'Private inputs must be nonempty strings without NUL characters')
+ return values
+
+
+def compose_environment(values):
+ # Preserve Docker connection/auth settings, but ignore ambient profile values and implicit Compose selection.
+ environment={k:v for k,v in os.environ.items() if not k.startswith(('DEV_','COMPOSE_'))}
+ environment.update(values)
+ return environment
+
+
+@lru_cache(maxsize=1)
+def compose_json_escapes_dollars():
+ # Compose renders a replayable document and some versions double every dollar.
+ # Calibrate with public fixture data instead of guessing from the CLI version.
+ value='blockscout$literal$$pair'
+ fixture={'services':{'fixture':{'image':'busybox:config-only','environment':{'VALUE':'${BLOCKSCOUT_RENDER_FIXTURE:?required}'}}}}
+ environment=compose_environment({});environment['BLOCKSCOUT_RENDER_FIXTURE']=value
+ command=['docker','compose','-p','blockscout-config-format','--env-file',os.devnull,'-f','-','config','--format','json']
+ try:actual=json.loads(run(command,environment=environment,input_text=json.dumps(fixture)))['services']['fixture']['environment']['VALUE']
+ except (ValueError,KeyError,TypeError):raise ConfigError('Cannot establish Compose JSON escaping behavior; raw output suppressed') from None
+ if actual==value.replace('$','$$'):return True
+ require(actual==value,'Unexpected Compose JSON escaping behavior; no private model comparison attempted')
+ return False
+
+
+def compose_model(root,manifest,values,files,managed):
+ command=['docker','compose','-p',manifest['compose_project'],'--project-directory',str(root)]
+ if managed:command+=['--env-file',os.devnull]
+ for path in files:command+=['-f',str(path)]
+ escaped=compose_json_escapes_dollars()
+ output=run(command+['config','--format','json'],environment=compose_environment(values))
+ if escaped:output=output.replace('$$','$')
+ try:model=json.loads(output)
+ except ValueError:raise ConfigError('Compose returned invalid JSON; raw values suppressed') from None
+ require(isinstance(model,dict) and isinstance(model.get('services'),dict),'Unexpected resolved Compose model')
+ return model
+
+
+def managed_model(root,manifest,values):
+ directory=root/'docker-compose'
+ model=compose_model(directory,manifest,values,[directory/'docker-compose.yml',directory/'environments/dev/compose.json'],True)
+ backend=model['services'].get('backend',{}).get('environment',{})
+ require(backend.get('CHAIN_ID')==manifest['chain_id'] and backend.get('CHAIN_TYPE')==manifest['chain_type'],'Resolved profile selected the wrong chain')
+ require(backend.get('ETHEREUM_JSONRPC_HTTP_URL')==manifest['http_rpc'] and backend.get('ETHEREUM_JSONRPC_TRACE_URL')==manifest['http_rpc'],'Resolved profile selected unexpected L2 endpoints')
+ frontend=model['services'].get('frontend',{}).get('environment',{})
+ require(frontend.get('NEXT_PUBLIC_NETWORK_ID')==manifest['chain_id'],'Frontend network ID differs from the dev chain')
+ require(frontend.get('NEXT_PUBLIC_NETWORK_RPC_URL')=='https://rpc.dev.deriw.com','Frontend RPC differs from the captured dev endpoint')
+ user_ops=model['services'].get('user-ops-indexer',{}).get('environment',{})
+ require(user_ops.get('USER_OPS_INDEXER__INDEXER__RPC_URL')==manifest['http_rpc'],'User-ops indexer RPC differs from dev backend RPC')
+ def ports(rows):
+  return sorted((str(row.get('target','')),str(row.get('published','')),row.get('host_ip') or '',
+   row.get('protocol','tcp'),row.get('mode','ingress')) for row in rows)
+ require(set(manifest.get('expected_ports',{}))==set(model['services']),'Captured port contract is incomplete')
+ for name,service in model['services'].items():
+  require(ports(service.get('ports') or [])==ports(manifest['expected_ports'][name]),'Inherited ports differ from captured dev settings: '+name)
+ for key in ('CHAIN_ID','ETHEREUM_JSONRPC_HTTP_URL','ETHEREUM_JSONRPC_TRACE_URL'):
+  require('rpc.prod.deriw.com' not in str(backend.get(key,'')),'Production RPC leaked into dev backend selection')
+ return model
+
+
+def live_files(directory,backend,manifest):
+ labels=backend.get('Config',{}).get('Labels') or {}
+ raw=labels.get('com.docker.compose.project.config_files','').split(',')
+ require(1<=len(raw)<=16 and all(raw),'Backend Compose file labels are unavailable')
+ paths=[]
+ for name in raw:
+  path=Path(name)
+  require(path.is_absolute() and not path.is_symlink() and path.is_file(),'Expected regular recorded live Compose files')
+  try:path.resolve().relative_to(directory.resolve())
+  except ValueError:raise ConfigError('Live Compose files are outside the selected live directory') from None
+  paths.append(path)
+ require([str(p.resolve().relative_to(directory.resolve())) for p in paths]==manifest['baseline_compose_layers'],'Live file order differs from the captured eight layers')
+ return paths
+
+
+def model_differences(before,after):
+ # Values are never included. Limit path names to trusted Compose fields and validated env keys.
+ result=[]
+ for name in sorted(set(before.get('services',{}))|set(after.get('services',{}))):
+  require(bool(IDENT.fullmatch(name)),'Unexpected service name in model')
+  a=before.get('services',{}).get(name);b=after.get('services',{}).get(name)
+  if a is None or b is None:result.append('services.'+name);continue
+  for key in sorted(set(a)|set(b)):
+   if key=='build':continue
+   if a.get(key)==b.get(key):continue
+   if key=='environment':
+    av=a.get(key) or {};bv=b.get(key) or {}
+    for env in sorted(set(av)|set(bv)):
+     if av.get(env)!=bv.get(env):
+      require(bool(ENV_KEY.fullmatch(env)),'Unexpected environment key in model')
+      result.append('services.'+name+'.environment.'+env)
+   else:
+    result.append('services.'+name+'.'+key if re.fullmatch(r'[a-z_]+',key) else 'services.'+name+'.other_field')
+ for key in ('networks','volumes','secrets','configs'):
+  if (before.get(key) or {})!=(after.get(key) or {}):result.append(key)
+ return result
+
+
+def live_environment_differences(model,rows):
+ result=[]
+ for service,row in rows.items():
+  actual=env_map(row)
+  for key,value in (model['services'].get(service,{}).get('environment') or {}).items():
+   if value is not None and str(value)!=actual.get(key):
+    require(bool(ENV_KEY.fullmatch(key)),'Unexpected environment key')
+    result.append('services.'+service+'.environment.'+key)
+ return sorted(result)
+
+
+def rpc_chain(manifest):
+ request=json.dumps({'jsonrpc':'2.0','id':1,'method':'eth_chainId','params':[]})
+ result=run(['docker','exec','backend','curl','-q','--noproxy','*','-fsS','--connect-timeout','2','--max-time','4',
+  '--max-filesize','4096','-H','Content-Type: application/json','--data',request,manifest['http_rpc']],timeout=10)
+ try:
+  data=json.loads(result);number=int(data['result'],16)
+ except (ValueError,KeyError,TypeError):raise ConfigError('L2 RPC chain identity check failed; raw response suppressed') from None
+ require(str(number)==manifest['chain_id'],'L2 RPC chain does not match dev manifest')
+ return number
+
+
+def plan(root,manifest,requirements,values,live_directory):
+ before=inspect_project(manifest);collect_values(requirements,before)
+ current_files=live_files(live_directory,before['backend'],manifest)
+ current=compose_model(live_directory,manifest,values,current_files,False)
+ managed=managed_model(root,manifest,values)
+ require(set(managed['services'])==set(manifest['baseline_image_ids']),'Resolved managed service set changed')
+ diff=model_differences(current,managed);drift=live_environment_differences(current,before)
+ image_drift=sorted(name for name,row in before.items() if row.get('Image')!=manifest['baseline_image_ids'][name])
+ private_drift=[ref for ref,origin in requirements.items() if env_map(before[origin['service']]).get(origin['environment_key'])!=values[ref]]
+ require(not private_drift,'Private inputs differ from live values; capture to a new private file and review before adoption')
+ chain=rpc_chain(manifest)
+ after=inspect_project(manifest)
+ require(stable(before)==stable(after),'Container/configuration/topology changed during comparison; retry when stable')
+ require(compose_model(live_directory,manifest,values,current_files,False)==current,'Live resolved model changed during comparison')
+ require(managed_model(root,manifest,values)==managed,'Managed resolved model changed during comparison')
+ intended='services.backend.environment.INDEXER_UNCATALOGED_TOKEN_TRANSFERS_ENABLED'
+ return {'status':'differences_require_review' if diff or drift or image_drift else 'runtime_model_comparison_passed',
+  'environment':'dev','rpc_chain_id':chain,'services':len(managed['services']),
+  'private_values_exported':False,'changed_runtime_fields':diff,'live_declared_environment_drift':drift,
+  'live_images_differing_from_capture':image_drift,
+  'startup_policy_change_expected':intended in diff,'current_compose_layers':len(current_files),
+  'proposed_compose_layers':2,'build_fields_compared':False,
+  'note':'Comparison only. Build recipes, image/tag binding and mounted file contents require separate review before adoption. No build, recreation, migration or deployment was performed.'}
+
+
+def main():
+ parser=argparse.ArgumentParser(description=__doc__)
+ parser.add_argument('environment',choices=['dev','test','prod'])
+ sub=parser.add_subparsers(dest='operation',required=True)
+ capture=sub.add_parser('capture-private',help='Write existing live values to a new private server-only JSON file')
+ capture.add_argument('--output',type=Path,required=True)
+ compare=sub.add_parser('plan',help='Compare the checked-in dev profile against the running eight-layer deployment')
+ compare.add_argument('--private-file',type=Path,required=True)
+ compare.add_argument('--live-compose-dir',type=Path,default=Path('/data/blockscout/docker-compose'))
+ args=parser.parse_args()
+ try:
+  manifest,requirements,_=configuration(ROOT,args.environment)
+  if args.operation=='capture-private':
+   before=inspect_project(manifest);values=collect_values(requirements,before)
+   require(stable(before)==stable(inspect_project(manifest)),'Deployment changed while collecting private values; no output written')
+   save_private(args.output,values,ROOT)
+   report={'status':'private_inputs_saved','environment':'dev','value_count':len(values),'output':str(args.output),
+    'note':'Keep this file on the server. Do not upload or commit it. No services changed.'}
+  else:
+   values=load_private(args.private_file,requirements)
+   report=plan(ROOT,manifest,requirements,values,args.live_compose_dir)
+  print(json.dumps(report,indent=2));return 0
+ except (ConfigError,OSError,ValueError,KeyError,TypeError,IndexError,AttributeError) as error:
+  print(json.dumps({'status':'stopped','reason':str(error) if isinstance(error,ConfigError) else 'Configuration check failed; raw values suppressed'}));return 1
+
+
+if __name__=='__main__':raise SystemExit(main())

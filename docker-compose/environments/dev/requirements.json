@@ -1,0 +1,534 @@
+{
+  "DEV_BACKEND_ACCOUNT_REDIS_URL": {
+    "environment_key": "ACCOUNT_REDIS_URL",
+    "service": "backend"
+  },
+  "DEV_BACKEND_API_RATE_LIMIT": {
+    "environment_key": "API_RATE_LIMIT",
+    "service": "backend"
+  },
+  "DEV_BACKEND_API_RATE_LIMIT_TIME_INTERVAL": {
+    "environment_key": "API_RATE_LIMIT_TIME_INTERVAL",
+    "service": "backend"
+  },
+  "DEV_BACKEND_API_RATE_LIMIT_UI_V2_WITH_TOKEN": {
+    "environment_key": "API_RATE_LIMIT_UI_V2_WITH_TOKEN",
+    "service": "backend"
+  },
+  "DEV_BACKEND_DATABASE_URL": {
+    "environment_key": "DATABASE_URL",
+    "service": "backend"
+  },
+  "DEV_BACKEND_ECTO_USE_SSL": {
+    "environment_key": "ECTO_USE_SSL",
+    "service": "backend"
+  },
+  "DEV_BACKEND_ETHEREUM_JSONRPC_TRANSPORT": {
+    "environment_key": "ETHEREUM_JSONRPC_TRANSPORT",
+    "service": "backend"
+  },
+  "DEV_BACKEND_ETHEREUM_JSONRPC_VARIANT": {
+    "environment_key": "ETHEREUM_JSONRPC_VARIANT",
+    "service": "backend"
+  },
+  "DEV_BACKEND_ETHEREUM_JSONRPC_WS_URL": {
+    "environment_key": "ETHEREUM_JSONRPC_WS_URL",
+    "service": "backend"
+  },
+  "DEV_BACKEND_HEART_BEAT_TIMEOUT": {
+    "environment_key": "HEART_BEAT_TIMEOUT",
+    "service": "backend"
+  },
+  "DEV_BACKEND_INDEXER_ARBITRUM_CONFIRMATION_BATCHES_DEPTH": {
+    "environment_key": "INDEXER_ARBITRUM_CONFIRMATION_BATCHES_DEPTH",
+    "service": "backend"
+  },
+  "DEV_BACKEND_INDEXER_ARBITRUM_L1_ROLLUP_CONTRACT": {
+    "environment_key": "INDEXER_ARBITRUM_L1_ROLLUP_CONTRACT",
+    "service": "backend"
+  },
+  "DEV_BACKEND_INDEXER_ARBITRUM_L1_RPC": {
+    "environment_key": "INDEXER_ARBITRUM_L1_RPC",
+    "service": "backend"
+  },
+  "DEV_BACKEND_INDEXER_DISABLE_TOKEN_INSTANCE_LEGACY_SANITIZE_FETCHER": {
+    "environment_key": "INDEXER_DISABLE_TOKEN_INSTANCE_LEGACY_SANITIZE_FETCHER",
+    "service": "backend"
+  },
+  "DEV_BACKEND_LOGO": {
+    "environment_key": "LOGO",
+    "service": "backend"
+  },
+  "DEV_BACKEND_MICROSERVICE_ACCOUNT_ABSTRACTION_URL": {
+    "environment_key": "MICROSERVICE_ACCOUNT_ABSTRACTION_URL",
+    "service": "backend"
+  },
+  "DEV_BACKEND_MICROSERVICE_SC_VERIFIER_TYPE": {
+    "environment_key": "MICROSERVICE_SC_VERIFIER_TYPE",
+    "service": "backend"
+  },
+  "DEV_BACKEND_MICROSERVICE_SC_VERIFIER_URL": {
+    "environment_key": "MICROSERVICE_SC_VERIFIER_URL",
+    "service": "backend"
+  },
+  "DEV_BACKEND_MICROSERVICE_SIG_PROVIDER_URL": {
+    "environment_key": "MICROSERVICE_SIG_PROVIDER_URL",
+    "service": "backend"
+  },
+  "DEV_BACKEND_MICROSERVICE_VISUALIZE_SOL2UML_URL": {
+    "environment_key": "MICROSERVICE_VISUALIZE_SOL2UML_URL",
+    "service": "backend"
+  },
+  "DEV_BACKEND_PORT": {
+    "environment_key": "PORT",
+    "service": "backend"
+  },
+  "DEV_BACKEND_RELEASE_COOKIE": {
+    "environment_key": "RELEASE_COOKIE",
+    "service": "backend"
+  },
+  "DEV_BACKEND_SECRET_KEY_BASE": {
+    "environment_key": "SECRET_KEY_BASE",
+    "service": "backend"
+  },
+  "DEV_BACKEND_SUBNETWORK": {
+    "environment_key": "SUBNETWORK",
+    "service": "backend"
+  },
+  "DEV_DB_POSTGRES_PASSWORD": {
+    "environment_key": "POSTGRES_PASSWORD",
+    "service": "db"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_AD_BANNER_PROVIDER": {
+    "environment_key": "NEXT_PUBLIC_AD_BANNER_PROVIDER",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_AD_TEXT_PROVIDER": {
+    "environment_key": "NEXT_PUBLIC_AD_TEXT_PROVIDER",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_API_BASE_PATH": {
+    "environment_key": "NEXT_PUBLIC_API_BASE_PATH",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_API_HOST": {
+    "environment_key": "NEXT_PUBLIC_API_HOST",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_API_PROTOCOL": {
+    "environment_key": "NEXT_PUBLIC_API_PROTOCOL",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_API_SPEC_URL": {
+    "environment_key": "NEXT_PUBLIC_API_SPEC_URL",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_API_WEBSOCKET_PROTOCOL": {
+    "environment_key": "NEXT_PUBLIC_API_WEBSOCKET_PROTOCOL",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_APP_HOST": {
+    "environment_key": "NEXT_PUBLIC_APP_HOST",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_APP_PROTOCOL": {
+    "environment_key": "NEXT_PUBLIC_APP_PROTOCOL",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_DERIW_API_HOST": {
+    "environment_key": "NEXT_PUBLIC_DERIW_API_HOST",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_DERIW_USDT_ADDRESS": {
+    "environment_key": "NEXT_PUBLIC_DERIW_USDT_ADDRESS",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_HOMEPAGE_CHARTS": {
+    "environment_key": "NEXT_PUBLIC_HOMEPAGE_CHARTS",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_IS_TESTNET": {
+    "environment_key": "NEXT_PUBLIC_IS_TESTNET",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_NETWORK_CURRENCY_DECIMALS": {
+    "environment_key": "NEXT_PUBLIC_NETWORK_CURRENCY_DECIMALS",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_NETWORK_CURRENCY_NAME": {
+    "environment_key": "NEXT_PUBLIC_NETWORK_CURRENCY_NAME",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_NETWORK_CURRENCY_SYMBOL": {
+    "environment_key": "NEXT_PUBLIC_NETWORK_CURRENCY_SYMBOL",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_NETWORK_ICON": {
+    "environment_key": "NEXT_PUBLIC_NETWORK_ICON",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_NETWORK_ICON_DARK": {
+    "environment_key": "NEXT_PUBLIC_NETWORK_ICON_DARK",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_NETWORK_ID": {
+    "environment_key": "NEXT_PUBLIC_NETWORK_ID",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_NETWORK_LOGO": {
+    "environment_key": "NEXT_PUBLIC_NETWORK_LOGO",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_NETWORK_LOGO_DARK": {
+    "environment_key": "NEXT_PUBLIC_NETWORK_LOGO_DARK",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_NETWORK_NAME": {
+    "environment_key": "NEXT_PUBLIC_NETWORK_NAME",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_NETWORK_SHORT_NAME": {
+    "environment_key": "NEXT_PUBLIC_NETWORK_SHORT_NAME",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_OG_DESCRIPTION": {
+    "environment_key": "NEXT_PUBLIC_OG_DESCRIPTION",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_OG_ENHANCED_DATA_ENABLED": {
+    "environment_key": "NEXT_PUBLIC_OG_ENHANCED_DATA_ENABLED",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_OG_IMAGE_URL": {
+    "environment_key": "NEXT_PUBLIC_OG_IMAGE_URL",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_PROMOTE_BLOCKSCOUT_IN_TITLE": {
+    "environment_key": "NEXT_PUBLIC_PROMOTE_BLOCKSCOUT_IN_TITLE",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_ROLLUP_L1_BASE_URL": {
+    "environment_key": "NEXT_PUBLIC_ROLLUP_L1_BASE_URL",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_ROLLUP_PARENT_CHAIN": {
+    "environment_key": "NEXT_PUBLIC_ROLLUP_PARENT_CHAIN",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_ROLLUP_TYPE": {
+    "environment_key": "NEXT_PUBLIC_ROLLUP_TYPE",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_SEO_ENHANCED_DATA_ENABLED": {
+    "environment_key": "NEXT_PUBLIC_SEO_ENHANCED_DATA_ENABLED",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_STATS_API_BASE_PATH": {
+    "environment_key": "NEXT_PUBLIC_STATS_API_BASE_PATH",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_STATS_API_HOST": {
+    "environment_key": "NEXT_PUBLIC_STATS_API_HOST",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_VIEWS_BLOCK_HIDDEN_FIELDS": {
+    "environment_key": "NEXT_PUBLIC_VIEWS_BLOCK_HIDDEN_FIELDS",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_VISUALIZE_API_BASE_PATH": {
+    "environment_key": "NEXT_PUBLIC_VISUALIZE_API_BASE_PATH",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_VISUALIZE_API_HOST": {
+    "environment_key": "NEXT_PUBLIC_VISUALIZE_API_HOST",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID": {
+    "environment_key": "NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID",
+    "service": "frontend"
+  },
+  "DEV_FRONTEND_NEXT_PUBLIC_WEB3_WALLETS": {
+    "environment_key": "NEXT_PUBLIC_WEB3_WALLETS",
+    "service": "frontend"
+  },
+  "DEV_NFT_MEDIA_HANDLER_RELEASE_COOKIE": {
+    "environment_key": "RELEASE_COOKIE",
+    "service": "nft_media_handler"
+  },
+  "DEV_PROXY_BACK_PROXY_PASS": {
+    "environment_key": "BACK_PROXY_PASS",
+    "service": "proxy"
+  },
+  "DEV_PROXY_FRONT_PROXY_PASS": {
+    "environment_key": "FRONT_PROXY_PASS",
+    "service": "proxy"
+  },
+  "DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__JAEGER__AGENT_ENDPOINT": {
+    "environment_key": "SMART_CONTRACT_VERIFIER__JAEGER__AGENT_ENDPOINT",
+    "service": "sc-verifier"
+  },
+  "DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__JAEGER__ENABLED": {
+    "environment_key": "SMART_CONTRACT_VERIFIER__JAEGER__ENABLED",
+    "service": "sc-verifier"
+  },
+  "DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__METRICS__ADDR": {
+    "environment_key": "SMART_CONTRACT_VERIFIER__METRICS__ADDR",
+    "service": "sc-verifier"
+  },
+  "DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__METRICS__ENABLED": {
+    "environment_key": "SMART_CONTRACT_VERIFIER__METRICS__ENABLED",
+    "service": "sc-verifier"
+  },
+  "DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__METRICS__ROUTE": {
+    "environment_key": "SMART_CONTRACT_VERIFIER__METRICS__ROUTE",
+    "service": "sc-verifier"
+  },
+  "DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SERVER__GRPC__ADDR": {
+    "environment_key": "SMART_CONTRACT_VERIFIER__SERVER__GRPC__ADDR",
+    "service": "sc-verifier"
+  },
+  "DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SERVER__GRPC__ENABLED": {
+    "environment_key": "SMART_CONTRACT_VERIFIER__SERVER__GRPC__ENABLED",
+    "service": "sc-verifier"
+  },
+  "DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SERVER__HTTP__ADDR": {
+    "environment_key": "SMART_CONTRACT_VERIFIER__SERVER__HTTP__ADDR",
+    "service": "sc-verifier"
+  },
+  "DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SERVER__HTTP__ENABLED": {
+    "environment_key": "SMART_CONTRACT_VERIFIER__SERVER__HTTP__ENABLED",
+    "service": "sc-verifier"
+  },
+  "DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SERVER__HTTP__MAX_BODY_SIZE": {
+    "environment_key": "SMART_CONTRACT_VERIFIER__SERVER__HTTP__MAX_BODY_SIZE",
+    "service": "sc-verifier"
+  },
+  "DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SOLIDITY__COMPILERS_DIR": {
+    "environment_key": "SMART_CONTRACT_VERIFIER__SOLIDITY__COMPILERS_DIR",
+    "service": "sc-verifier"
+  },
+  "DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SOLIDITY__ENABLED": {
+    "environment_key": "SMART_CONTRACT_VERIFIER__SOLIDITY__ENABLED",
+    "service": "sc-verifier"
+  },
+  "DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SOLIDITY__FETCHER__LIST__LIST_URL": {
+    "environment_key": "SMART_CONTRACT_VERIFIER__SOLIDITY__FETCHER__LIST__LIST_URL",
+    "service": "sc-verifier"
+  },
+  "DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SOLIDITY__REFRESH_VERSIONS_SCHEDULE": {
+    "environment_key": "SMART_CONTRACT_VERIFIER__SOLIDITY__REFRESH_VERSIONS_SCHEDULE",
+    "service": "sc-verifier"
+  },
+  "DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SOURCIFY__API_URL": {
+    "environment_key": "SMART_CONTRACT_VERIFIER__SOURCIFY__API_URL",
+    "service": "sc-verifier"
+  },
+  "DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SOURCIFY__ENABLED": {
+    "environment_key": "SMART_CONTRACT_VERIFIER__SOURCIFY__ENABLED",
+    "service": "sc-verifier"
+  },
+  "DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SOURCIFY__REQUEST_TIMEOUT": {
+    "environment_key": "SMART_CONTRACT_VERIFIER__SOURCIFY__REQUEST_TIMEOUT",
+    "service": "sc-verifier"
+  },
+  "DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SOURCIFY__VERIFICATION_ATTEMPTS": {
+    "environment_key": "SMART_CONTRACT_VERIFIER__SOURCIFY__VERIFICATION_ATTEMPTS",
+    "service": "sc-verifier"
+  },
+  "DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__VYPER__COMPILERS_DIR": {
+    "environment_key": "SMART_CONTRACT_VERIFIER__VYPER__COMPILERS_DIR",
+    "service": "sc-verifier"
+  },
+  "DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__VYPER__ENABLED": {
+    "environment_key": "SMART_CONTRACT_VERIFIER__VYPER__ENABLED",
+    "service": "sc-verifier"
+  },
+  "DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__VYPER__REFRESH_VERSIONS_SCHEDULE": {
+    "environment_key": "SMART_CONTRACT_VERIFIER__VYPER__REFRESH_VERSIONS_SCHEDULE",
+    "service": "sc-verifier"
+  },
+  "DEV_STATS_DB_POSTGRES_PASSWORD": {
+    "environment_key": "POSTGRES_PASSWORD",
+    "service": "stats-db"
+  },
+  "DEV_STATS_STATS__BLOCKSCOUT_API_URL": {
+    "environment_key": "STATS__BLOCKSCOUT_API_URL",
+    "service": "stats"
+  },
+  "DEV_STATS_STATS__BLOCKSCOUT_DB_URL": {
+    "environment_key": "STATS__BLOCKSCOUT_DB_URL",
+    "service": "stats"
+  },
+  "DEV_STATS_STATS__CREATE_DATABASE": {
+    "environment_key": "STATS__CREATE_DATABASE",
+    "service": "stats"
+  },
+  "DEV_STATS_STATS__DB_URL": {
+    "environment_key": "STATS__DB_URL",
+    "service": "stats"
+  },
+  "DEV_STATS_STATS__DEFAULT_SCHEDULE": {
+    "environment_key": "STATS__DEFAULT_SCHEDULE",
+    "service": "stats"
+  },
+  "DEV_STATS_STATS__FORCE_UPDATE_ON_START": {
+    "environment_key": "STATS__FORCE_UPDATE_ON_START",
+    "service": "stats"
+  },
+  "DEV_STATS_STATS__JAEGER__AGENT_ENDPOINT": {
+    "environment_key": "STATS__JAEGER__AGENT_ENDPOINT",
+    "service": "stats"
+  },
+  "DEV_STATS_STATS__JAEGER__ENABLED": {
+    "environment_key": "STATS__JAEGER__ENABLED",
+    "service": "stats"
+  },
+  "DEV_STATS_STATS__METRICS__ADDR": {
+    "environment_key": "STATS__METRICS__ADDR",
+    "service": "stats"
+  },
+  "DEV_STATS_STATS__METRICS__ENABLED": {
+    "environment_key": "STATS__METRICS__ENABLED",
+    "service": "stats"
+  },
+  "DEV_STATS_STATS__METRICS__ROUTE": {
+    "environment_key": "STATS__METRICS__ROUTE",
+    "service": "stats"
+  },
+  "DEV_STATS_STATS__RUN_MIGRATIONS": {
+    "environment_key": "STATS__RUN_MIGRATIONS",
+    "service": "stats"
+  },
+  "DEV_STATS_STATS__SERVER__GRPC__ADDR": {
+    "environment_key": "STATS__SERVER__GRPC__ADDR",
+    "service": "stats"
+  },
+  "DEV_STATS_STATS__SERVER__GRPC__ENABLED": {
+    "environment_key": "STATS__SERVER__GRPC__ENABLED",
+    "service": "stats"
+  },
+  "DEV_STATS_STATS__SERVER__HTTP__ADDR": {
+    "environment_key": "STATS__SERVER__HTTP__ADDR",
+    "service": "stats"
+  },
+  "DEV_STATS_STATS__SERVER__HTTP__ENABLED": {
+    "environment_key": "STATS__SERVER__HTTP__ENABLED",
+    "service": "stats"
+  },
+  "DEV_STATS_STATS__SERVER__HTTP__MAX_BODY_SIZE": {
+    "environment_key": "STATS__SERVER__HTTP__MAX_BODY_SIZE",
+    "service": "stats"
+  },
+  "DEV_STATS_STATS__TRACING__ENABLED": {
+    "environment_key": "STATS__TRACING__ENABLED",
+    "service": "stats"
+  },
+  "DEV_STATS_STATS__TRACING__FORMAT": {
+    "environment_key": "STATS__TRACING__FORMAT",
+    "service": "stats"
+  },
+  "DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__API__MAX_PAGE_SIZE": {
+    "environment_key": "USER_OPS_INDEXER__API__MAX_PAGE_SIZE",
+    "service": "user-ops-indexer"
+  },
+  "DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__DATABASE__CONNECT__URL": {
+    "environment_key": "USER_OPS_INDEXER__DATABASE__CONNECT__URL",
+    "service": "user-ops-indexer"
+  },
+  "DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__DATABASE__CREATE_DATABASE": {
+    "environment_key": "USER_OPS_INDEXER__DATABASE__CREATE_DATABASE",
+    "service": "user-ops-indexer"
+  },
+  "DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__DATABASE__RUN_MIGRATIONS": {
+    "environment_key": "USER_OPS_INDEXER__DATABASE__RUN_MIGRATIONS",
+    "service": "user-ops-indexer"
+  },
+  "DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__INDEXER__CONCURRENCY": {
+    "environment_key": "USER_OPS_INDEXER__INDEXER__CONCURRENCY",
+    "service": "user-ops-indexer"
+  },
+  "DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__INDEXER__ENTRYPOINTS__V06": {
+    "environment_key": "USER_OPS_INDEXER__INDEXER__ENTRYPOINTS__V06",
+    "service": "user-ops-indexer"
+  },
+  "DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__INDEXER__ENTRYPOINTS__V07": {
+    "environment_key": "USER_OPS_INDEXER__INDEXER__ENTRYPOINTS__V07",
+    "service": "user-ops-indexer"
+  },
+  "DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__INDEXER__PAST_DB_LOGS_INDEXER__ENABLED": {
+    "environment_key": "USER_OPS_INDEXER__INDEXER__PAST_DB_LOGS_INDEXER__ENABLED",
+    "service": "user-ops-indexer"
+  },
+  "DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__INDEXER__PAST_DB_LOGS_INDEXER__END_BLOCK": {
+    "environment_key": "USER_OPS_INDEXER__INDEXER__PAST_DB_LOGS_INDEXER__END_BLOCK",
+    "service": "user-ops-indexer"
+  },
+  "DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__INDEXER__PAST_DB_LOGS_INDEXER__START_BLOCK": {
+    "environment_key": "USER_OPS_INDEXER__INDEXER__PAST_DB_LOGS_INDEXER__START_BLOCK",
+    "service": "user-ops-indexer"
+  },
+  "DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__INDEXER__PAST_RPC_LOGS_INDEXER__BLOCK_RANGE": {
+    "environment_key": "USER_OPS_INDEXER__INDEXER__PAST_RPC_LOGS_INDEXER__BLOCK_RANGE",
+    "service": "user-ops-indexer"
+  },
+  "DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__INDEXER__PAST_RPC_LOGS_INDEXER__ENABLED": {
+    "environment_key": "USER_OPS_INDEXER__INDEXER__PAST_RPC_LOGS_INDEXER__ENABLED",
+    "service": "user-ops-indexer"
+  },
+  "DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__INDEXER__REALTIME__ENABLED": {
+    "environment_key": "USER_OPS_INDEXER__INDEXER__REALTIME__ENABLED",
+    "service": "user-ops-indexer"
+  },
+  "DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__JAEGER__AGENT_ENDPOINT": {
+    "environment_key": "USER_OPS_INDEXER__JAEGER__AGENT_ENDPOINT",
+    "service": "user-ops-indexer"
+  },
+  "DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__JAEGER__ENABLED": {
+    "environment_key": "USER_OPS_INDEXER__JAEGER__ENABLED",
+    "service": "user-ops-indexer"
+  },
+  "DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__METRICS__ADDR": {
+    "environment_key": "USER_OPS_INDEXER__METRICS__ADDR",
+    "service": "user-ops-indexer"
+  },
+  "DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__METRICS__ENABLED": {
+    "environment_key": "USER_OPS_INDEXER__METRICS__ENABLED",
+    "service": "user-ops-indexer"
+  },
+  "DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__METRICS__ROUTE": {
+    "environment_key": "USER_OPS_INDEXER__METRICS__ROUTE",
+    "service": "user-ops-indexer"
+  },
+  "DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__SERVER__GRPC__ADDR": {
+    "environment_key": "USER_OPS_INDEXER__SERVER__GRPC__ADDR",
+    "service": "user-ops-indexer"
+  },
+  "DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__SERVER__GRPC__ENABLED": {
+    "environment_key": "USER_OPS_INDEXER__SERVER__GRPC__ENABLED",
+    "service": "user-ops-indexer"
+  },
+  "DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__SERVER__HTTP__ADDR": {
+    "environment_key": "USER_OPS_INDEXER__SERVER__HTTP__ADDR",
+    "service": "user-ops-indexer"
+  },
+  "DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__SERVER__HTTP__ENABLED": {
+    "environment_key": "USER_OPS_INDEXER__SERVER__HTTP__ENABLED",
+    "service": "user-ops-indexer"
+  },
+  "DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__SERVER__HTTP__MAX_BODY_SIZE": {
+    "environment_key": "USER_OPS_INDEXER__SERVER__HTTP__MAX_BODY_SIZE",
+    "service": "user-ops-indexer"
+  },
+  "DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__TRACING__ENABLED": {
+    "environment_key": "USER_OPS_INDEXER__TRACING__ENABLED",
+    "service": "user-ops-indexer"
+  },
+  "DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__TRACING__FORMAT": {
+    "environment_key": "USER_OPS_INDEXER__TRACING__FORMAT",
+    "service": "user-ops-indexer"
+  },
+  "DEV_VISUALIZER_VISUALIZER__SERVER__GRPC__ENABLED": {
+    "environment_key": "VISUALIZER__SERVER__GRPC__ENABLED",
+    "service": "visualizer"
+  }
+}

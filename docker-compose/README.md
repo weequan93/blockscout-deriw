@@ -1,5 +1,11 @@
 # Docker-compose configuration
 
+For the captured dev chain `18417507517`, use the
+[versioned environment configuration](environments/README.md) to collect private
+server inputs and compare the proposed profile against the existing repair
+layers. The comparison does not deploy changes. The generic commands below do
+not select that dev profile automatically.
+
 Runs Blockscout locally in Docker containers with [docker-compose](https://github.com/docker/compose).
 
 ## Prerequisites
