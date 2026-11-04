@@ -224,7 +224,7 @@ class BatchUpdateTests(unittest.TestCase):
         source = (ROOT / 'apps/explorer/lib/explorer/migrator/empty_internal_transactions_data.ex').read_text()
         client = (ROOT / 'deploy/scripts/v10/normalization_pilot.exs').read_text()
         original = re.search(r'lock_query =(.+?)\n\n        extract_error_query', source, re.S)[1]
-        guarded = re.search(r'lock_query =(.+?)\n\n          \{lock_sql', client, re.S)[1]
+        guarded = re.search(r'lock_query =(.+?)\n\s+\{lock_sql', client, re.S)[1]
         self.assertEqual(re.sub(r'\s+', '', original.replace('block_numbers', 'blocks')), re.sub(r'\s+', '', guarded))
 
     def test_client_failure_reports_only_an_allowlisted_stage_from_private_logs(self):
