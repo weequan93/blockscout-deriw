@@ -1,5 +1,7 @@
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -13,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'deploy/scripts'))
 import v10_vacuum as V
 REAL_OBSERVE = V.observe
+REAL_POPEN = V.subprocess.Popen
 
 
 def resources():
@@ -75,7 +78,7 @@ class VacuumTests(unittest.TestCase):
         payload = state['inputs']['payload']
         return {'pid': 1234, 'backend_start': '2026-11-04 12:00:00+00', 'application_name': payload['application_name'],
             'query_md5': V.SQL_MD5, 'database_oid': 123, 'role_oid': 10,
-            'settings': {'maintenance_work_mem': '512MB', 'vacuum_cost_limit': '200', 'vacuum_cost_delay': '2ms',
+            'settings': {'maintenance_work_mem': '512MB', 'vacuum_cost_limit': str(payload.get('vacuum_cost_limit', 200)), 'vacuum_cost_delay': '2ms',
                          'lock_timeout': '500ms',
                          'statement_timeout': {3600: '1h', 14400: '4h'}[payload.get('duration_seconds', 3600)],
                          'client_connection_check_interval': '1s'}}
@@ -137,10 +140,11 @@ class VacuumTests(unittest.TestCase):
         self.assertFalse(result['normalization_gate_reopened'])
 
     def test_one_hour_legacy_inputs_remain_valid_and_duration_mismatches_fail(self):
-        state = V.load(self.prepare())
+        path = self.prepare()
+        state = V.load(path)
         inputs = state['inputs']
         self.assertEqual(inputs['limits'], V.LIMITS)
-        self.assertEqual(V.public(None, state)['profile'], 'one-hour')
+        self.assertEqual(V.public(path, state)['profile'], 'one-hour')
         legacy = deepcopy(inputs)
         legacy['payload'].pop('duration_seconds')
         self.assertEqual(V.profile_limits(legacy), V.LIMITS)
@@ -155,6 +159,123 @@ class VacuumTests(unittest.TestCase):
                 V.profile_limits(changed)
         with self.assertRaisesRegex(V.U.UpgradeError, 'Unknown vacuum window profile'):
             self.prepare('unknown')
+
+    def test_fast_profile_changes_only_connection_cost_and_preserves_other_limits(self):
+        path = self.requested('completed', profile=V.FAST_PROFILE)
+        state = V.load(path)
+        inputs = state['inputs']
+        self.assertEqual(inputs['limits'], V.INDEX_CLEANUP_LIMITS)
+        self.assertEqual(inputs['payload']['vacuum_cost_limit'], 400)
+        self.assertEqual(state['target']['settings']['vacuum_cost_limit'], '400')
+        self.assertEqual(state['target']['settings']['vacuum_cost_delay'], '2ms')
+        V.validate_target(state['target'], inputs['payload'])
+        wrong_target = deepcopy(state['target'])
+        wrong_target['settings']['vacuum_cost_limit'] = '200'
+        with self.assertRaisesRegex(V.U.UpgradeError, 'identity/settings'):
+            V.validate_target(wrong_target, inputs['payload'])
+        for profile, cost in ((V.FAST_PROFILE, 200), ('index-cleanup-v1', 400), (None, 400)):
+            changed = {**inputs, 'profile': profile, 'payload': {**inputs['payload'], 'vacuum_cost_limit': cost}}
+            if profile is None:
+                changed['limits'] = V.LIMITS
+                changed['payload']['duration_seconds'] = 3600
+            with self.subTest(profile=profile, cost=cost), self.assertRaises(V.U.UpgradeError):
+                V.profile_limits(changed)
+        with patch.object(V.subprocess, 'Popen') as launch:
+            result = V.execute(self.api, ROOT, path, resume=True)
+        launch.assert_not_called()
+        self.assertTrue(result['completion_verified'])
+        self.assertFalse(result['normalization_gate_reopened'])
+
+    def test_detached_launch_uses_separate_session_private_log_and_saved_resume(self):
+        path = self.prepare(V.FAST_PROFILE)
+        state = V.load(path)
+        before = V.U.private(path)
+        V.reserve_background(path, state)
+        with patch.object(V.subprocess, 'Popen', return_value=types.SimpleNamespace(pid=12345)) as launch:
+            result = V.launch_background(self.api, ROOT, path)
+        self.assertEqual(result['status'], 'vacuum_controller_dispatched')
+        self.assertFalse(result['database_work_finished'])
+        self.assertEqual(launch.call_args.args[0], [sys.executable, '-u', str(ROOT / 'deploy/scripts/v10_vacuum.py'), '--resume', '--state', str(path)])
+        self.assertTrue(launch.call_args.kwargs['start_new_session'])
+        self.assertTrue(launch.call_args.kwargs['close_fds'])
+        self.assertEqual(launch.call_args.kwargs['stdin'], V.subprocess.DEVNULL)
+        self.assertEqual((path.parent / 'controller.log.private').stat().st_mode & 0o777, 0o600)
+        self.assertEqual(result['controller']['pid'], 12345)
+        self.assertEqual(V.U.private(path), before)
+        with patch.object(V.subprocess, 'Popen') as again:
+            with self.assertRaisesRegex(V.U.UpgradeError, 'already requested'):
+                V.launch_background(self.api, ROOT, path)
+        again.assert_not_called()
+        with self.assertRaisesRegex(V.U.UpgradeError, 'detached vacuum controller'):
+            self.prepare(V.FAST_PROFILE)
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX process sessions')
+    def test_actual_detached_controller_has_no_terminal_and_writes_to_private_log(self):
+        path = self.prepare(V.FAST_PROFILE)
+        V.reserve_background(path, V.load(path))
+        root = self.path.parent / 'standin-source'
+        script = root / 'deploy/scripts/v10_vacuum.py'
+        script.parent.mkdir(parents=True)
+        script.write_text('import json, os, sys\nprint(json.dumps({"pid":os.getpid(),"session":os.getsid(0),"group":os.getpgrp(),"stdin_is_terminal":sys.stdin.isatty(),"args":sys.argv[1:]}), flush=True)\n')
+        processes = []
+        def launch(*args, **kwargs):
+            process = REAL_POPEN(*args, **kwargs)
+            processes.append(process)
+            return process
+        with patch.object(V.subprocess, 'Popen', side_effect=launch):
+            result = V.launch_background(self.api, root, path)
+        self.assertEqual(processes[0].wait(timeout=5), 0)
+        observed = json.loads(V.U.private(path.parent / 'controller.log.private'))
+        self.assertEqual(observed['pid'], result['controller']['pid'])
+        self.assertEqual(observed['pid'], observed['session'])
+        self.assertEqual(observed['pid'], observed['group'])
+        self.assertFalse(observed['stdin_is_terminal'])
+        self.assertEqual(observed['args'], ['--resume', '--state', str(path)])
+
+    def test_background_cli_rejects_resume_and_controller_log_has_same_cap(self):
+        with patch.object(V.sys, 'platform', 'linux'), patch.object(V.os, 'geteuid', return_value=0), \
+             patch.object(V.sys, 'argv', ['vacuum', '--resume', '--state', '/saved/state.json', '--background']), \
+             patch.object(V.M, 'global_lock') as lock, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(V.main(), 1)
+        lock.assert_not_called()
+        path = self.prepare(V.FAST_PROFILE)
+        V.R.write_new(path.parent / 'controller.log.private', b'x' * 100)
+        limits = {**V.load(path)['inputs'], 'limits': {**V.INDEX_CLEANUP_LIMITS, 'log_bytes': 99}}
+        with self.assertRaisesRegex(V.U.UpgradeError, 'private log cap'):
+            V.disk_guard(path, limits)
+
+    def test_background_cli_releases_both_locks_before_spawning_controller(self):
+        path = self.prepare(V.FAST_PROFILE)
+        saved = V.load(path)
+        held = []
+        @contextlib.contextmanager
+        def lock(*args):
+            held.append(True)
+            try:
+                yield
+            finally:
+                held.pop()
+        def prepared(*args):
+            self.assertEqual(len(held), 2)
+            return V.public(path, saved)
+        def reserve(selected, state):
+            self.assertEqual(len(held), 2)
+            self.assertEqual(selected, path)
+            self.assertEqual(state, saved)
+        def launch(api, root, selected):
+            self.assertEqual(held, [])
+            self.assertEqual(selected, path)
+            return {'status': 'vacuum_controller_dispatched'}
+        with patch.object(V.sys, 'platform', 'linux'), patch.object(V.os, 'geteuid', return_value=0), \
+             patch.object(V.M, 'global_lock', side_effect=lock), patch.object(V.B, 'build_lock', side_effect=lock), \
+             patch.object(V, 'load', return_value=saved), patch.object(V, 'reserve_background', side_effect=reserve) as reserved, \
+             patch.object(V, 'prepare', side_effect=prepared), patch.object(V, 'launch_background', side_effect=launch) as spawned, \
+             patch.object(V.sys, 'argv', ['vacuum', '--run', '--background', '--profile', V.FAST_PROFILE,
+                                         '--after-session', '/normalization', '--metrics-hold', '/metrics', '--empty-blocks-hold', '/empty']), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(V.main(), 0)
+        spawned.assert_called_once()
+        reserved.assert_called_once()
 
     def test_cli_cannot_override_profile_during_status_or_resume(self):
         for mode in ('status', 'resume'):

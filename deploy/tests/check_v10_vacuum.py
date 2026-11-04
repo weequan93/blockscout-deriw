@@ -136,13 +136,14 @@ def check(image, network, token, environment, sql, pg, directory):
         later = {}
         with patch.object(V.J, 'load', return_value=parent), patch.object(V, 'no_normalizer'), \
              patch.object(V.H, 'load', return_value=hold), patch.object(V.E, 'load', return_value=hold):
-            prepared = V.prepare(api, fixture_root, parent_path, Path('/metrics'), Path('/empty'), profile='index-cleanup-v1')
+            prepared = V.prepare(api, fixture_root, parent_path, Path('/metrics'), Path('/empty'), profile=V.FAST_PROFILE)
             path = Path(prepared['state'])
             assert not prepared['database_writes']
             assert prepared['resources']['transactions']['oldest_transaction_seconds'] < 300
             frozen = V.load(path)['inputs']
             assert frozen['limits'] == {**V.LIMITS, 'duration_seconds': 14400}
             assert frozen['payload']['duration_seconds'] == 14400
+            assert frozen['payload']['vacuum_cost_limit'] == 400
             sql("INSERT INTO migrations_status(migration_name,status,inserted_at,updated_at) VALUES ('empty_internal_transactions_data','started',NOW(),NOW())")
             try:
                 V.observe(api, V.U.private(path.parent / 'observer.exs'), frozen['payload'])
@@ -164,6 +165,8 @@ def check(image, network, token, environment, sql, pg, directory):
                 result = V.execute(api, fixture_root, path)
             assert result['vacuum_sql_completed'] and result['completion_verified']
             assert result['target']['settings']['statement_timeout'] == '4h'
+            assert result['target']['settings']['vacuum_cost_limit'] == '400'
+            assert result['target']['settings']['vacuum_cost_delay'] == '2ms'
             assert later
             assert not result['normalization_gate_reopened']
             before = json.loads(V.U.private(path.parent / 'resources-before.json'))
@@ -252,6 +255,7 @@ def check(image, network, token, environment, sql, pg, directory):
             foreign.wait(timeout=5)
     return {'status': 'passed', 'ordinary_vacuum_completed': True, 'vacuum_counter_advanced': True,
         'verbose_result_retained': True, 'connection_local_settings_verified': True, 'four_hour_profile_timeout_verified': True,
+        'fast_profile_socket_cost_limit_400_verified': True, 'global_cost_limit_unchanged': True,
         'other_profile_limits_unchanged': True, 'normalization_anchor_unchanged': True,
         'migration_completion_records_unchanged': True, 'completion_resume_did_not_relaunch': True,
         'appearance_of_absent_migration_record_rejected': True,

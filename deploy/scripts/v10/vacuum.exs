@@ -218,6 +218,8 @@ defmodule BlockscoutV10Vacuum do
     duration = payload["duration_seconds"]
     true = is_integer(duration) and duration in [3600, 14400]
     duration_ms = duration * 1000
+    cost_limit = Map.get(payload, "vacuum_cost_limit", 200)
+    true = is_integer(cost_limit) and cost_limit in [200, 400]
 
     options =
       Explorer.Repo.config()
@@ -244,7 +246,7 @@ defmodule BlockscoutV10Vacuum do
           statement_timeout: Integer.to_string(duration_ms),
           lock_timeout: "500",
           maintenance_work_mem: "512MB",
-          vacuum_cost_limit: "200",
+          vacuum_cost_limit: Integer.to_string(cost_limit),
           vacuum_cost_delay: "2ms",
           client_connection_check_interval: "1s"
         ]

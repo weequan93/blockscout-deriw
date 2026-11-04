@@ -40,6 +40,9 @@ LIMITS = dict(duration_seconds=3600, preparation_seconds=600, poll_seconds=10, h
               oldest_transaction_seconds=300, journal_bytes=64 * 1024**2, log_bytes=16 * 1024**2,
               aggregate_journal_bytes=256 * 1024**2)
 INDEX_CLEANUP_LIMITS = {**LIMITS, 'duration_seconds': 14400}
+FAST_PROFILE = 'index-cleanup-fast-v1'
+PROFILES = ('index-cleanup-v1', FAST_PROFILE)
+CONTROLLER_FORMAT = 'blockscout-dev-v10-vacuum-controller-v1'
 RPC_SCRIPT = '''set -eu
 umask 077
 vacuum_probe_file=$(mktemp /tmp/blockscout-v10-vacuum-observe.XXXXXXXX)
@@ -159,11 +162,14 @@ def observe(api, source, payload, target=None, verify_anchor=False, vacuum_query
 
 def profile_limits(inputs):
     profile = inputs.get('profile')
-    P.require(profile in (None, 'index-cleanup-v1'), 'Unknown vacuum window profile')
+    P.require(profile is None or profile in PROFILES, 'Unknown vacuum window profile')
     limits = INDEX_CLEANUP_LIMITS if profile else LIMITS
     P.require(inputs['limits'] == limits, 'Frozen vacuum limits changed')
     P.require(inputs['payload'].get('duration_seconds', 3600) == limits['duration_seconds'],
               'Frozen vacuum duration changed')
+    cost = inputs['payload'].get('vacuum_cost_limit', 200)
+    P.require(type(cost) is int and cost == (400 if profile == FAST_PROFILE else 200),
+              'Frozen vacuum cost limit changed')
     return limits
 
 
@@ -265,8 +271,9 @@ def check_resources(data, inputs, baseline=None, free=None):
 def disk_guard(path, inputs):
     P.require(J.journal_size(path.parent) <= inputs['limits']['journal_bytes'], 'Vacuum journal cap reached')
     P.require(J.journal_size(BASE) <= inputs['limits']['aggregate_journal_bytes'], 'Vacuum journal aggregate cap reached; review retention')
-    log = path.parent / 'client.log.private'
-    P.require(not log.exists() or len(U.private(log)) <= inputs['limits']['log_bytes'], 'Vacuum private log cap reached')
+    for name in ('client.log.private', 'controller.log.private'):
+        log = path.parent / name
+        P.require(not log.exists() or len(U.private(log)) <= inputs['limits']['log_bytes'], 'Vacuum private log cap reached')
 
 
 def record(path, value):
@@ -290,6 +297,7 @@ def public(path, state):
             'vacuum_query_started_at': state.get('vacuum_query_started_at'),
             'health_recheck_policy': state['inputs'].get('health_recheck_policy', 'single_check'),
             'latest_health': state.get('latest_health'), 'health_rechecks': state.get('health_rechecks', 0),
+            'controller': controller_status(path, state),
             'normalization_cursor': state['inputs']['normalization_cursor'],
             'maintenance_selected_rows': state['inputs']['maintenance_selected_rows'],
             'normalization_gate_reopened': False, 'table_or_global_settings_changed': False,
@@ -297,8 +305,51 @@ def public(path, state):
             'note': 'One cost-limited ordinary-vacuum window. Interrupted work can leave useful partial cleanup but does not qualify a completed cycle. Completion still requires review of index cleanup, dead-row reduction and subsequent reuse.'}
 
 
+def controller_status(path, state):
+    record_path = path.parent / 'controller.json'
+    if not record_path.exists():
+        return None
+    record = json.loads(U.private(record_path))
+    P.require(record['format'] == CONTROLLER_FORMAT and record['state'] == str(path)
+              and record['inputs_sha256'] == state['inputs_sha256']
+              and (record.get('pid') is None or type(record['pid']) is int and record['pid'] > 0),
+              'Detached vacuum controller identity changed')
+    return {'mode': 'detached', 'requested_at_utc': record['requested_at_utc'],
+            'pid': record.get('pid'), 'log': str(path.parent / 'controller.log.private')}
+
+
+def reserve_background(path, state):
+    P.require(state['phase'] == 'prepared', 'Detach only a newly prepared vacuum window')
+    disk_guard(path, state['inputs'])
+    R.write_new(path.parent / 'controller.json', R.encoded({
+        'format': CONTROLLER_FORMAT, 'state': str(path), 'inputs_sha256': state['inputs_sha256'],
+        'requested_at_utc': datetime.now(timezone.utc).isoformat()}))
+
+
+def launch_background(api, root, path):
+    # Called only after the parent's operation/build locks have been released.
+    # The child acquires those same locks and runs the original one-shot state
+    # machine. No retry or service restart is installed.
+    state = load(path)
+    P.require(state['phase'] == 'prepared' and controller_status(path, state)['pid'] is None,
+              'Detached vacuum launch was already requested; inspect its saved state/log')
+    P.require(B.clean_source(api, root) == (state['inputs']['tool_source_commit'], '10.2.6'),
+              'Use the vacuum creation commit')
+    disk_guard(path, state['inputs'])
+    with B.private_log(path.parent / 'controller.log.private') as log:
+        process = subprocess.Popen([sys.executable, '-u', str(root / 'deploy/scripts/v10_vacuum.py'),
+                                    '--resume', '--state', str(path)],
+            cwd=str(root), stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+            start_new_session=True, close_fds=True)
+    record = json.loads(U.private(path.parent / 'controller.json'))
+    record['pid'] = process.pid
+    R.update_state(path.parent / 'controller.json', record)
+    return {**public(path, state), 'status': 'vacuum_controller_dispatched',
+            'database_work_finished': False}
+
+
 def prepare(api, root, after_path, metrics_path, empty_path, profile=None):
-    P.require(profile in (None, 'index-cleanup-v1'), 'Unknown vacuum window profile')
+    P.require(profile is None or profile in PROFILES, 'Unknown vacuum window profile')
     limits = INDEX_CLEANUP_LIMITS if profile else LIMITS
     manifest, _, _ = api.configuration(root, 'dev')
     previous = J.load(after_path, manifest, check_resources=False)
@@ -339,6 +390,7 @@ def prepare(api, root, after_path, metrics_path, empty_path, profile=None):
                           'transaction_guard_scope': TRANSACTION_GUARD_SCOPE,
                           'oldest_transaction_seconds': limits['oldest_transaction_seconds'],
                           'duration_seconds': limits['duration_seconds'],
+                          'vacuum_cost_limit': 400 if profile == FAST_PROFILE else 200,
                           'application_name': 'blockscout-v10-vacuum-' + token, 'token': token}}
     # Include absent completion records: appearance of a held worker's record
     # must be detected just as a change to an existing record would be.
@@ -353,7 +405,10 @@ def prepare(api, root, after_path, metrics_path, empty_path, profile=None):
     entries = list(BASE.iterdir())
     P.require(len(entries) < 32, 'Review vacuum journal retention before another window')
     for entry in entries:
-        P.require(load(entry / 'state.json')['phase'] in ('prepared', 'finished'), 'Reconcile the earlier vacuum window before preparing another')
+        earlier = load(entry / 'state.json')
+        P.require(earlier['phase'] in ('prepared', 'finished'), 'Reconcile the earlier vacuum window before preparing another')
+        P.require(not (entry / 'controller.json').exists() or earlier['phase'] == 'finished',
+                  'Reconcile the earlier detached vacuum controller before preparing another')
     directory = BASE / ('vacuum-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ-') + uuid.uuid4().hex[:8])
     directory.mkdir(mode=0o700)
     for name, content in (('inputs.json', R.encoded(inputs)), ('migrate.exs', script), ('observer.exs', observer), ('resources-before.json', R.encoded(data))):
@@ -374,11 +429,13 @@ def publish(api, inputs, name, value):
 
 
 def validate_target(target, payload):
+    cost = payload.get('vacuum_cost_limit', 200)
+    P.require(type(cost) is int and cost in (200, 400), 'Vacuum cost limit unavailable')
     P.require(isinstance(target, dict) and type(target['pid']) is int and target['pid'] > 0
               and isinstance(target['backend_start'], str) and target['application_name'] == payload['application_name']
               and target['query_md5'] == SQL_MD5 and target['database_oid'] == payload['database_identity']['oid']
               and type(target['role_oid']) is int
-              and target['settings'] == {'maintenance_work_mem': '512MB', 'vacuum_cost_limit': '200',
+              and target['settings'] == {'maintenance_work_mem': '512MB', 'vacuum_cost_limit': str(cost),
                   'vacuum_cost_delay': '2ms', 'lock_timeout': '500ms',
                   'statement_timeout': {3600: '1h', 14400: '4h'}[payload.get('duration_seconds', 3600)],
                   'client_connection_check_interval': '1s'},
@@ -574,10 +631,12 @@ def main():
     parser.add_argument('--metrics-hold', type=Path)
     parser.add_argument('--empty-blocks-hold', type=Path)
     parser.add_argument('--state', type=Path)
-    parser.add_argument('--profile', choices=('index-cleanup-v1',))
+    parser.add_argument('--profile', choices=PROFILES)
+    parser.add_argument('--background', action='store_true')
     args = parser.parse_args()
     try:
         P.require(sys.platform.startswith('linux') and os.geteuid() == 0, 'Run on the Linux dev server as root')
+        P.require(not args.background or args.run, 'Use --background only with a new --run window')
         if args.status:
             P.require(args.state and not any((args.after_session, args.metrics_hold, args.empty_blocks_hold, args.profile)), 'Use only the saved vacuum state')
             print(json.dumps(public(args.state, load(args.state)), indent=2))
@@ -590,12 +649,17 @@ def main():
                 args.state = Path(result['state'])
                 if args.run:
                     print(json.dumps(result, indent=2), flush=True)
-                    result = execute(D, ROOT, args.state)
+                    if args.background:
+                        reserve_background(args.state, load(args.state))
+                    else:
+                        result = execute(D, ROOT, args.state)
             else:
                 P.require(args.state and not any((args.after_session, args.metrics_hold, args.empty_blocks_hold, args.profile)), 'Use only the saved vacuum state')
                 result = execute(D, ROOT, args.state, resume=True)
+        if args.background:
+            result = launch_background(D, ROOT, args.state)
         print(json.dumps(result, indent=2))
-        return 0 if args.prepare or result.get('completion_verified') else 1
+        return 0 if args.prepare or args.background or result.get('completion_verified') else 1
     except Exception as error:
         print(json.dumps({'status': 'stopped', 'state': str(args.state) if args.state else None, 'raw_values_suppressed': True,
                           **error_report(error),
