@@ -26,6 +26,7 @@ BASE = Path('/data/blockscout-dev-private/v10-normalization-sessions')
 FORMAT = 'blockscout-dev-v10-normalization-session-v1'
 PROFILE_FORMAT = 'blockscout-dev-v10-normalization-session-v2'
 HEALTH_START_RESERVE_SECONDS = 15
+LEAN_EXECUTION_PROFILE = 'lean-v1'
 LIMITS = dict(max_batches=25, max_rows=25000, wal_bytes=128 * 1024**2,
               next_wal_reserve_bytes=16 * 1024**2, space_bytes=512 * 1024**2,
               free_bytes=200 * 1024**3, start_seconds=600, health_seconds=30,
@@ -49,6 +50,14 @@ def profile_limits(inputs):
     limits = OBSERVATION_LIMITS if profile == 'observation-v1' else LIMITS
     P.require(inputs['limits'] == limits, 'Frozen session limits changed')
     return limits
+
+
+def lean_execution(inputs):
+    selected = inputs.get('execution_profile')
+    P.require(selected in (None, LEAN_EXECUTION_PROFILE), 'Unknown session execution profile')
+    P.require((inputs.get('payload') or {}).get('execution_profile') == selected,
+              'Frozen session execution profile changed')
+    return selected == LEAN_EXECUTION_PROFILE
 
 
 def sync_json(path, value):
@@ -139,8 +148,9 @@ class Client:
             raise
 
     def request(self, command, payload=None):
-        P.require(command in ('inspect', 'resources', 'sample', 'migrate'), 'Unsupported session command')
-        P.require(not self.read_only or command in ('inspect', 'resources', 'sample'),
+        P.require(command in ('inspect', 'resources', 'sample', 'migrate', 'prepare_batch'), 'Unsupported session command')
+        P.require(command != 'prepare_batch' or lean_execution(self.inputs), 'Combined preparation requires lean-v1')
+        P.require(not self.read_only or command in ('inspect', 'resources', 'sample', 'prepare_batch'),
                   'Read-only observation clients cannot request normalization writes')
         # Check the applicable budget before publishing any request, especially
         # before a command that can write. Observation never resets that budget.
@@ -289,6 +299,7 @@ def load(path, manifest, check_resources=True):
     frozen = U.private(path.parent / 'inputs.json')
     inputs = json.loads(frozen)
     limits = profile_limits(inputs)
+    lean_execution(inputs)
     reserve = inputs.get('health_start_reserve_seconds', HEALTH_START_RESERVE_SECONDS)
     P.require(type(reserve) is int and reserve == HEALTH_START_RESERVE_SECONDS,
               'Frozen health-start reserve changed')
@@ -370,6 +381,7 @@ def public(path, state):
     return {'status': 'normalization_session_' + state['phase'], 'state': str(path), 'stop_reason': state.get('stop_reason'),
             'preparation_complete': state.get('preparation_complete', 'resources_before' in state),
             'completed_batches': state['batches'], 'selected_rows_verified': state['rows'],
+            'execution_profile': state['inputs'].get('execution_profile', 'original'),
             'updated_rows_observed': state['updated_rows'], 'charged_chunk_wal_bytes': state['charged_wal_bytes'],
             'wal_measurements_complete': state['wal_measurements_complete'], 'next_before_block': state['cursor'],
             'pending_transaction': state['pending'] is not None, 'limits': profile_limits(state['inputs']),
@@ -513,11 +525,12 @@ def diagnose(api, root, path, manifest):
     return report
 
 
-def prepare(api, root, after_path, after_session=False, profile=None):
+def prepare(api, root, after_path, after_session=False, profile=None, execution_profile=None):
     manifest, _, _ = api.configuration(root, 'dev')
     source = B.clean_source(api, root)
     P.require(source[1] == '10.2.6', 'Source release changed')
     P.require(profile in (None, 'pilot-v1', 'observation-v1'), 'Unknown session limit profile')
+    P.require(execution_profile in (None, LEAN_EXECUTION_PROFILE), 'Unknown session execution profile')
     P.require(profile != 'observation-v1' or after_session,
               'The observation profile requires a verified finished reusable session')
     limits = OBSERVATION_LIMITS if profile == 'observation-v1' else LIMITS
@@ -577,6 +590,9 @@ def prepare(api, root, after_path, after_session=False, profile=None):
               'payload': {k: upgrade['migration_payload'][k] for k in ('database_identity', 'heap_identity')}}
     if profile:
         inputs['profile'] = profile
+    if execution_profile:
+        inputs['execution_profile'] = execution_profile
+        inputs['payload']['execution_profile'] = execution_profile
     if origin:
         inputs.update(maintenance_origin=origin, maintenance_rows_before=maintenance_rows,
                       space_before=origin['space_before'])
@@ -662,6 +678,7 @@ def execute(api, root, path, manifest):
         while True:
             batch_started = time.monotonic()
             pending = state['pending']
+            fresh_inspection = None
             if not pending:
                 reason = limit_reason(state)
                 if reason:
@@ -669,10 +686,16 @@ def execute(api, root, path, manifest):
                     sync_json(path.parent / 'resources-latest.json', session_resources(state, client.request('resources')))
                     return finish(path, state, reason)
                 monitor(path, inputs)
-                resources = client.request('resources')
+                combined = None
+                if lean_execution(inputs):
+                    combined = client.request('prepare_batch', {
+                        'before_block': state['cursor'],
+                        'wal_limit_bytes': min(limits.get('transaction_wal_bytes', limits['wal_bytes']),
+                                               limits['wal_bytes'] - state['charged_wal_bytes'])})
+                resources = combined['resources'] if combined else client.request('resources')
                 report = session_resources(state, resources)
                 sync_json(path.parent / 'resources-latest.json', report)
-                sampled = client.request('sample', {'before_block': state['cursor']})
+                sampled = combined['sample'] if combined else client.request('sample', {'before_block': state['cursor']})
                 if sampled['selected_rows'] == 0:
                     reason = 'oversized_boundary_block' if sampled['excluded_boundary_block'] is not None else 'non_null_range_exhausted_needs_completion_review'
                     return finish(path, state, reason)
@@ -684,7 +707,9 @@ def execute(api, root, path, manifest):
                 if count + state['rows'] > limits['max_rows']:
                     return finish(path, state, 'next_complete_batch_exceeds_remaining_rows')
                 spec = {'blocks': [r['block'] for r in sampled['block_rows']], 'block_rows': sampled['block_rows'], 'expected_rows': count}
-                spec['baseline'] = P.baseline(client.request('inspect', {**spec, 'wal_limit_bytes': limits.get('transaction_wal_bytes', limits['wal_bytes'])}))
+                fresh_inspection = combined['inspection'] if combined else None
+                spec['baseline'] = P.baseline(fresh_inspection if fresh_inspection is not None else client.request(
+                    'inspect', {**spec, 'wal_limit_bytes': limits.get('transaction_wal_bytes', limits['wal_bytes'])}))
                 spec['payload_baseline'] = compact(spec['baseline'])
                 slot = 'raw-' + str(state['batches'] % 2) + '.json'
                 sync_json(path.parent / slot, spec)
@@ -695,7 +720,11 @@ def execute(api, root, path, manifest):
             spec = {**target(saved), 'baseline': saved['payload_baseline'],
                     'wal_limit_bytes': min(limits.get('transaction_wal_bytes', limits['wal_bytes']),
                                            limits['wal_bytes'] - state['charged_wal_bytes'])}
-            checked = client.request('inspect', spec)
+            # A newly prepared lean batch already has this read-only snapshot.
+            # The write transaction independently rechecks its exact hashes,
+            # row counts, semantics, identity, plan and health before UPDATE.
+            # An existing pending target always needs a fresh reconciliation.
+            checked = fresh_inspection if fresh_inspection is not None else client.request('inspect', spec)
             if observed(spec, checked) == 'original':
                 reason = limit_reason(state)
                 if reason:
@@ -777,11 +806,14 @@ def main():
     start.add_argument('--after-session', type=Path)
     parser.add_argument('--state', type=Path)
     parser.add_argument('--profile', choices=('pilot-v1', 'observation-v1'))
+    parser.add_argument('--execution-profile', choices=(LEAN_EXECUTION_PROFILE,))
     args = parser.parse_args()
     try:
         P.require(sys.platform.startswith('linux') and os.geteuid() == 0, 'Run on the Linux dev server as root')
         P.require(args.profile is None or args.prepare or args.run,
                   'Select a limit profile only when preparing a new session; saved budgets cannot be replaced')
+        P.require(args.execution_profile is None or args.prepare or args.run,
+                  'Select an execution profile only when preparing a new session')
         manifest, _, _ = D.configuration(ROOT, 'dev')
         with M.global_lock(not (args.status or args.retention_plan or args.diagnose)), B.build_lock(D, D.MANAGED_RELEASES, ROOT):
             if args.diagnose:
@@ -798,7 +830,8 @@ def main():
             elif args.prepare or args.run:
                 P.require(args.state is None and (args.after_state or args.after_session), 'Provide a verified predecessor')
                 result = prepare(D, ROOT, args.after_state or args.after_session,
-                                 after_session=args.after_session is not None, profile=args.profile)
+                                 after_session=args.after_session is not None, profile=args.profile,
+                                 execution_profile=args.execution_profile)
                 args.state = Path(result['state'])
                 if args.run:
                     print(json.dumps(result, indent=2), flush=True)

@@ -201,6 +201,60 @@ def check(image, network, token, environment, sql, pg, directory):
         finally:
             source_path.write_bytes(original_source)
 
+        # Lean preparation combines read-only resources, sampling and baseline
+        # inspection into one request. The real SQL prechecks still protect the
+        # interval between that baseline and the eventual write transaction.
+        sql("WITH seed AS MATERIALIZED (SELECT to_jsonb(t) AS row FROM internal_transactions t WHERE block_number=10 LIMIT 1), expanded AS MATERIALIZED (SELECT jsonb_populate_record(NULL::internal_transactions,seed.row||jsonb_build_object('block_number',160+g/200,'block_index',9000000+g,'index',9000000+g)) AS r FROM generate_series(0,3999) g CROSS JOIN seed) INSERT INTO internal_transactions SELECT (r).* FROM expanded")
+        sql('ANALYZE internal_transactions')
+        with patch.dict(J.LIMITS, max_batches=2, max_rows=2000):
+            lean = J.prepare(api, ROOT, initial_path, profile='pilot-v1', execution_profile='lean-v1')
+            lean_path = Path(lean['state'])
+            commands = []
+            def counted(client, command, payload=None):
+                commands.append(command)
+                return original_request(client, command, payload)
+            with patch.object(J.Client, 'request', counted):
+                lean_result = J.execute(api, ROOT, lean_path, manifest)
+            assert lean_result['updated_rows_observed'] == 2000 and lean_result['next_before_block'] == 170
+            assert lean_result['execution_profile'] == 'lean-v1'
+            assert commands == ['inspect'] + ['prepare_batch', 'resources', 'migrate', 'resources'] * 2 + ['resources']
+            assert lean_result['timing_totals']['transaction_measurements'] == 2
+            assert len(list(lean_path.parent.glob('raw-*.json'))) == 2
+
+            lost = J.prepare(api, ROOT, lean_path, after_session=True, profile='pilot-v1', execution_profile='lean-v1')
+            lost_path = Path(lost['state'])
+            lose[0] = True
+            writes[0] = 0
+            with patch.object(J.Client, 'request', interrupted):
+                try:
+                    J.execute(api, ROOT, lost_path, manifest)
+                    raise AssertionError('lean lost reply was not simulated')
+                except J.U.UpgradeError:
+                    pass
+                lean_recovered = J.execute(api, ROOT, lost_path, manifest)
+            assert writes[0] == 1 and lean_recovered['selected_rows_verified'] == 1000
+            assert lean_recovered['next_before_block'] == 165
+            assert lean_recovered['charged_chunk_wal_bytes'] == J.LIMITS['wal_bytes']
+            assert not lean_recovered['pending_transaction'] and not lean_recovered['wal_measurements_complete']
+
+            changed = J.prepare(api, ROOT, lost_path, after_session=True, profile='pilot-v1', execution_profile='lean-v1')
+            changed_path = Path(changed['state'])
+            def drift_after_preparation(client, command, payload=None):
+                if command == 'migrate':
+                    sql('UPDATE internal_transactions SET trace_address=ARRAY[77] WHERE block_number=164')
+                return original_request(client, command, payload)
+            with patch.object(J.Client, 'request', drift_after_preparation):
+                try:
+                    J.execute(api, ROOT, changed_path, manifest)
+                    raise AssertionError('lean preparation drift was overwritten')
+                except J.U.UpgradeError:
+                    pass
+            changed_state = J.load(changed_path, manifest)
+            assert changed_state['pending'] is not None and changed_state['rows'] == 0
+            assert changed_state['cursor'] == 165
+            assert sql('SELECT count(*) FROM internal_transactions WHERE block_number BETWEEN 160 AND 163 AND trace_address IS NOT NULL').strip() == '800'
+            assert sql('SELECT count(*) FROM internal_transactions WHERE block_number=164 AND trace_address=ARRAY[77]').strip() == '200'
+
         # The real client accepts the versioned observation request allowance,
         # preserves a v1 anchor and enforces the smaller per-transaction WAL cap.
         sql("WITH seed AS MATERIALIZED (SELECT to_jsonb(t) AS row FROM internal_transactions t WHERE block_number=10 LIMIT 1), expanded AS MATERIALIZED (SELECT jsonb_populate_record(NULL::internal_transactions,seed.row||jsonb_build_object('block_number',50+g/100,'block_index',500000+g,'index',500000+g)) AS r FROM generate_series(0,1999) g CROSS JOIN seed) INSERT INTO internal_transactions SELECT (r).* FROM expanded")
@@ -349,6 +403,9 @@ def check(image, network, token, environment, sql, pg, directory):
             'near_expiry_health_refreshed_before_prechecks': True, 'expired_health_still_rejected_before_update': True,
             'failed_reply_collected_before_client_exit': True, 'unchanged_pending_closed_without_data_update': True,
             'committed_pending_cannot_be_closed_unapplied': True,
+            'lean_execution_profile_checked': True, 'lean_fresh_batch_requests': 4,
+            'original_fresh_batch_requests': 7, 'lean_lost_commit_reconciled_without_second_update': True,
+            'lean_drift_after_preparation_rejected_inside_write_transaction': True,
             'full_table_run_enabled': False, 'host_runtime_health_stubbed': True, 'live_services_accessed': False}
 
 

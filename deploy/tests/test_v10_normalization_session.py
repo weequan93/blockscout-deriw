@@ -43,6 +43,7 @@ class SessionTests(unittest.TestCase):
         self.normalized = {100}
         self.migrates = 0
         self.migrate_limits = []
+        self.requests = []
         self.lose_response = self.fail_before = self.drift = False
         self.raw_resources = resources()
         case = self
@@ -56,7 +57,14 @@ class SessionTests(unittest.TestCase):
             def __exit__(self, *args):
                 pass
             def request(self, command, payload=None):
+                case.requests.append(command)
                 case.assertFalse(self.read_only and command == 'migrate')
+                if command == 'prepare_batch':
+                    cursor = payload['before_block']
+                    sample = {'block_rows': [{'block': cursor - n, 'rows': 1} for n in (1, 2)],
+                              'selected_rows': 2, 'selected_bytes': 648, 'excluded_boundary_block': cursor - 3}
+                    return {'resources': deepcopy(case.raw_resources), 'sample': sample,
+                            'inspection': case.result([cursor - 1, cursor - 2])}
                 if command == 'resources':
                     return deepcopy(case.raw_resources)
                 if command == 'sample':
@@ -90,7 +98,7 @@ class SessionTests(unittest.TestCase):
                              'needs_normalization': sum(b not in self.normalized for b in blocks), 'sampled_row_bytes': 324 * len(blocks)},
                 'statuses': []}
 
-    def prepare(self):
+    def prepare(self, execution_profile=None):
         directory = self.base / 'session-20261104T080000Z-1234abcd'
         directory.mkdir(mode=0o700)
         anchor = {'blocks': [100], 'block_rows': [{'block': 100, 'rows': 1}], 'expected_rows': 1,
@@ -101,6 +109,9 @@ class SessionTests(unittest.TestCase):
                   'upgrade_state': '/private/upgrade/state.json', 'runtime_before': {},
                   'candidate_image': 'sha256:' + 'a' * 64,
                   'anchor': anchor, 'space_before': 888 * 1024**3, 'created_epoch': J.time.time()}
+        if execution_profile:
+            inputs['execution_profile'] = execution_profile
+            inputs['payload'] = {'execution_profile': execution_profile}
         state = {'format': J.FORMAT, 'inputs': inputs, 'inputs_sha256': J.R.digest(J.R.encoded(inputs)), 'phase': 'prepared',
                  'batches': 0, 'rows': 0, 'updated_rows': 0, 'charged_wal_bytes': 0, 'wal_measurements_complete': True,
                  'cursor': 100, 'pending': None, 'last': None, 'last_sha256': None, 'recent': [],
@@ -117,7 +128,7 @@ class SessionTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             return J.execute(self.api, ROOT, path, self.manifest)
 
-    def continuation(self, path, profile='observation-v1'):
+    def continuation(self, path, profile='observation-v1', execution_profile=None):
         upgrade = {'candidate_image': 'sha256:' + 'a' * 64, 'candidate_source_commit': 'a' * 40,
                    'network': 'fixture', 'backend_environment': {},
                    'migration_payload': {'database_identity': {}, 'heap_identity': 1},
@@ -125,8 +136,79 @@ class SessionTests(unittest.TestCase):
         self.api.configuration = lambda *a: (self.manifest, {}, {})
         with patch.object(J.P, 'context', return_value=(self.manifest, upgrade)), \
                 patch.object(J.B, 'validate_state_directory'), contextlib.redirect_stdout(io.StringIO()):
-            prepared = J.prepare(self.api, ROOT, path, after_session=True, profile=profile)
+            prepared = J.prepare(self.api, ROOT, path, after_session=True, profile=profile, execution_profile=execution_profile)
         return Path(prepared['state'])
+
+    def test_lean_batches_reduce_requests_without_changing_limits_or_recovery_slots(self):
+        previous = self.prepare()
+        self.requests.clear()
+        original = self.execute(previous)
+        self.assertEqual(len(self.requests), 3 * 7 + 2)  # anchor, seven per batch, final resources
+        path = self.continuation(previous, profile='pilot-v1', execution_profile='lean-v1')
+        self.requests.clear()
+        result = self.execute(path)
+        self.assertEqual(self.requests, ['inspect'] + ['prepare_batch', 'resources', 'migrate', 'resources'] * 3 + ['resources'])
+        self.assertEqual(result['execution_profile'], 'lean-v1')
+        self.assertEqual(result['limits'], original['limits'])
+        self.assertEqual(result['selected_rows_verified'], 6)
+        self.assertEqual(result['timing_totals']['transaction_measurements'], 3)
+        self.assertEqual(len(list(path.parent.glob('raw-*.json'))), 2)
+        self.assertFalse(result['sustained_full_table_run_enabled'])
+
+    def test_lean_lost_commit_reconciles_pending_rows_before_any_new_update(self):
+        path = self.prepare(execution_profile='lean-v1')
+        self.lose_response = True
+        with self.assertRaises(J.U.UpgradeError):
+            self.execute(path)
+        state = J.load(path, self.manifest)
+        self.assertEqual(state['cursor'], 100)
+        self.assertIsNotNone(state['pending'])
+        self.requests.clear()
+        result = self.execute(path)
+        self.assertEqual(self.migrates, 1)
+        self.assertEqual(self.requests[:2], ['inspect', 'inspect'])  # anchor, uncertain target
+        self.assertNotIn('prepare_batch', self.requests)
+        self.assertNotIn('migrate', self.requests)
+        self.assertEqual(result['charged_chunk_wal_bytes'], J.LIMITS['wal_bytes'])
+        self.assertFalse(result['wal_measurements_complete'])
+        self.assertFalse(result['pending_transaction'])
+
+    def test_lean_preparation_cannot_reopen_the_vacuum_review_gate(self):
+        previous = self.prepare()
+        self.execute(previous)
+        with patch.dict(J.OBSERVATION_LIMITS, max_batches=2, max_rows=10, maintenance_max_rows=4):
+            path = self.continuation(previous, execution_profile='lean-v1')
+            result = self.execute(path)
+            self.assertEqual(result['stop_reason'], 'vacuum_review_required')
+            with self.assertRaisesRegex(J.U.UpgradeError, 'vacuum'):
+                self.continuation(path, execution_profile='lean-v1')
+
+    def test_lean_resource_guard_still_stops_before_writes(self):
+        path = self.prepare(execution_profile='lean-v1')
+        self.raw_resources['transactions']['oldest_transaction_seconds'] = 301
+        with self.assertRaises(J.U.UpgradeError):
+            self.execute(path)
+        self.assertEqual(self.migrates, 0)
+        self.assertIsNone(J.load(path, self.manifest)['pending'])
+
+    def test_execution_policy_is_frozen_and_combined_request_requires_opt_in(self):
+        inputs = J.load(self.prepare(), self.manifest)['inputs']
+        self.assertFalse(J.lean_execution(inputs))
+        for policy, payload in [('unknown', 'unknown'), ('lean-v1', None), (None, 'lean-v1')]:
+            with self.subTest(policy=policy, payload=payload), self.assertRaises(J.U.UpgradeError):
+                J.lean_execution({**inputs, 'execution_profile': policy, 'payload': {'execution_profile': payload}})
+        client = REAL_CLIENT(self.api, Path('/unused'), inputs)
+        with patch.object(client, 'transport') as transport:
+            with self.assertRaisesRegex(J.U.UpgradeError, 'requires lean-v1'):
+                client.request('prepare_batch')
+            transport.assert_not_called()
+
+    def test_cli_cannot_change_execution_policy_on_resume(self):
+        with patch.object(J.sys, 'platform', 'linux'), patch.object(J.os, 'geteuid', return_value=0), \
+             patch.object(J.sys, 'argv', ['session', '--resume', '--state', '/saved/state.json', '--execution-profile', 'lean-v1']), \
+             patch.object(J.D, 'configuration') as configure, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(J.main(), 1)
+        configure.assert_not_called()
 
     def test_observation_profile_preserves_legacy_and_caps_each_transaction(self):
         previous = self.prepare()

@@ -509,6 +509,31 @@ defmodule BlockscoutNormalizationSession do
     result
   end
 
+  # Combine existing read-only operations across one mailbox request. Each Repo
+  # transaction finishes before the next; the host still journals the complete
+  # baseline before requesting any write. No migration worker is started.
+  def prepare_batch(payload) do
+    true = payload["execution_profile"] == "lean-v1"
+    resources = read(payload, "resources")
+    sample = read(payload, "sample")
+
+    inspection =
+      if sample.selected_rows > 0 do
+        BlockscoutNormalizationCheck.run(
+          Map.merge(payload, %{
+            "mode" => "inspect",
+            "vacuum_compatible" => true,
+            "blocks" => Enum.map(sample.block_rows, & &1.block),
+            "block_rows" =>
+              Enum.map(sample.block_rows, &%{"block" => &1.block, "rows" => &1.rows}),
+            "expected_rows" => sample.selected_rows
+          })
+        )
+      end
+
+    %{resources: resources, sample: sample, inspection: inspection}
+  end
+
   def loop(base, remaining) when remaining > 0 do
     path = "/tmp/channel/request.json"
     # A dead host cannot leave a process or an old transaction running forever.
@@ -532,6 +557,10 @@ defmodule BlockscoutNormalizationSession do
 
         result =
           case received["command"] do
+            "prepare_batch" ->
+              true = base["execution_profile"] == "lean-v1"
+              prepare_batch(payload)
+
             "sample" ->
               read(payload, "sample")
 
