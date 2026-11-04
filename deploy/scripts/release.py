@@ -75,6 +75,9 @@ def load_state(api,path,manifest):
 
 def active_context(api,backend,manifest):
  labels=backend.get('Config',{}).get('Labels') or {}
+ if 'org.deriw.v10-upgrade-state' in labels:
+  api.require(STATE_LABEL not in labels and SIDE_LABEL not in labels,'Ambiguous managed release labels')
+  return api.load_tool('v10_upgrade').active_context(api,backend,manifest)
  if STATE_LABEL not in labels:
   api.require(SIDE_LABEL not in labels,'Incomplete managed release labels');return None
  path=Path(labels[STATE_LABEL]);state=load_state(api,path,manifest);side=labels.get(SIDE_LABEL)
@@ -87,6 +90,7 @@ def active_context(api,backend,manifest):
 
 def active_model(api,model,context):
  if context is None:return model
+ if context.get('upgrade'):return api.load_tool('v10_upgrade').active_model(api,model,context)
  model=deepcopy(model)
  for name,service in model['services'].items():
   freeze_null_environment(service,context['state']['before'][name])

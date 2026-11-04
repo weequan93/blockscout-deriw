@@ -81,7 +81,7 @@ def env_map(row):
  return result
 
 
-def inspect_project(manifest,require_running=True,allow_missing_backend=False):
+def inspect_project(manifest,require_running=True,allow_missing_backend=False,allow_missing_services=()):
  project=manifest['compose_project']
  ids=run(['docker','container','ls','--all','--no-trunc','--quiet','--filter','label=com.docker.compose.project='+project]).split()
  require(1<=len(ids)<=64 and len(ids)==len(set(ids)) and all(re.fullmatch(r'[a-f0-9]{64}',v) for v in ids),'Unexpected project container inventory')
@@ -95,7 +95,9 @@ def inspect_project(manifest,require_running=True,allow_missing_backend=False):
   require(service not in by_service,'Multiple containers for one service require explicit review')
   by_service[service]=row
  expected=set(manifest['baseline_image_ids'])
- require(set(by_service)==expected or (allow_missing_backend and set(by_service)==expected-{'backend'}),
+ missing=set(allow_missing_services)|({'backend'} if allow_missing_backend else set())
+ require(missing<= {'backend','nft_media_handler'},'Only upgrade services may be missing during recreation')
+ require(set(by_service)<=expected and expected-set(by_service)<=missing,
   'Live service set differs from the captured dev inventory')
  if 'backend' not in by_service:return by_service
  backend=by_service['backend'];values=env_map(backend)
