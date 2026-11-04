@@ -18,10 +18,8 @@ ROOT = Path(__file__).resolve().parents[2]
 STAGE = 'upgrade_state'
 
 
-def project(data, free):
-    D.require(isinstance(data, dict), 'Invalid normalization metadata')
-    block = data.get('block')
-    D.require(type(block) is int and block >= 0, 'Invalid selected block')
+def common(data, free):
+    D.require(isinstance(data, dict) and type(free) is int and free >= 0, 'Invalid normalization metadata/capacity')
     plans = {}
     for name in ('seek_plan', 'batch_plan'):
         plan = data.get(name) or {}
@@ -30,11 +28,6 @@ def project(data, free):
         cost = plan.get('estimated_total_cost')
         D.require(type(cost) in (int, float) and cost >= 0, 'Invalid planner cost')
         plans[name] = {k: plan[k] for k in ('access', 'index', 'estimated_total_cost')}
-    counts = ('sample_rows', 'rows_needing_normalization_in_sample', 'sampled_row_bytes', 'maximum_sampled_row_bytes')
-    D.require(all(type(data.get(k)) is int and data[k] >= 0 for k in counts), 'Invalid sample sizes')
-    D.require(0 < data['sample_rows'] <= 1001 and data['rows_needing_normalization_in_sample'] <= data['sample_rows']
-              and type(data.get('row_limit_exceeded')) is bool
-              and data['row_limit_exceeded'] == (data['sample_rows'] > 1000), 'Invalid sample row bounds')
     statuses = data.get('statuses')
     D.require(isinstance(statuses, list) and len(statuses) <= len(H.HISTORY_WORKERS), 'Invalid worker status metadata')
     status = {}
@@ -49,12 +42,6 @@ def project(data, free):
               and isinstance(data.get('wal_stats_reset'), str) and re.fullmatch(r'[0-9:.+ -]{10,64}', data['wal_stats_reset']),
               'Invalid WAL statistics')
     blockers = []
-    if data['row_limit_exceeded']:
-        blockers.append('selected_block_exceeds_1000_row_pilot_cap')
-    if data['sampled_row_bytes'] > 16 * 1024**2:
-        blockers.append('selected_block_exceeds_16_mib_row_size_budget')
-    if data['rows_needing_normalization_in_sample'] == 0:
-        blockers.append('selected_block_has_no_normalization_work')
     if free < 200 * 1024**3:
         blockers.append('less_than_200_gib_data_free')
     if status.get('empty_internal_transactions_data') == 'completed':
@@ -63,18 +50,45 @@ def project(data, free):
         blockers.append('historical_reindex_state_needs_review')
     if any(name.startswith('heavy_indexes_') and value == 'started' for name, value in status.items()):
         blockers.append('heavy_index_work_recorded_started')
-    return {'status': 'normalization_pilot_candidate_selected' if not blockers else 'normalization_pilot_needs_review',
-            'read_only': True, 'apply_available': False, 'blockers': blockers, 'selected_block': block,
-            **plans, **{k: data[k] for k in counts}, 'sample_is_complete_block': not data['row_limit_exceeded'],
-            'data_available_bytes': free, 'required_data_free_bytes': 200 * 1024**3,
+    return {**plans, 'data_available_bytes': free, 'required_data_free_bytes': 200 * 1024**3,
             'worker_states': [{'name': name, 'status': status.get(name, 'not_recorded')} for name in H.HISTORY_WORKERS],
             'table_update_statistics': dict(zip(('updates_since_stats_reset', 'hot_updates_since_stats_reset',
                                                'estimated_dead_rows', 'autovacuum_count'), stats[0])),
-            'cluster_wal_statistics': {'bytes_since_stats_reset': data['wal_bytes'], 'stats_reset': data['wal_stats_reset']},
+            'cluster_wal_statistics': {'bytes_since_stats_reset': data['wal_bytes'], 'stats_reset': data['wal_stats_reset']}}, blockers
+
+
+def project(data, free):
+    shared, blockers = common(data, free)
+    block = data.get('block')
+    D.require(type(block) is int and block >= 0, 'Invalid selected block')
+    counts = ('sample_rows', 'rows_needing_normalization_in_sample', 'sampled_row_bytes', 'maximum_sampled_row_bytes')
+    D.require(all(type(data.get(k)) is int and data[k] >= 0 for k in counts), 'Invalid sample sizes')
+    D.require(0 < data['sample_rows'] <= 1001 and data['rows_needing_normalization_in_sample'] <= data['sample_rows']
+              and type(data.get('row_limit_exceeded')) is bool
+              and data['row_limit_exceeded'] == (data['sample_rows'] > 1000), 'Invalid sample row bounds')
+    if data['row_limit_exceeded']:
+        blockers.append('selected_block_exceeds_1000_row_pilot_cap')
+    if data['sampled_row_bytes'] > 16 * 1024**2:
+        blockers.append('selected_block_exceeds_16_mib_row_size_budget')
+    if data['rows_needing_normalization_in_sample'] == 0:
+        blockers.append('selected_block_has_no_normalization_work')
+    return {'status': 'normalization_pilot_candidate_selected' if not blockers else 'normalization_pilot_needs_review',
+            'read_only': True, 'apply_available': False, 'blockers': blockers, 'selected_block': block,
+            **shared, **{k: data[k] for k in counts}, 'sample_is_complete_block': not data['row_limit_exceeded'],
             'scope': 'Read-only indexed newest-block seek and at most 1001 rows from that one block, planner-only EXPLAIN and selected catalog/statistics reads. No normalization, migration-state update, worker/index start, node call or restart. Row sizes are PostgreSQL estimates, not a WAL forecast.'}
 
 
-def collect(api, root, path):
+def expression(root, before_block=None, batch_sample=False):
+    D.require(before_block is None or (type(before_block) is int and 0 <= before_block < 2**63), 'Invalid sample cursor')
+    D.require(not batch_sample or before_block is not None, 'A batch sample requires its upper block bound')
+    source = (root / 'deploy/scripts/v10/normalization_plan.exs').read_text()
+    marker = 'options = %{batch_sample: false, before_block: nil}'
+    D.require(source.count(marker) == 1, 'Probe options marker changed')
+    value = '%{batch_sample: ' + ('true' if batch_sample else 'false') + ', before_block: ' + (str(before_block) if before_block is not None else 'nil') + '}'
+    return source.replace(marker, 'options = ' + value)
+
+
+def collect(api, root, path, before_block=None, batch_sample=False, projector=None):
     global STAGE
     manifest, _, _ = api.configuration(root, 'dev')
     state = U.load_state(api, path, manifest)
@@ -85,14 +99,14 @@ def collect(api, root, path):
         api.require((before[name]['Config'].get('Labels') or {}).get(U.STATE_LABEL) == str(path), 'Another release owns the pair')
     STAGE = 'bounded_indexed_sample'
     source = B.clean_source(api, root)
-    expression = (root / 'deploy/scripts/v10/normalization_plan.exs').read_text()
-    data = C.marked_json(api, api.run(['docker', 'exec', 'backend', '/app/bin/blockscout', 'rpc', expression], timeout=15))
+    code = expression(root, before_block=before_block, batch_sample=batch_sample)
+    data = C.marked_json(api, api.run(['docker', 'exec', 'backend', '/app/bin/blockscout', 'rpc', code], timeout=15))
     values = os.statvfs('/data')
-    report = project(data, values.f_bavail * values.f_frsize)
+    report = (projector or project)(data, values.f_bavail * values.f_frsize)
     api.ensure_stable(before, api.inspect_project(manifest), 'Deployment changed during normalization planning')
     api.require(B.clean_source(api, root) == source, 'Planning source changed during the read')
     return {'environment': 'dev', 'chain_id': manifest['chain_id'], 'upgrade_state': str(path),
-            'candidate_image': state['candidate_image'], 'automatic_background_migrations_held': True, **report}
+            'candidate_image': state['candidate_image'], 'planning_source_commit': source[0], 'automatic_background_migrations_held': True, **report}
 
 
 def main():

@@ -18,14 +18,14 @@ import v10_upgrade as U
 import v10_normalization_plan as N
 
 
-def inspect(image, network, token, environment, expected_failure=False):
+def inspect(image, network, token, environment, expected_failure=False, before_block=None, batch_sample=False, projector=None):
     name = 'normalization-plan-' + uuid.uuid4().hex[:16]
     command = U.client_command(image, network, name, token)
     command[2:2] = ['--label', F.LABEL + '=' + token]
     source = '''
 for app <- [:crypto, :ssl, :postgrex, :ecto_sql], do: ({:ok, _} = Application.ensure_all_started(app))
 {:ok, _} = Explorer.Repo.start_link(pool_size: 2)
-''' + (ROOT / 'deploy/scripts/v10/normalization_plan.exs').read_text()
+''' + N.expression(ROOT, before_block=before_block, batch_sample=batch_sample)
     try:
         result = subprocess.run(command, input=U.archive(environment, {}, source.encode()), capture_output=True, timeout=60)
         if expected_failure:
@@ -34,7 +34,7 @@ for app <- [:crypto, :ssl, :postgrex, :ecto_sql], do: ({:ok, _} = Application.en
         if result.returncode:
             raise RuntimeError(result.stdout.decode(errors='replace')[-3000:] + result.stderr.decode(errors='replace')[-3000:])
         data = C.marked_json(D, result.stdout.decode())
-        return N.project(data, 888 * 1024**3)
+        return (projector or N.project)(data, 888 * 1024**3)
     finally:
         F.cleanup_container(name, token)
 
