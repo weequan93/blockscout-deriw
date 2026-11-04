@@ -2,6 +2,7 @@
 """Prepare or exercise the reusable, vacuum-compatible normalization client."""
 from datetime import datetime, timezone
 import argparse
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -393,6 +394,42 @@ def transaction_activity_sql(root):
     return matches[0]
 
 
+def diagnosis_expression(root):
+    source = (root / 'deploy/scripts/v10/normalization_diagnostics.exs').read_text()
+    sql = json.dumps(transaction_activity_sql(root)).replace('#{', r'\#{')
+    return source + '\nresult = BlockscoutNormalizationDiagnostics.run(' + sql + ')\n' \
+        + 'IO.puts("BLOCKSCOUT_DEPLOY_CHECK=" <> Jason.encode!(result))\n'
+
+
+def query_diagnostics(rows, runtime):
+    """Expose only metadata; map private connection addresses to service names."""
+    def address(value):
+        if not value:
+            return None
+        parsed = ipaddress.ip_address(value)
+        return str(getattr(parsed, 'ipv4_mapped', None) or parsed)
+    services = {}
+    for name, container in runtime.items():
+        for network in (container.get('NetworkSettings', {}).get('Networks') or {}).values():
+            for key in ('IPAddress', 'GlobalIPv6Address'):
+                value = address(network.get(key))
+                if value:
+                    services.setdefault(value, set()).add(name)
+    P.require(isinstance(rows, list) and len(rows) <= 20, 'Unexpected transaction diagnostic count')
+    fields = ('pid', 'backend_started_at', 'transaction_started_at', 'query_started_at', 'state',
+              'transaction_age_seconds', 'snapshot_present', 'assigned_xid_present', 'wait_type', 'wait_event',
+              'same_role_as_observer', 'query_md5', 'query_bytes', 'query_shape', 'mentioned_relations',
+              'fingerprints', 'source_query_matches')
+    result = []
+    for row in rows:
+        clean = {k: row[k] for k in fields if k in row}
+        owners = sorted(services.get(address(row.get('client_address')), set()))
+        clean['client_service_candidates'] = owners
+        clean['client_service_mapping'] = 'unique' if len(owners) == 1 else 'ambiguous' if owners else 'unmapped'
+        result.append(clean)
+    return result
+
+
 def diagnose(api, root, path, manifest):
     """Read saved evidence and existing backend metadata, with no new client."""
     state = load(path, manifest, check_resources=False)
@@ -414,26 +451,16 @@ def diagnose(api, root, path, manifest):
     try:
         before = api.inspect_project(manifest)
         P.require(before['backend']['Image'] == inputs['candidate_image'], 'Backend image differs from saved session')
-        sql = json.dumps(transaction_activity_sql(root))
-        code = '''
-true = Explorer.Migrator.StartupControl.disabled?()
-{:ok, report} = Explorer.Repo.transaction(fn ->
-  q = fn sql -> Explorer.Repo.query!(sql, [], log: false, timeout: 2000).rows end
-  q.("SET TRANSACTION READ ONLY")
-  q.("SET LOCAL statement_timeout='1500ms'")
-  q.("SET LOCAL lock_timeout='500ms'")
-  [[identity]] = q.("SELECT jsonb_build_object('database',current_database(),'oid',(SELECT oid::bigint FROM pg_database WHERE datname=current_database()),'address',host(inet_server_addr()),'port',inet_server_port(),'postgres_major',current_setting('server_version_num')::integer/10000)")
-  [[result]] = q.(SQL)
-  %{database_identity: identity, transactions: result}
-end, timeout: 5000)
-IO.puts("BLOCKSCOUT_DEPLOY_CHECK=" <> Jason.encode!(report))
-'''.replace('q.(SQL)', 'q.(' + sql + ')')
+        code = diagnosis_expression(root)
         raw = api.run(['docker', 'exec', 'backend', '/app/bin/blockscout', 'rpc', code], timeout=15)
         checked = C.marked_json(api, raw)
         P.require(checked['database_identity'] == inputs['payload']['database_identity'],
                   'Backend database differs from saved session')
         api.ensure_stable(before, api.inspect_project(manifest), 'Runtime changed during transaction diagnosis')
+        queries = query_diagnostics(checked.get('query_diagnostics', []), before)
         report['live_backend_transactions'] = checked['transactions']
+        report['query_diagnostics'] = queries
+        report['query_diagnostics_scope'] = 'Up to 20 current client transactions older than 60 seconds. Source matches identify compiled SQL templates, not their caller. Connection addresses are mapped to service candidates and suppressed.'
     except Exception as error:
         report['live_backend_error'] = str(error) if isinstance(error, U.UpgradeError) else 'Backend metadata check unavailable; raw values suppressed'
     return report

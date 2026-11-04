@@ -477,6 +477,30 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(report['saved_transactions']['oldest_transaction_seconds'], 323)
         self.assertNotIn('private connection secret', json.dumps(report))
 
+    def test_query_diagnosis_maps_services_and_suppresses_addresses_and_unknown_fields(self):
+        runtime = {
+            'backend': {'NetworkSettings': {'Networks': {'fixture': {'IPAddress': '172.30.0.2'}}}},
+            'stats': {'NetworkSettings': {'Networks': {'fixture': {'IPAddress': '172.30.0.3'}}}},
+        }
+        row = {'pid': 33301, 'client_address': '::ffff:172.30.0.3',
+               'query_md5': 'a' * 32, 'source_query_matches': ['blocks_consensus_count'],
+               'query': 'private-query-with-parameters', 'application_name': 'private-application'}
+        result = J.query_diagnostics([row], runtime)
+        self.assertEqual(result[0]['client_service_candidates'], ['stats'])
+        self.assertEqual(result[0]['client_service_mapping'], 'unique')
+        self.assertEqual(result[0]['source_query_matches'], ['blocks_consensus_count'])
+        public = json.dumps(result)
+        for private in ('172.30.0.3', 'private-query', 'private-application', 'client_address'):
+            self.assertNotIn(private, public)
+        runtime['frontend'] = deepcopy(runtime['stats'])
+        self.assertEqual(J.query_diagnostics([row], runtime)[0]['client_service_mapping'], 'ambiguous')
+        row['client_address'] = '172.30.1.99'
+        unmatched = J.query_diagnostics([row], runtime)[0]
+        self.assertEqual(unmatched['client_service_mapping'], 'unmapped')
+        self.assertEqual(unmatched['client_service_candidates'], [])
+        with self.assertRaises(J.U.UpgradeError):
+            J.query_diagnostics([row] * 21, runtime)
+
 
 if __name__ == '__main__':
     unittest.main()
