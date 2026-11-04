@@ -4,6 +4,7 @@ from copy import deepcopy
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import time
@@ -19,6 +20,7 @@ import v10_vacuum as V
 
 
 SETUP = '''
+true = Bitwise.band(File.stat!(__ENV__.file).mode, 0o777) == 0o600
 for app <- [:crypto, :ssl, :postgrex, :ecto_sql], do: ({:ok, _} = Application.ensure_all_started(app))
 {:ok, _} = Explorer.Repo.start_link(pool_size: 2)
 {:ok, _} = Supervisor.start_link([], strategy: :one_for_one, name: Explorer.Supervisor)
@@ -42,11 +44,21 @@ def check(image, network, token, environment, sql, pg, directory):
     def run(command, **kwargs):
         if command[0] == 'git':
             return ''
-        if command[:3] == ['docker', 'exec', 'backend']:
+        if command[:4] == ['docker', 'exec', '-i', 'backend']:
             name = 'vacuum-observer-' + uuid.uuid4().hex[:16]
+            assert command[-1] == V.RPC_SCRIPT and len(command[-1]) < 4096
+            code = kwargs['input_text']
+            # Exercise the actual stdin/private-file/cleanup shell transport.
+            # Only rpc becomes eval because this disposable node supplies the
+            # backend Repo and held supervisor fixtures rather than a full app.
+            entry = V.U.RUN_SCRIPT.rsplit('exec /app/bin/blockscout eval', 1)[0]
+            entry += 'cat /tmp/upgrade/migrate.exs | sh -c ' + shlex.quote(V.RPC_SCRIPT.replace('/app/bin/blockscout rpc', '/app/bin/blockscout eval')) + '\n'
+            entry += 'for vacuum_probe_leftover in /tmp/blockscout-v10-vacuum-observe.*; do test ! -e "$vacuum_probe_leftover"; done\n'
+            client_command = V.U.client_command(image, network, name, token)
+            client_command[-1] = entry
             try:
-                observed = subprocess.run(V.U.client_command(image, network, name, token),
-                    input=V.U.archive(environment, {}, (SETUP + command[-1]).encode()), capture_output=True, timeout=30)
+                observed = subprocess.run(client_command,
+                    input=V.U.archive(environment, {}, (SETUP + code).encode()), capture_output=True, timeout=30)
                 if observed.returncode:
                     raise RuntimeError((observed.stdout + observed.stderr).decode(errors='replace')[-5000:])
                 return observed.stdout.decode()
@@ -71,11 +83,19 @@ def check(image, network, token, environment, sql, pg, directory):
         pilot_path = Path(pilot['state'])
         V.P.apply(api, ROOT, pilot_path, manifest)
         pilot_state = V.P.load(api, pilot_path, manifest)
-        anchor = {'blocks': [20], 'block_rows': [{'block': 20, 'rows': 2}], 'expected_rows': 2,
-                  'baseline': V.J.compact(pilot_state['baseline'])}
+        sql("WITH seed AS MATERIALIZED (SELECT to_jsonb(t) AS row FROM internal_transactions t WHERE block_number=20 LIMIT 1), expanded AS MATERIALIZED (SELECT jsonb_populate_record(NULL::internal_transactions,seed.row||jsonb_build_object('block_number',30,'block_index',10000+g,'index',10000+g)) AS r FROM generate_series(0,999) g CROSS JOIN seed) INSERT INTO internal_transactions SELECT (r).* FROM expanded")
+        sql('ANALYZE internal_transactions')
+        large_state = deepcopy(pilot_state)
+        large_state['client_name'] = 'blockscout-v10-schema-' + uuid.uuid4().hex[:16]
+        large_state['migration_payload'].update(blocks=[30], block_rows=[{'block': 30, 'rows': 1000}], expected_rows=1000)
+        large_state['migration_payload'].pop('baseline', None)
+        large_state['migration_payload'].pop('block', None)
+        snapshot = V.P.baseline(V.U.client(api, pilot_path, large_state, 'inspect'))
+        anchor = {'blocks': [30], 'block_rows': [{'block': 30, 'rows': 1000}], 'expected_rows': 1000,
+                  'baseline': V.J.compact(snapshot)}
         parent_path = base / 'normalization-state.json'
         V.R.write_new(parent_path, b'{}')
-        parent = {'phase': 'finished', 'pending': None, 'rows': 2, 'cursor': 20,
+        parent = {'phase': 'finished', 'pending': None, 'rows': 1000, 'cursor': 30,
             'stop_reason': 'next_complete_batch_requires_vacuum_review', 'last': anchor,
             'inputs': {'upgrade_state': str(directory / 'upgrade.json'), 'runtime_before': runtime,
                 'maintenance_rows_before': 0, 'maintenance_origin': {'fixture': True},
@@ -111,7 +131,7 @@ def check(image, network, token, environment, sql, pg, directory):
             assert V.execute(api, ROOT, path, resume=True)['completion_verified']
             assert sql('SHOW vacuum_cost_delay').strip() == '0'
             assert sql('SHOW vacuum_cost_limit').strip() == '200'
-            assert sql('SELECT count(*) FROM internal_transactions').strip() == '5'
+            assert sql('SELECT count(*) FROM internal_transactions').strip() == '1005'
             assert sql("SELECT count(*) FROM migrations_status WHERE migration_name='empty_internal_transactions_data'").strip() == '0'
 
         # A delayed statement runs on this fixture's own socket. Losing lease
@@ -164,6 +184,8 @@ def check(image, network, token, environment, sql, pg, directory):
         'verbose_result_retained': True, 'connection_local_settings_verified': True, 'normalization_anchor_unchanged': True,
         'migration_completion_records_unchanged': True, 'completion_resume_did_not_relaunch': True,
         'appearance_of_absent_migration_record_rejected': True,
+        'observer_code_streamed_through_private_file': True, 'observer_temporary_file_removed': True,
+        'maximum_1000_row_anchor_verified': True,
         'lost_lease_closed_only_owned_socket': True, 'foreign_lock_preserved': True,
         'normalization_gate_reopened': False, 'host_health_and_runtime_stubbed': True, 'live_services_accessed': False}
 

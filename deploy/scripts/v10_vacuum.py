@@ -11,6 +11,7 @@ import re
 import subprocess
 import sys
 import time
+import traceback
 import uuid
 
 import candidate_build as B
@@ -35,6 +36,13 @@ LIMITS = dict(duration_seconds=3600, preparation_seconds=600, poll_seconds=10, h
               cluster_wal_bytes=16 * 1024**3, relation_read_bytes=2 * 1024**4,
               oldest_transaction_seconds=300, journal_bytes=64 * 1024**2, log_bytes=16 * 1024**2,
               aggregate_journal_bytes=256 * 1024**2)
+RPC_SCRIPT = '''set -eu
+umask 077
+vacuum_probe_file=$(mktemp /tmp/blockscout-v10-vacuum-observe.XXXXXXXX)
+trap 'rm -f "$vacuum_probe_file"' EXIT HUP INT TERM
+cat > "$vacuum_probe_file"
+/app/bin/blockscout rpc "Code.eval_file(\\"$vacuum_probe_file\\"); :ok"
+'''
 
 
 def observer_source(root):
@@ -58,7 +66,11 @@ def observe(api, source, payload, target=None, verify_anchor=False):
     encoded = base64.b64encode(R.encoded({**payload, 'target': target, 'verify_anchor': verify_anchor})).decode()
     code = source.decode() + '\nresult = BlockscoutV10Vacuum.observe(Jason.decode!(Base.decode64!("' + encoded + '")))\n'
     code += 'IO.puts("BLOCKSCOUT_DEPLOY_CHECK=" <> Jason.encode!(result))\n'
-    result = C.marked_json(api, api.run(['docker', 'exec', 'backend', '/app/bin/blockscout', 'rpc', code], timeout=15))
+    # A 1,000-row anchor carries two hash lists. On 4 KiB-page Linux hosts each
+    # argument is limited to 128 KiB, independently of ARG_MAX. Keep RPC short;
+    # pass code/data through stdin into a private, automatically removed file.
+    result = C.marked_json(api, api.run(['docker', 'exec', '-i', 'backend', 'sh', '-c', RPC_SCRIPT],
+                                      input_text=code, timeout=15))
     if verify_anchor:
         P.require(J.observed(payload['anchor'], result['anchor']) == 'normalized', 'Normalization anchor no longer verifies')
         result.pop('anchor')  # Bounded raw rows remain private in the source journal.
@@ -416,9 +428,27 @@ def main():
         return 0 if args.prepare or result.get('completion_verified') else 1
     except Exception as error:
         print(json.dumps({'status': 'stopped', 'state': str(args.state) if args.state else None, 'raw_values_suppressed': True,
-                          'reason': str(error) if isinstance(error, U.UpgradeError) else 'Vacuum operation failed; inspect its private journal',
+                          **error_report(error),
                           'recovery': 'Keep normalization paused. Status reads the saved journal; resume only monitors/reconciles the same requested window and never relaunches VACUUM. Interrupted vacuum does not qualify completion.'}))
         return 1
+
+
+def error_report(error):
+    # ConfigError messages already suppress command output and sensitive values.
+    # Other exception messages can contain SQL, row data or environment values.
+    report = {'reason': str(error) if isinstance(error, D.ConfigError) else 'Vacuum operation failed; raw exception values suppressed',
+            'error_type': type(error).__name__,
+            'source_locations': [{'file': Path(frame.filename).name, 'line': frame.lineno, 'function': frame.name}
+                                 for frame in traceback.extract_tb(error.__traceback__)
+                                 if Path(frame.filename).name in ('v10_vacuum.py', 'v10_normalization_session.py',
+                                     'v10_metrics_hold.py', 'v10_empty_blocks_hold.py', 'dev_config.py',
+                                     'v10_normalization_pilot.py', 'v10_upgrade.py', 'candidate_build.py', 'deploy_check.py')]}
+    context = error.__cause__ or error.__context__
+    if context:
+        report['context_type'] = type(context).__name__
+    if isinstance(context, OSError):
+        report['system_errno'] = context.errno
+    return report
 
 
 if __name__ == '__main__':

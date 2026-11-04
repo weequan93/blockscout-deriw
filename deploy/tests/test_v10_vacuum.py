@@ -12,6 +12,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'deploy/scripts'))
 import v10_vacuum as V
+REAL_OBSERVE = V.observe
 
 
 def resources():
@@ -180,6 +181,39 @@ class VacuumTests(unittest.TestCase):
         inputs = V.load(self.prepare())['inputs']
         self.assertIn('empty_internal_transactions_data', inputs['payload']['status_names'])
         self.assertIn('heavy_indexes_create_internal_transactions_pkey', inputs['payload']['status_names'])
+
+    def test_maximum_anchor_does_not_enter_a_command_line_argument(self):
+        source = V.observer_source(ROOT)
+        payload = {'anchor': {'baseline': {'full_hashes': ['a' * 32] * 1000, 'semantic_hashes': ['b' * 32] * 1000}}}
+        captured = {}
+        def run(command, **kwargs):
+            captured.update(command=command, **kwargs)
+            self.assertTrue(all(len(arg.encode()) < 4096 for arg in command))
+            self.assertGreater(len(kwargs['input_text'].encode()), 131072)
+            return 'BLOCKSCOUT_DEPLOY_CHECK={}\n'
+        api = types.SimpleNamespace(require=V.P.require, run=run)
+        with patch.object(V, 'observe', new=REAL_OBSERVE):
+            self.assertEqual(V.observe(api, source, payload), {})
+        self.assertEqual(captured['command'], ['docker', 'exec', '-i', 'backend', 'sh', '-c', V.RPC_SCRIPT])
+        self.assertNotIn('a' * 32, ' '.join(captured['command']))
+
+    def test_error_details_preserve_safe_configuration_reason_and_hide_values(self):
+        safe = V.error_report(V.D.ConfigError('Docker/Compose read unavailable; raw output suppressed'))
+        self.assertEqual(safe['reason'], 'Docker/Compose read unavailable; raw output suppressed')
+        for error in (KeyError('private-row-canary'), RuntimeError('private-row-canary')):
+            report = V.error_report(error)
+            self.assertNotIn('private-row-canary', json.dumps(report))
+            self.assertEqual(report['error_type'], type(error).__name__)
+        try:
+            try:
+                raise OSError(7, 'private-row-canary')
+            except OSError:
+                raise V.D.ConfigError('Docker/Compose read unavailable; raw output suppressed') from None
+        except V.D.ConfigError as error:
+            report = V.error_report(error)
+        self.assertEqual(report['system_errno'], 7)
+        self.assertEqual(report['context_type'], 'OSError')
+        self.assertNotIn('private-row-canary', json.dumps(report))
 
 
 if __name__ == '__main__':
