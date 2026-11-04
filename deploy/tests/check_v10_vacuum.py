@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import select
 import subprocess
 import sys
 import time
@@ -74,6 +75,22 @@ def check(image, network, token, environment, sql, pg, directory):
         'applied_result': {'applied_versions': versions}}
     base = (directory / 'vacuum-check').resolve()
     base.mkdir(mode=0o700)
+    readers = []
+    def reader():
+        process = subprocess.Popen(['docker', 'exec', '-i', pg, 'psql', '-U', 'fixture', '-d', 'fixture', '-Atq', '-v', 'ON_ERROR_STOP=1'],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        readers.append(process)
+        process.stdin.write(b'BEGIN ISOLATION LEVEL REPEATABLE READ;\nSELECT pg_backend_pid(),count(*) FROM internal_transactions WHERE block_number=20;\n')
+        process.stdin.flush()
+        assert select.select([process.stdout], [], [], 10)[0]
+        pid = int(process.stdout.readline().decode().split('|')[0])
+        return process, pid
+    def stop_reader(process):
+        if process.poll() is None:
+            process.stdin.write(b'ROLLBACK;\n\\q\n')
+            process.stdin.flush()
+            process.stdin.close()
+            process.wait(timeout=5)
     with patch.object(V, 'BASE', base / 'vacuum'), patch.object(V.P, 'BASE', base / 'pilot'), \
          patch.object(V.B, 'clean_source', return_value=('a' * 40, '10.2.6')), \
          patch.object(V.P, 'context', return_value=(manifest, upgrade)), \
@@ -101,9 +118,25 @@ def check(image, network, token, environment, sql, pg, directory):
                 'maintenance_rows_before': 0, 'maintenance_origin': {'fixture': True},
                 'payload': {'database_identity': identity, 'heap_identity': heap, 'applied_versions': versions}}}
         hold = {'phase': 'held', 'inputs': {'upgrade_state': parent['inputs']['upgrade_state'], 'runtime_before': runtime}}
+        fixture_root = base / 'source'
+        scripts = fixture_root / 'deploy/scripts/v10'
+        scripts.mkdir(mode=0o700, parents=True)
+        for name in ('normalization_pilot.exs', 'normalization_diagnostics.exs', 'vacuum.exs'):
+            source = (ROOT / 'deploy/scripts/v10' / name).read_bytes()
+            if name == 'vacuum.exs':
+                flush = b'Postgrex.query!(conn, "SELECT pg_stat_force_next_flush()", [], timeout: 2000)'
+                assert source.count(flush) == 1
+                # Keep the completed VACUUM as the socket's last statement long
+                # enough to prove its actual server query_start deterministically.
+                source = source.replace(flush, b'Process.sleep(5000)\n          ' + flush)
+            if name == 'normalization_diagnostics.exs':
+                source = source.replace(b"interval '60 seconds'", b"interval '1 second'")
+            (scripts / name).write_bytes(source)
+        old_reader, old_pid = reader()
+        later = {}
         with patch.object(V.J, 'load', return_value=parent), patch.object(V, 'no_normalizer'), \
              patch.object(V.H, 'load', return_value=hold), patch.object(V.E, 'load', return_value=hold):
-            prepared = V.prepare(api, ROOT, parent_path, Path('/metrics'), Path('/empty'))
+            prepared = V.prepare(api, fixture_root, parent_path, Path('/metrics'), Path('/empty'))
             path = Path(prepared['state'])
             assert not prepared['database_writes']
             assert prepared['resources']['transactions']['oldest_transaction_seconds'] < 300
@@ -119,16 +152,50 @@ def check(image, network, token, environment, sql, pg, directory):
             # Poll quickly only in the disposable fixture; the frozen production
             # limits and actual session-local PostgreSQL settings stay unchanged.
             real_sleep = V.time.sleep
-            with patch.object(V.time, 'sleep', side_effect=lambda seconds: real_sleep(min(seconds, 0.1))):
-                result = V.execute(api, ROOT, path)
+            real_capture = V.capture_start
+            def capture_then_start_reader(path, state, data):
+                real_capture(path, state, data)
+                if state.get('vacuum_query_started_at') and not later:
+                    later['process'], later['pid'] = reader()
+            with patch.object(V.time, 'sleep', side_effect=lambda seconds: real_sleep(min(seconds, 0.1))), \
+                 patch.object(V, 'capture_start', side_effect=capture_then_start_reader):
+                result = V.execute(api, fixture_root, path)
             assert result['vacuum_sql_completed'] and result['completion_verified']
+            assert later
             assert not result['normalization_gate_reopened']
             before = json.loads(V.U.private(path.parent / 'resources-before.json'))
             after = json.loads(V.U.private(path.parent / 'resources-after.json'))
             assert after['table']['vacuum_count'] > before['table']['vacuum_count']
             verbose = V.marker(path, 'BLOCKSCOUT_VACUUM_VERBOSE=')
             assert verbose and any('vacuum' in str(message).lower() for message in verbose)
-            assert V.execute(api, ROOT, path, resume=True)['completion_verified']
+            assert V.execute(api, fixture_root, path, resume=True)['completion_verified']
+            finished = V.load(path)
+            boundary = finished['vacuum_query_started_at']
+            payload = {**finished['inputs']['payload'], 'oldest_transaction_seconds': 1}
+            policy_inputs = {**finished['inputs'], 'limits': {**V.LIMITS, 'oldest_transaction_seconds': 1},
+                             'target': finished['target'], 'vacuum_query_started_at': boundary}
+            observed = V.observe(api, V.U.private(path.parent / 'observer.exs'), payload, finished['target'],
+                                 vacuum_query_started_at=boundary, runtime=runtime)
+            assert observed['transactions']['oldest_pre_vacuum_transaction_seconds'] > 1
+            assert observed['transactions']['post_vacuum_client_transactions_over_limit'] >= 1
+            assert {old_pid, later['pid']} <= {row['pid'] for row in observed['query_diagnostics']}
+            try:
+                V.check_resources(observed, policy_inputs)
+                raise AssertionError('pre-existing old snapshot was accepted')
+            except V.ResourceReviewError as error:
+                assert error.review['query_diagnostics']
+            stop_reader(old_reader)
+            observed = V.observe(api, V.U.private(path.parent / 'observer.exs'), payload, finished['target'],
+                                 vacuum_query_started_at=boundary, runtime=runtime)
+            assert observed['transactions']['oldest_pre_vacuum_transaction_seconds'] == 0
+            assert observed['transactions']['oldest_transaction_seconds'] > 1
+            V.check_resources(observed, policy_inputs)
+            try:
+                V.check_resources(observed, {**policy_inputs, 'transaction_guard_scope': None})
+                raise AssertionError('legacy all-client guard was relaxed')
+            except V.ResourceReviewError:
+                pass
+            stop_reader(later['process'])
             assert sql('SHOW vacuum_cost_delay').strip() == '0'
             assert sql('SHOW vacuum_cost_limit').strip() == '200'
             assert sql('SELECT count(*) FROM internal_transactions').strip() == '1005'
@@ -186,6 +253,9 @@ def check(image, network, token, environment, sql, pg, directory):
         'appearance_of_absent_migration_record_rejected': True,
         'observer_code_streamed_through_private_file': True, 'observer_temporary_file_removed': True,
         'maximum_1000_row_anchor_verified': True,
+        'actual_vacuum_query_start_proved': True, 'pre_existing_snapshot_guard_retained': True,
+        'post_start_transaction_observed_without_stopping_vacuum': True, 'legacy_all_client_guard_retained': True,
+        'query_diagnostics_captured_before_rejection': True,
         'lost_lease_closed_only_owned_socket': True, 'foreign_lock_preserved': True,
         'normalization_gate_reopened': False, 'host_health_and_runtime_stubbed': True, 'live_services_accessed': False}
 

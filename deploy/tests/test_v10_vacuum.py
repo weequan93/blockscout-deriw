@@ -193,9 +193,69 @@ class VacuumTests(unittest.TestCase):
             return 'BLOCKSCOUT_DEPLOY_CHECK={}\n'
         api = types.SimpleNamespace(require=V.P.require, run=run)
         with patch.object(V, 'observe', new=REAL_OBSERVE):
-            self.assertEqual(V.observe(api, source, payload), {})
+            self.assertEqual(V.observe(api, source, payload), {'query_diagnostics': []})
         self.assertEqual(captured['command'], ['docker', 'exec', '-i', 'backend', 'sh', '-c', V.RPC_SCRIPT])
         self.assertNotIn('a' * 32, ' '.join(captured['command']))
+
+    def test_pre_vacuum_clients_still_stop_but_later_clients_are_observed(self):
+        inputs = V.load(self.prepare())['inputs']
+        boundary = '2026-11-04 14:00:00+00'
+        data = resources()
+        data.update(vacuum_query_started_at=boundary, query_diagnostics=[{'pid': 9, 'query_md5': 'a' * 32}])
+        data['transactions'].update(oldest_transaction_seconds=310, oldest_pre_vacuum_transaction_seconds=0,
+                                    post_vacuum_client_transactions_over_limit=1)
+        scoped = {**inputs, 'vacuum_query_started_at': boundary}
+        result = V.check_resources(data, scoped)
+        self.assertEqual(result['transactions']['oldest_transaction_seconds'], 310)
+        self.assertEqual(result['transactions']['post_vacuum_client_transactions_over_limit'], 1)
+        data['transactions']['oldest_pre_vacuum_transaction_seconds'] = 310
+        with self.assertRaises(V.ResourceReviewError) as rejected:
+            V.check_resources(data, scoped)
+        self.assertEqual(V.error_report(rejected.exception)['transaction_review']['query_diagnostics'], data['query_diagnostics'])
+        data['transactions']['oldest_pre_vacuum_transaction_seconds'] = 0
+        with self.assertRaises(V.U.UpgradeError):
+            V.check_resources(data, {**scoped, 'transaction_guard_scope': None})
+        with self.assertRaisesRegex(V.U.UpgradeError, 'boundary changed'):
+            V.check_resources(data, inputs)
+
+    def test_actual_query_start_is_proved_once_and_not_editable(self):
+        path = self.requested()
+        state = V.load(path)
+        boundary = '2026-11-04 14:00:00+00'
+        data = resources()
+        data.update(vacuum_query_started_at=boundary,
+                    target_sessions=[{**state['target'], 'query_start': boundary, 'state': 'active', 'same_role': True}])
+        V.capture_start(path, state, data)
+        self.assertEqual(V.load(path)['vacuum_query_started_at'], boundary)
+        V.capture_start(path, state, data)
+        # A crash after proof fsync but before state publication can recover
+        # the same statement without replacing its proof or changing limits.
+        recovered = V.load(path)
+        recovered.pop('vacuum_query_started_at')
+        recovered.pop('vacuum_start_sha256')
+        V.R.update_state(path, recovered)
+        V.capture_start(path, recovered, data)
+        self.assertEqual(V.load(path)['vacuum_query_started_at'], boundary)
+        with self.assertRaisesRegex(V.U.UpgradeError, 'query start changed'):
+            V.capture_start(path, state, {**data, 'vacuum_query_started_at': '2026-11-04 14:01:00+00'})
+        changed = json.loads(V.U.private(path))
+        changed['vacuum_query_started_at'] = '2026-11-04 14:01:00+00'
+        V.R.update_state(path, changed)
+        with self.assertRaisesRegex(V.U.UpgradeError, 'query-start proof changed'):
+            V.load(path)
+
+    def test_rejecting_observation_and_query_fingerprint_are_retained(self):
+        path = self.requested()
+        data = resources()
+        data['transactions']['oldest_transaction_seconds'] = 310
+        data['query_diagnostics'] = [{'pid': 9, 'query_md5': 'b' * 32}]
+        with patch.object(V, 'owned_client', return_value=True), patch.object(V, 'observe', return_value=data):
+            with self.assertRaises(V.ResourceReviewError):
+                V.execute(self.api, ROOT, path, resume=True)
+        saved = json.loads(V.U.private(path.parent / 'resources-latest.json'))
+        self.assertEqual(saved['query_diagnostics'], data['query_diagnostics'])
+        self.assertEqual(saved['transactions']['oldest_transaction_seconds'], 310)
+        self.assertEqual(V.load(path)['phase'], 'finished')
 
     def test_error_details_preserve_safe_configuration_reason_and_hide_values(self):
         safe = V.error_report(V.D.ConfigError('Docker/Compose read unavailable; raw output suppressed'))

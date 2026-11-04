@@ -29,6 +29,7 @@ import v10_upgrade as U
 ROOT = Path(__file__).resolve().parents[2]
 BASE = Path('/data/blockscout-dev-private/v10-vacuum')
 FORMAT = 'blockscout-dev-v10-vacuum-window-v1'
+TRANSACTION_GUARD_SCOPE = 'pre_vacuum_clients'
 SQL = 'VACUUM (VERBOSE, INDEX_CLEANUP ON, TRUNCATE OFF, PARALLEL 0) public.internal_transactions'
 SQL_MD5 = hashlib.md5(SQL.encode()).hexdigest()
 LIMITS = dict(duration_seconds=3600, preparation_seconds=600, poll_seconds=10, health_seconds=30,
@@ -45,12 +46,21 @@ cat > "$vacuum_probe_file"
 '''
 
 
+class ResourceReviewError(U.UpgradeError):
+    def __init__(self, message, data):
+        super().__init__(message)
+        self.review = {'transactions': data['transactions'], 'query_diagnostics': data.get('query_diagnostics', [])}
+
+
 def observer_source(root):
     source = (root / 'deploy/scripts/v10/normalization_pilot.exs').read_text()
     marker = 'true = Explorer.Migrator.StartupControl.disabled?()\n\nfor app'
     P.require(source.count(marker) == 1, 'Normalization observation marker changed')
     source = source.split(marker)[0].replace('BlockscoutNormalizationCheck', 'BlockscoutV10VacuumAnchor')
     source = source.replace('BlockscoutNormalizationSession', 'BlockscoutV10VacuumResources')
+    activity_marker = '  # All waits for the host occur outside transactions.'
+    P.require(source.count(activity_marker) == 1, 'Vacuum activity SQL marker changed')
+    source = source.replace(activity_marker, '  def activity_sql, do: @transaction_activity_sql\n\n' + activity_marker)
     # This observer runs in the existing backend. It invokes only the read-only
     # inspect path, with automatic migrators still held; it starts no application.
     P.require(source.count('nil = Process.whereis(Explorer.Supervisor)') == 1, 'Anchor application guard changed')
@@ -58,12 +68,15 @@ def observer_source(root):
     P.require(source.count("'phase',phase,'heap_blocks_total'") == 1, 'Vacuum progress projection changed')
     source = source.replace("'phase',phase,'heap_blocks_total'", "'pid',pid,'phase',phase,'heap_blocks_total'")
     vacuum = (root / 'deploy/scripts/v10/vacuum.exs').read_text()
+    diagnostics = (root / 'deploy/scripts/v10/normalization_diagnostics.exs').read_text()
+    diagnostics = diagnostics.replace('BlockscoutNormalizationDiagnostics', 'BlockscoutV10VacuumDiagnostics')
     P.require(vacuum.count('# VACUUM_CLIENT_ENTRYPOINT') == 1, 'Vacuum entrypoint marker changed')
-    return (source + vacuum.split('# VACUUM_CLIENT_ENTRYPOINT')[0]).encode()
+    return (source + diagnostics + vacuum.split('# VACUUM_CLIENT_ENTRYPOINT')[0]).encode()
 
 
-def observe(api, source, payload, target=None, verify_anchor=False):
-    encoded = base64.b64encode(R.encoded({**payload, 'target': target, 'verify_anchor': verify_anchor})).decode()
+def observe(api, source, payload, target=None, verify_anchor=False, vacuum_query_started_at=None, runtime=None):
+    encoded = base64.b64encode(R.encoded({**payload, 'target': target, 'verify_anchor': verify_anchor,
+                                        'vacuum_query_started_at': vacuum_query_started_at})).decode()
     code = source.decode() + '\nresult = BlockscoutV10Vacuum.observe(Jason.decode!(Base.decode64!("' + encoded + '")))\n'
     code += 'IO.puts("BLOCKSCOUT_DEPLOY_CHECK=" <> Jason.encode!(result))\n'
     # A 1,000-row anchor carries two hash lists. On 4 KiB-page Linux hosts each
@@ -71,6 +84,9 @@ def observe(api, source, payload, target=None, verify_anchor=False):
     # pass code/data through stdin into a private, automatically removed file.
     result = C.marked_json(api, api.run(['docker', 'exec', '-i', 'backend', 'sh', '-c', RPC_SCRIPT],
                                       input_text=code, timeout=15))
+    queries = J.query_diagnostics(result.get('query_diagnostics', []), runtime or {})
+    result['query_diagnostics'] = [row for row in queries if not target or
+        row.get('pid') != target['pid'] or row.get('backend_started_at') != target['backend_start']]
     if verify_anchor:
         P.require(J.observed(payload['anchor'], result['anchor']) == 'normalized', 'Normalization anchor no longer verifies')
         result.pop('anchor')  # Bounded raw rows remain private in the source journal.
@@ -94,6 +110,16 @@ def load(path):
               and re.fullmatch(r'blockscout-v10-schema-[a-f0-9]{16}', inputs['client_name'])
               and inputs['payload']['application_name'] == 'blockscout-v10-vacuum-' + inputs['payload']['token'],
               'Vacuum client identity changed')
+    scope = inputs.get('transaction_guard_scope')
+    P.require(scope is None or scope == TRANSACTION_GUARD_SCOPE
+              and inputs['payload'].get('transaction_guard_scope') == scope
+              and inputs['payload'].get('oldest_transaction_seconds') == inputs['limits']['oldest_transaction_seconds'],
+              'Frozen vacuum transaction guard changed')
+    if state.get('vacuum_query_started_at'):
+        proof = U.private(path.parent / 'vacuum-start.json')
+        P.require(R.digest(proof) == state['vacuum_start_sha256']
+                  and json.loads(proof) == {**state['target'], 'query_start': state['vacuum_query_started_at']},
+                  'Vacuum query-start proof changed')
     return state
 
 
@@ -132,7 +158,17 @@ def check_resources(data, inputs, baseline=None, free=None):
     free = P.free_bytes() if free is None else free
     P.require(free >= limits['free_bytes'] and inputs['space_before'] - free <= limits['space_bytes'],
               'Vacuum filesystem budget reached')
-    J.resource_guard(data, limits={**J.OBSERVATION_LIMITS, 'oldest_transaction_seconds': limits['oldest_transaction_seconds']})
+    reviewed = data
+    if inputs.get('transaction_guard_scope') == TRANSACTION_GUARD_SCOPE:
+        boundary = inputs.get('vacuum_query_started_at')
+        P.require(data.get('vacuum_query_started_at') == boundary, 'Vacuum transaction review boundary changed')
+        if boundary:
+            reviewed = {**data, 'transactions': {**data['transactions'],
+                'oldest_transaction_seconds': data['transactions']['oldest_pre_vacuum_transaction_seconds']}}
+    try:
+        J.resource_guard(reviewed, limits={**J.OBSERVATION_LIMITS, 'oldest_transaction_seconds': limits['oldest_transaction_seconds']})
+    except U.UpgradeError as error:
+        raise ResourceReviewError(str(error), data) from None
     P.require(data['transactions']['prepared_transactions'] == data['transactions']['slots_with_xmin'] == 0,
               'Prepared transaction or replication snapshot needs review before vacuum')
     P.require(all(v['pid'] == (inputs.get('target') or {}).get('pid') for v in data['vacuum']),
@@ -173,6 +209,8 @@ def public(path, state):
             'vacuum_sql_completed': state.get('vacuum_sql_completed', False),
             'completion_verified': state.get('completion_verified', False),
             'observations': state.get('observations', 0), 'latest': state.get('latest'),
+            'transaction_guard_scope': state['inputs'].get('transaction_guard_scope', 'all_other_clients'),
+            'vacuum_query_started_at': state.get('vacuum_query_started_at'),
             'normalization_cursor': state['inputs']['normalization_cursor'],
             'maintenance_selected_rows': state['inputs']['maintenance_selected_rows'],
             'normalization_gate_reopened': False, 'table_or_global_settings_changed': False,
@@ -204,6 +242,7 @@ def prepare(api, root, after_path, metrics_path, empty_path):
     script = (root / 'deploy/scripts/v10/vacuum.exs').read_bytes()
     observer = observer_source(root)
     inputs = {'limits': dict(LIMITS), 'sql': SQL, 'tool_source_commit': source[0], 'chain_id': manifest['chain_id'],
+              'transaction_guard_scope': TRANSACTION_GUARD_SCOPE,
               'candidate_image': upgrade['candidate_image'], 'network': upgrade['network'],
               'backend_environment': upgrade['backend_environment'], 'runtime_before': before,
               'upgrade_state': ancestor['upgrade_state'], 'normalization_state': str(after_path),
@@ -215,11 +254,13 @@ def prepare(api, root, after_path, metrics_path, empty_path):
               'files': {'migrate.exs': R.digest(script), 'observer.exs': R.digest(observer)},
               'payload': {**ancestor['payload'], 'anchor': J.target(previous['last']),
                           'statuses': previous['last']['baseline']['statuses'],
+                          'transaction_guard_scope': TRANSACTION_GUARD_SCOPE,
+                          'oldest_transaction_seconds': LIMITS['oldest_transaction_seconds'],
                           'application_name': 'blockscout-v10-vacuum-' + token, 'token': token}}
     # Include absent completion records: appearance of a held worker's record
     # must be detected just as a change to an existing record would be.
     inputs['payload']['status_names'] = list(K.HISTORY_WORKERS)
-    data = check_resources(observe(api, observer, inputs['payload'], verify_anchor=True), inputs)
+    data = check_resources(observe(api, observer, inputs['payload'], verify_anchor=True, runtime=before), inputs)
     B.validate_state_directory(api, BASE, root)
     BASE.mkdir(mode=0o700, parents=True, exist_ok=True)
     P.require(J.journal_size(BASE) <= LIMITS['aggregate_journal_bytes'] - LIMITS['journal_bytes'],
@@ -263,6 +304,36 @@ def validate_activity(data, target):
     for session in data['target_sessions']:
         P.require(all(session[k] == target[k] for k in ('pid', 'backend_start', 'application_name'))
                   and session['same_role'], 'Vacuum backend identity changed')
+
+
+def capture_start(path, state, data):
+    validate_activity(data, state['target'])
+    boundary = data.get('vacuum_query_started_at')
+    if not boundary:
+        P.require(not state.get('vacuum_query_started_at'), 'Previously proved vacuum boundary disappeared')
+        return
+    if state.get('vacuum_query_started_at'):
+        P.require(boundary == state['vacuum_query_started_at'], 'Vacuum query start changed')
+        return
+    P.require(any(row['state'] in ('active', 'idle') and row['query_md5'] == SQL_MD5 and row['query_start'] == boundary
+                  for row in data['target_sessions']), 'Vacuum start requires its observed, exact statement')
+    proof = R.encoded({**state['target'], 'query_start': boundary})
+    proof_path = path.parent / 'vacuum-start.json'
+    if proof_path.exists():
+        P.require(U.private(proof_path) == proof, 'Earlier vacuum query-start proof belongs to another statement')
+    else:
+        R.write_new(proof_path, proof)
+    state.update(vacuum_query_started_at=boundary, vacuum_start_sha256=R.digest(proof))
+    R.update_state(path, state)
+
+
+def record_observation(path, state, data):
+    data = {**data, 'data_free_bytes': P.free_bytes()}
+    record(path, data)
+    state['latest'] = {key: data[key] for key in ('observed_at', 'table', 'wal', 'data_free_bytes', 'transactions')}
+    state['latest'].update(vacuum=data.get('vacuum', []), query_diagnostics=data.get('query_diagnostics', []))
+    R.update_state(path, state)
+    return data
 
 
 def validate_result(result, state):
@@ -321,7 +392,7 @@ def execute(api, root, path, resume=False):
         if state['phase'] == 'prepared':
             age = (datetime.now(timezone.utc) - datetime.fromisoformat(inputs['prepared_at_utc'])).total_seconds()
             P.require(0 <= age <= inputs['limits']['preparation_seconds'], 'Vacuum preparation expired; retain it and prepare a new window')
-            data = check_resources(observe(api, observer, inputs['payload'], verify_anchor=True), inputs, baseline)
+            data = check_resources(observe(api, observer, inputs['payload'], verify_anchor=True, runtime=inputs['runtime_before']), inputs, baseline)
             record(path, data)
             state.update(phase='launch_requested', launch_requested_at_utc=datetime.now(timezone.utc).isoformat())
             R.update_state(path, state)  # A lost launch response never authorizes relaunch.
@@ -342,7 +413,7 @@ def execute(api, root, path, resume=False):
             R.update_state(path, state)
             P.context(api, root, Path(inputs['upgrade_state']))
             api.ensure_stable(inputs['runtime_before'], api.inspect_project(manifest), 'Runtime changed before vacuum dispatch')
-            data = check_resources(observe(api, observer, inputs['payload'], target), {**inputs, 'target': target}, baseline)
+            data = check_resources(observe(api, observer, inputs['payload'], target, runtime=inputs['runtime_before']), {**inputs, 'target': target}, baseline)
             validate_activity(data, target)
             record(path, data)
             renew(api, path, state)
@@ -363,13 +434,19 @@ def execute(api, root, path, resume=False):
             P.require(0 <= elapsed <= inputs['limits']['duration_seconds'], 'Vacuum duration budget reached')
             P.context(api, root, Path(inputs['upgrade_state']))
             api.ensure_stable(inputs['runtime_before'], api.inspect_project(manifest), 'Runtime changed during vacuum')
-            data = check_resources(observe(api, observer, inputs['payload'], state['target']), {**inputs, 'target': state['target']}, baseline)
+            data = observe(api, observer, inputs['payload'], state['target'],
+                           vacuum_query_started_at=state.get('vacuum_query_started_at'), runtime=inputs['runtime_before'])
             validate_activity(data, state['target'])
-            record(path, data)
+            capture_start(path, state, data)
+            # Preserve the rejecting observation too, before a guard can raise.
+            data = record_observation(path, state, data)
+            data = check_resources(data, {**inputs, 'target': state['target'],
+                                          'vacuum_query_started_at': state.get('vacuum_query_started_at')}, baseline)
             state['observations'] += 1
-            state['latest'] = {'observed_at': data['observed_at'], 'vacuum': data['vacuum'], 'table': data['table'], 'wal': data['wal'], 'data_free_bytes': data['data_free_bytes']}
             R.update_state(path, state)
-            print(json.dumps({'phase': 'observing_vacuum', 'state': str(path), 'elapsed_seconds': int(elapsed), 'progress': data['vacuum']}), flush=True)
+            print(json.dumps({'phase': 'observing_vacuum', 'state': str(path), 'elapsed_seconds': int(elapsed),
+                              'progress': data['vacuum'], 'transaction_review': data['transactions'],
+                              'query_diagnostics': data.get('query_diagnostics', [])}), flush=True)
             # Renew only after health/runtime/resource observations succeed.
             if not marker(path, 'BLOCKSCOUT_VACUUM_RESULT='):
                 renew(api, path, state)
@@ -377,13 +454,15 @@ def execute(api, root, path, resume=False):
         # Completion is a SQL receipt plus fresh identity/anchor/resource checks.
         cleanup(api, path, inputs)
         P.context(api, root, Path(inputs['upgrade_state']))
-        after = check_resources(observe(api, observer, inputs['payload'], state.get('target'), verify_anchor=True), {**inputs, 'target': state.get('target')}, baseline)
+        after = observe(api, observer, inputs['payload'], state.get('target'), verify_anchor=True,
+                        vacuum_query_started_at=state.get('vacuum_query_started_at'), runtime=inputs['runtime_before'])
+        after = record_observation(path, state, after)
+        after = check_resources(after, {**inputs, 'target': state.get('target'),
+                                       'vacuum_query_started_at': state.get('vacuum_query_started_at')}, baseline)
         api.ensure_stable(inputs['runtime_before'], api.inspect_project(manifest), 'Runtime changed after vacuum')
         P.require(not after['target_sessions'], 'Maintenance socket remains active after cleanup')
-        record(path, after)
         R.update_state(path.parent / 'resources-after.json', after)
         state['completion_verified'] = state['vacuum_sql_completed']
-        state['latest'] = {'observed_at': after['observed_at'], 'table': after['table'], 'wal': after['wal'], 'data_free_bytes': after['data_free_bytes']}
         return finish(api, path, state, 'vacuum_completed_needs_review' if state['completion_verified'] else result['reason'], result)
     except BaseException as error:
         reason = str(error) if isinstance(error, U.UpgradeError) else 'Vacuum monitoring interrupted; inspect its private journal'
@@ -448,6 +527,8 @@ def error_report(error):
         report['context_type'] = type(context).__name__
     if isinstance(context, OSError):
         report['system_errno'] = context.errno
+    if isinstance(error, ResourceReviewError):
+        report['transaction_review'] = error.review
     return report
 
 

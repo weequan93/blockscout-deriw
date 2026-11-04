@@ -43,18 +43,6 @@ defmodule BlockscoutV10Vacuum do
           true = statuses == payload["statuses"]
           target = payload["target"] || %{}
 
-          args = [
-            target["pid"] || 0,
-            target["backend_start"] || "1970-01-01",
-            payload["application_name"]
-          ]
-
-          [[transactions]] =
-            q.(
-              "SELECT jsonb_build_object('oldest_transaction_seconds',COALESCE(max(EXTRACT(epoch FROM clock_timestamp()-xact_start)),0)::bigint,'oldest_snapshot_xid_age',COALESCE(max(age(backend_xmin)),0),'idle_in_transaction_sessions',count(*) FILTER(WHERE state LIKE 'idle in transaction%'),'prepared_transactions',(SELECT count(*) FROM pg_prepared_xacts WHERE database=current_database()),'slots_with_xmin',(SELECT count(*) FROM pg_replication_slots WHERE xmin IS NOT NULL)) FROM pg_stat_activity WHERE datname=current_database() AND backend_type='client backend' AND pid<>pg_backend_pid() AND NOT(pid=$1 AND backend_start=$2::text::timestamptz AND application_name=$3)",
-              args
-            )
-
           sessions =
             q.(
               "SELECT jsonb_build_object('pid',pid,'backend_start',backend_start::text,'query_start',query_start::text,'application_name',application_name,'query_md5',md5(query),'state',state,'same_role',usename=current_user,'wait_type',wait_event_type,'wait_event',wait_event) FROM pg_stat_activity WHERE pid=$1 AND datname=current_database() AND backend_type='client backend'",
@@ -62,11 +50,46 @@ defmodule BlockscoutV10Vacuum do
             )
             |> List.flatten()
 
+          owned =
+            Enum.find(sessions, fn row ->
+              row["backend_start"] == target["backend_start"] and
+                row["application_name"] == payload["application_name"] and row["same_role"]
+            end)
+
+          current_start =
+            if owned && owned["state"] in ["active", "idle"] &&
+                 owned["query_md5"] == fingerprint(), do: owned["query_start"]
+
+          saved_start = payload["vacuum_query_started_at"]
+          if saved_start && current_start, do: true = saved_start == current_start
+
+          boundary =
+            if payload["transaction_guard_scope"] == "pre_vacuum_clients",
+              do: saved_start || current_start
+
+          age_limit = payload["oldest_transaction_seconds"] || 300
+          true = is_integer(age_limit) and age_limit in 1..300
+
+          args = [
+            target["pid"] || 0,
+            target["backend_start"] || "1970-01-01",
+            payload["application_name"],
+            boundary,
+            age_limit
+          ]
+
+          [[transactions]] =
+            q.(
+              "SELECT jsonb_build_object('oldest_transaction_seconds',COALESCE(max(EXTRACT(epoch FROM clock_timestamp()-xact_start)),0)::bigint,'oldest_pre_vacuum_transaction_seconds',COALESCE(max(EXTRACT(epoch FROM clock_timestamp()-xact_start)) FILTER(WHERE $4::text IS NULL OR xact_start<=$4::text::timestamptz),0)::bigint,'post_vacuum_client_transactions_over_limit',count(*) FILTER(WHERE xact_start>$4::text::timestamptz AND xact_start<clock_timestamp()-$5::integer*interval '1 second'),'vacuum_boundary_known',$4::text IS NOT NULL,'oldest_snapshot_xid_age',COALESCE(max(age(backend_xmin)),0),'idle_in_transaction_sessions',count(*) FILTER(WHERE state LIKE 'idle in transaction%'),'prepared_transactions',(SELECT count(*) FROM pg_prepared_xacts WHERE database=current_database()),'slots_with_xmin',(SELECT count(*) FROM pg_replication_slots WHERE xmin IS NOT NULL)) FROM pg_stat_activity WHERE datname=current_database() AND backend_type='client backend' AND pid<>pg_backend_pid() AND NOT(pid=$1 AND backend_start=$2::text::timestamptz AND application_name=$3)",
+              args
+            )
+
           [[role]] = q.("SELECT oid::bigint FROM pg_roles WHERE rolname=current_user", [])
 
           %{
             transactions: transactions,
             target_sessions: sessions,
+            vacuum_query_started_at: boundary,
             heap_identity: heap,
             observer_role_oid: role
           }
@@ -86,6 +109,8 @@ defmodule BlockscoutV10Vacuum do
     true =
       held.(Indexer.Fetcher.EmptyBlocksSanitizer.Supervisor, Indexer.Fetcher.EmptyBlocksSanitizer)
 
+    diagnostics = BlockscoutV10VacuumDiagnostics.run(BlockscoutV10VacuumResources.activity_sql())
+
     anchor =
       if payload["verify_anchor"],
         do:
@@ -103,6 +128,7 @@ defmodule BlockscoutV10Vacuum do
     Map.merge(resources, details)
     |> Map.put(:anchor, anchor)
     |> Map.put(:runtime_holds_verified, true)
+    |> Map.put(:query_diagnostics, diagnostics.query_diagnostics)
   end
 
   defp emit(marker, value), do: IO.puts(marker <> Jason.encode!(value))
