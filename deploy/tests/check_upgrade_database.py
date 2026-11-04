@@ -96,6 +96,8 @@ def evaluate(image, stage, token, network, password, versions, directory, pg_nam
     script = script.replace("FIXTURE_SEED", elixir_string(seed)).replace("FIXTURE_VERIFY", elixir_string(verify))
     script = script.replace("FIXTURE_BACKGROUND", elixir_string(background))
     script = script.replace("FIXTURE_HISTORY_PROBE", elixir_string(history.history_body()))
+    schema = module("v10_schema")
+    script = script.replace("FIXTURE_SCHEMA_PROBE", elixir_string(schema.body()))
     preflight = module("in_place_preflight")
     script = script.replace("FIXTURE_IN_PLACE_PROBE", elixir_string(preflight.body()))
     script = script.replace("FIXTURE_DEFER_INDEXES", "true" if defer_indexes else "false")

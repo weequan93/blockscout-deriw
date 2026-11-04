@@ -2,6 +2,7 @@
 """Check real v10 NFT peer discovery/reconnection and queue RPC in isolated VMs."""
 import json
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import time
@@ -15,7 +16,7 @@ import v10_nft as N
 IMAGE = 'deriw-blockscout:v10-nft-local-validation'
 
 
-def command(name, token, network, environment, detached=False):
+def command(name, token, network, environment, script, detached=False):
     result = ['docker', 'run', '--rm', '--pull', 'never', '-i', '--name', name, '--label', F.LABEL + '=' + token,
               '--network', network, '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
               '--cpus', '2', '--memory', '512m', '--tmpfs', '/tmp:rw,mode=1777',
@@ -27,7 +28,7 @@ def command(name, token, network, environment, detached=False):
     for key, value in environment.items():
         result += ['-e', key + '=' + value]
     return result + ['--entrypoint', 'sh', IMAGE, '-c',
-                     'epmd -daemon; cat > /tmp/peer.exs && exec /app/bin/blockscout eval \'Code.eval_file("/tmp/peer.exs")\'']
+                     'epmd -daemon; exec /app/bin/blockscout eval ' + shlex.quote(script)]
 
 
 def main():
@@ -75,18 +76,18 @@ IO.puts("V10_NFT_PEERS_OK");
     try:
         F.run(['docker', 'network', 'create', '--internal', '--label', F.LABEL + '=' + token, network])
         created = True
-        started = subprocess.run(command(producer, token, network, environment, detached=True), input=producer_script,
+        started = subprocess.run(command(producer, token, network, environment, producer_script, detached=True),
                                  capture_output=True, text=True, timeout=30)
         if started.returncode:
             raise RuntimeError('Producer fixture failed to start: ' + started.stderr[-1500:])
         deadline = time.monotonic() + 30
         while 'V10_NFT_PRODUCER_READY' not in F.run(['docker', 'logs', producer]):
             if time.monotonic() > deadline:
-                raise RuntimeError('Producer fixture did not become ready')
+                raise RuntimeError('Producer fixture did not become ready: ' + F.run(['docker', 'logs', producer])[-2500:])
             time.sleep(1)
         worker_environment = {**environment, 'NFT_MEDIA_HANDLER_IS_WORKER': 'true',
                               'NFT_MEDIA_HANDLER_NODES_MAP': json.dumps({N.PRODUCER: '/folder_1'})}
-        checked = subprocess.run(command(worker, token, network, worker_environment), input=worker_script,
+        checked = subprocess.run(command(worker, token, network, worker_environment, worker_script),
                                  capture_output=True, text=True, timeout=90)
         if checked.returncode or 'V10_NFT_PEERS_OK' not in checked.stdout.splitlines():
             raise RuntimeError('NFT peer fixture failed: ' + checked.stdout[-2500:] + checked.stderr[-2500:])

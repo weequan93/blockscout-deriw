@@ -165,7 +165,9 @@ class ReviewTests(unittest.TestCase):
                 patch.object(T.C, 'mount_access', return_value={'numeric_user_and_groups_match': True}), \
                 patch.object(T.C, 'live_health', return_value={'backend_readiness_ok': True, 'nft_connection_and_queue_ok': True}), \
                 patch.object(T.N, 'plan', return_value=self.saved['nft_role_plan']), \
-                patch.object(T.V, 'storage_ready', return_value={'migration_space_verified': False}):
+                patch.object(T.V, 'storage_ready', return_value={'migration_space_verified': False}), \
+                patch.object(T.S, 'metadata', return_value={}), \
+                patch.object(T.S, 'budget', return_value={'status': 'eligible_for_initial_schema_phase'}):
             return T.review(self.api, ROOT, self.receipt_path, self.private)
 
     def test_review_records_manual_recovery_without_claiming_a_verified_snapshot(self):
@@ -177,7 +179,8 @@ class ReviewTests(unittest.TestCase):
         self.assertFalse(result['snapshot_verified'])
         self.assertEqual(result['recovery_policy']['route'], 'operator_manual')
         self.assertTrue(result['recovery_policy']['operator_authorized_without_verification'])
-        self.assertEqual(result['blockers'], ['migration_working_space_unverified'])
+        self.assertEqual(result['blockers'], [])
+        self.assertEqual(result['initial_schema_budget']['status'], 'eligible_for_initial_schema_phase')
 
     def test_nonempty_dropped_table_and_unexpected_versions_are_flagged(self):
         self.tables[0]['has_rows'] = True

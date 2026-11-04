@@ -6,6 +6,7 @@ verify = FIXTURE_VERIFY
 background = FIXTURE_BACKGROUND
 history_probe = FIXTURE_HISTORY_PROBE
 in_place_probe = FIXTURE_IN_PLACE_PROBE
+schema_probe = FIXTURE_SCHEMA_PROBE
 defer_indexes? = FIXTURE_DEFER_INDEXES
 
 ^token = System.get_env("UPGRADE_SCHEMA_FIXTURE")
@@ -50,6 +51,12 @@ if stage != "baseline" do
   ^expected = Map.new(pending.(), fn {directory, versions} -> {directory, length(versions)} end)
 end
 
+heap_before =
+  if stage != "baseline" do
+    [[oid]] = q.("SELECT pg_relation_filenode('public.internal_transactions'::regclass)::bigint").rows
+    oid
+  end
+
 started = System.monotonic_time(:millisecond)
 
 migrated =
@@ -79,6 +86,15 @@ migrated =
   end)
 
 elapsed = System.monotonic_time(:millisecond) - started
+
+{schema_metadata, _} = Code.eval_string(schema_probe)
+%{"trace_address" => "integer[]", "value" => "numeric(100,0)"} =
+  Map.new(schema_metadata.types, fn [name, type] -> {name, type} end)
+
+if stage in ["upgrade", "repeat"] do
+  # A rewrite of the synthetic nonempty heap would change its relfilenode.
+  ^heap_before = schema_metadata.internal_transactions_heap_identity
+end
 
 if stage == "baseline" do
   # Main and account share one identical historical migration version/table.
@@ -131,6 +147,8 @@ IO.puts(
       migration_elapsed_ms_on_fixture: elapsed,
       pending_counts: Map.new(pending.(), fn {directory, versions} -> {directory, length(versions)} end),
       synthetic_checks_passed: stage != "baseline",
+      schema_catalog_probe_checked: true,
+      internal_transactions_heap_not_rewritten: stage in ["upgrade", "repeat"],
       deferred_custom_indexes: defer_indexes?,
       postgres_version_num: version,
       full_database_rehearsal: false,

@@ -15,6 +15,7 @@ import release as R
 import upgrade_plan as U
 import v10_candidate as V
 import v10_nft as N
+import v10_schema as S
 
 ROOT = Path(__file__).resolve().parents[2]
 STAGE = 'receipt'
@@ -148,12 +149,16 @@ def review(api, root, receipt_path, private):
     mounts = C.mount_access(api, model['services']['backend'], before['backend'], inventory['identity'])
     health = C.live_health(api, before)
     capacity = V.storage_ready(Path(saved['storage_state']))
+    STAGE = 'initial_schema_budget'
+    schema_budget = S.budget(S.metadata(api), capacity, tables)
     api.ensure_stable(before, api.inspect_project(manifest), 'Live containers changed during v10 candidate review')
     api.require(api.load_private(private, requirements) == values, 'Private inputs changed during candidate review')
     api.require(C.private_receipt(api, receipt_path, root) == saved
                 and B.image_info(api, saved['candidate_tag'])['Id'] == image['Id'], 'Candidate receipt/tag changed during review')
     api.require(B.clean_source(api, root) == (review_commit, '10.2.6'), 'Review source changed during metadata reads')
-    blockers = ['migration_working_space_unverified']
+    blockers = []
+    if schema_budget['status'] != 'eligible_for_initial_schema_phase':
+        blockers.append('initial_schema_working_space_requires_review')
     if any(row['unexpected_pending_versions'] for row in migrations):
         blockers.append('pending_versions_outside_reviewed_sequence')
     if not all(health.values()) or not mounts['numeric_user_and_groups_match']:
@@ -169,7 +174,7 @@ def review(api, root, receipt_path, private):
             'blockers': blockers, 'migration_sequence': migrations,
             'upstream_pending_count': sum(len(row['upstream_pending_versions']) for row in migrations),
             'deferred_custom_count': sum(len(row['deferred_custom_versions']) for row in migrations),
-            'selected_table_presence': tables, 'history': history, 'mount_access': mounts, **health, 'storage': capacity,
+            'initial_schema_budget': schema_budget, 'selected_table_presence': tables, 'history': history, 'mount_access': mounts, **health, 'storage': capacity,
             'scope': 'Receipt/image/source checks, isolated image file inventory, existing-Repo bounded read-only metadata/EXISTS reads and current v9 health. No candidate app startup, schema/data migration, index build, count/duplicate scan or service change.'}
 
 
