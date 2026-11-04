@@ -236,6 +236,103 @@ def check(image, network, token, environment, sql, pg, directory):
             assert reconciled['charged_chunk_wal_bytes'] == 4 * 1024**3
             assert not reconciled['wal_measurements_complete'] and not reconciled['pending_transaction']
 
+        # Reproduce expiry during prechecks. Age the host's health observation
+        # to 29 seconds immediately before its renewal decision, and add a
+        # deterministic 1.5-second precheck in this fixture's frozen SQL source.
+        sql("WITH seed AS MATERIALIZED (SELECT to_jsonb(t) AS row FROM internal_transactions t WHERE block_number=10 LIMIT 1), expanded AS MATERIALIZED (SELECT jsonb_populate_record(NULL::internal_transactions,seed.row||jsonb_build_object('block_number',180+g/100,'block_index',700000+g,'index',700000+g)) AS r FROM generate_series(0,999) g CROSS JOIN seed) INSERT INTO internal_transactions SELECT (r).* FROM expanded")
+        sql('ANALYZE internal_transactions')
+        fixture_root = paths / 'health-source'
+        fixture_script = fixture_root / 'deploy/scripts/v10/normalization_pilot.exs'
+        fixture_script.parent.mkdir(mode=0o700, parents=True)
+        source = (ROOT / 'deploy/scripts/v10/normalization_pilot.exs').read_bytes()
+        fixture_script.write_bytes(source.replace(b'before = snapshot.()',
+            b'before = snapshot.()\n          q.("SELECT pg_sleep(1.5)", [])'))
+        with patch.dict(J.LIMITS, max_batches=1, max_rows=1000):
+            healthy = J.prepare(api, fixture_root, initial_path)
+            health_path = Path(healthy['state'])
+            clock = {'reference': None, 'offset': 0, 'aged': False}
+            def monotonic():
+                now = time.monotonic()
+                if clock['reference'] is None:
+                    clock['reference'] = now
+                return now + clock['offset']
+            simulated_time = types.SimpleNamespace(time=time.time, sleep=time.sleep, monotonic=monotonic)
+            def age_before_renewal(client, command, payload=None):
+                result = original_request(client, command, payload)
+                if command == 'inspect' and payload.get('baseline') and 'wal_limit_bytes' in payload and not clock['aged']:
+                    clock['offset'] = 29 - (time.monotonic() - clock['reference'])
+                    clock['aged'] = True
+                return result
+            with patch.object(J, 'time', simulated_time), patch.object(J.Client, 'request', age_before_renewal):
+                renewed = J.execute(api, fixture_root, health_path, manifest)
+            assert clock['aged'] and renewed['updated_rows_observed'] == 1000
+            assert renewed['pending_transaction'] is False
+            # The SQL cutoff still rejects an expired deadline and rolls back.
+            health_inputs = J.load(health_path, manifest)['inputs']
+            with J.Client(api, health_path, health_inputs) as client:
+                spec = {'blocks': [10], 'block_rows': [{'block': 10, 'rows': 1}], 'expected_rows': 1,
+                        'wal_limit_bytes': 128 * 1024**2}
+                spec['baseline'] = J.compact(J.P.baseline(client.request('inspect', spec)))
+                spec['health_valid_until_unix_ms'] = int(time.time() * 1000)
+                try:
+                    client.request('migrate', spec)
+                    raise AssertionError('expired health was accepted')
+                except J.U.UpgradeError as error:
+                    assert 'Application-health evidence expired before UPDATE' in str(error)
+                assert sql('SELECT trace_address IS NOT NULL FROM internal_transactions WHERE block_number=10').strip() == 't'
+                assert 'health_check_expired_or_invalid_before_update' in J.U.private(health_path.parent / 'client.log.private').decode()
+
+            # Closing an unchanged pending target preserves its audit, cursor
+            # and all accounting, without asking the client to migrate it.
+            sql("WITH seed AS MATERIALIZED (SELECT to_jsonb(t) AS row FROM internal_transactions t WHERE block_number=10 LIMIT 1), expanded AS MATERIALIZED (SELECT jsonb_populate_record(NULL::internal_transactions,seed.row||jsonb_build_object('block_number',190+g/100,'block_index',800000+g,'index',800000+g)) AS r FROM generate_series(0,999) g CROSS JOIN seed) INSERT INTO internal_transactions SELECT (r).* FROM expanded")
+            sql('ANALYZE internal_transactions')
+            closing = J.prepare(api, ROOT, initial_path)
+            closing_path = Path(closing['state'])
+            def fail_before_update(client, command, payload=None):
+                if command == 'migrate':
+                    raise J.U.UpgradeError('simulated rejection before update')
+                return original_request(client, command, payload)
+            with patch.object(J.Client, 'request', fail_before_update):
+                try:
+                    J.execute(api, ROOT, closing_path, manifest)
+                    raise AssertionError('pre-update failure was not injected')
+                except J.U.UpgradeError:
+                    pass
+                prior = J.load(closing_path, manifest)
+                closed = J.close_unapplied(api, ROOT, closing_path, manifest)
+            assert closed['stop_reason'] == 'unchanged_pending_target_closed' and not closed['pending_transaction']
+            closed_state = J.load(closing_path, manifest)
+            assert closed_state['cursor'] == prior['cursor'] and closed_state['checkpoint_sha256'] == prior['checkpoint_sha256']
+            assert closed_state['abandoned'] == prior['pending']
+            assert not closed['closure']['database_writes']
+            assert sql('SELECT count(*) FROM internal_transactions WHERE block_number BETWEEN 190 AND 199 AND trace_address IS NOT NULL').strip() == '1000'
+
+            committed = J.prepare(api, ROOT, initial_path)
+            committed_path = Path(committed['state'])
+            committed_calls = [0]
+            def lose_commit_reply(client, command, payload=None):
+                result = original_request(client, command, payload)
+                if command == 'migrate':
+                    committed_calls[0] += 1
+                    if committed_calls[0] == 1:
+                        raise J.U.UpgradeError('simulated lost commit reply')
+                return result
+            with patch.object(J.Client, 'request', lose_commit_reply):
+                try:
+                    J.execute(api, ROOT, committed_path, manifest)
+                    raise AssertionError('lost reply was not injected')
+                except J.U.UpgradeError:
+                    pass
+                try:
+                    J.close_unapplied(api, ROOT, committed_path, manifest)
+                    raise AssertionError('committed target was closed as unchanged')
+                except J.U.UpgradeError as error:
+                    assert 'not unchanged originals' in str(error)
+                assert J.load(committed_path, manifest)['pending'] is not None
+                recovered = J.execute(api, ROOT, committed_path, manifest)
+            assert committed_calls[0] == 1 and recovered['charged_chunk_wal_bytes'] == J.LIMITS['wal_bytes']
+            assert not recovered['pending_transaction'] and not recovered['wal_measurements_complete']
+
         assert sql("SELECT count(*) FROM migrations_status WHERE migration_name='empty_internal_transactions_data'").strip() == '0'
         assert sql("SELECT status FROM migrations_status WHERE migration_name='reindex_duplicated_internal_transactions'").strip() == 'completed'
     return {'status': 'passed', 'persistent_repo_protocol': True, 'rows_normalized_in_first_session': 5000,
@@ -249,6 +346,9 @@ def check(image, network, token, environment, sql, pg, directory):
             'finished_resume_did_not_update_again': True, 'migration_completion_records_unchanged': True,
             'observation_profile_real_client_checked': True, 'legacy_anchor_preserved': True,
             'maintenance_baseline_inherited': True, 'lost_observation_commit_charged_entire_epoch': True,
+            'near_expiry_health_refreshed_before_prechecks': True, 'expired_health_still_rejected_before_update': True,
+            'failed_reply_collected_before_client_exit': True, 'unchanged_pending_closed_without_data_update': True,
+            'committed_pending_cannot_be_closed_unapplied': True,
             'full_table_run_enabled': False, 'host_runtime_health_stubbed': True, 'live_services_accessed': False}
 
 

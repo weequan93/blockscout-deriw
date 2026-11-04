@@ -47,14 +47,16 @@ class SessionTests(unittest.TestCase):
         self.raw_resources = resources()
         case = self
         class Client:
-            def __init__(self, api, path, inputs):
+            def __init__(self, api, path, inputs, read_only=False):
                 self.path = path
+                self.read_only = read_only
                 self.name = 'blockscout-v10-schema-' + 'a' * 16
             def __enter__(self):
                 return self
             def __exit__(self, *args):
                 pass
             def request(self, command, payload=None):
+                case.assertFalse(self.read_only and command == 'migrate')
                 if command == 'resources':
                     return deepcopy(case.raw_resources)
                 if command == 'sample':
@@ -241,6 +243,67 @@ class SessionTests(unittest.TestCase):
             with patch.object(J.P, 'free_bytes', return_value=888 * 1024**3 - 600 * 1024**2):
                 result = self.execute(path)
             self.assertEqual(result['completed_batches'], 1)
+
+    def test_health_refresh_reserves_time_for_client_prechecks(self):
+        path = self.prepare()
+        calls = [0]
+        def monotonic():
+            calls[0] += 1
+            return 0 if calls[0] == 1 else 20
+        with patch.dict(J.LIMITS, max_batches=1):
+            # Freeze the same smaller profile for this fixture.
+            state = json.loads(J.U.private(path))
+            state['inputs']['limits'] = deepcopy(J.LIMITS)
+            J.sync_json(path.parent / 'inputs.json', state['inputs'])
+            state['inputs_sha256'] = J.R.digest(J.R.encoded(state['inputs']))
+            state['checkpoint_hash'] = state['inputs_sha256']
+            state['checkpoint_sha256'] = J.checkpoint_digest(state)
+            J.sync_json(path, state)
+            with patch.object(J.time, 'monotonic', side_effect=monotonic), \
+                    patch.object(J.P, 'context', return_value=({}, {})) as context:
+                result = self.execute(path)
+        self.assertEqual(result['completed_batches'], 1)
+        # Twenty seconds is below the SQL cutoff but must refresh before DML.
+        self.assertGreaterEqual(context.call_count, 3)  # initial, renewal, final
+
+    def test_close_unapplied_verifies_original_rows_and_preserves_accounting_after_space_drift(self):
+        path = self.prepare()
+        self.fail_before = True
+        with self.assertRaises(J.U.UpgradeError):
+            self.execute(path)
+        before = J.load(path, self.manifest)
+        pending = before['pending']
+        snapshot = J.U.private(path.parent / pending['slot'])
+        frozen = J.U.private(path.parent / 'inputs.json')
+        with patch.object(J.P, 'free_bytes', return_value=885 * 1024**3):
+            result = J.close_unapplied(self.api, ROOT, path, self.manifest)
+        self.assertEqual(result['stop_reason'], 'unchanged_pending_target_closed')
+        self.assertFalse(result['pending_transaction'])
+        self.assertFalse(result['closure']['database_writes'])
+        after = J.load(path, self.manifest, check_resources=False)
+        for key in ('rows', 'batches', 'charged_wal_bytes', 'cursor', 'checkpoint_sha256'):
+            self.assertEqual(after[key], before[key])
+        self.assertEqual(after['latest_attempt'], before['latest_attempt'])
+        self.assertEqual(after['abandoned'], pending)
+        self.assertEqual(J.U.private(path.parent / pending['slot']), snapshot)
+        self.assertEqual(J.U.private(path.parent / 'inputs.json'), frozen)
+        self.assertEqual(self.migrates, 0)
+        self.assertEqual(J.close_unapplied(self.api, ROOT, path, self.manifest)['status'], 'normalization_session_finished')
+
+    def test_close_unapplied_cannot_discard_a_committed_pending_target(self):
+        path = self.prepare()
+        self.lose_response = True
+        with self.assertRaises(J.U.UpgradeError):
+            self.execute(path)
+        with self.assertRaisesRegex(J.U.UpgradeError, 'not unchanged originals'):
+            J.close_unapplied(self.api, ROOT, path, self.manifest)
+        state = J.load(path, self.manifest)
+        self.assertTrue(state['pending'])
+        self.assertEqual(state['cursor'], 100)
+        self.assertEqual(self.migrates, 1)
+        result = self.execute(path)
+        self.assertEqual(self.migrates, 1)
+        self.assertEqual(result['charged_chunk_wal_bytes'], J.LIMITS['wal_bytes'])
 
     def test_rotated_snapshots_keep_pending_target_and_finish_cannot_reset_budgets(self):
         path = self.prepare()

@@ -257,7 +257,9 @@ defmodule BlockscoutNormalizationCheck do
                   if payload["vacuum_compatible"] do
                     deadline = payload["health_valid_until_unix_ms"]
                     now = System.system_time(:millisecond)
-                    true = is_integer(deadline) and now <= deadline and deadline - now <= 30000
+
+                    unless is_integer(deadline) and now <= deadline and deadline - now <= 30000,
+                      do: raise("health_check_expired_or_invalid_before_update")
                   end
 
                   stage.("callback_update")
@@ -547,7 +549,20 @@ defmodule BlockscoutNormalizationSession do
       rescue
         error ->
           IO.puts(Exception.format(:error, error, __STACKTRACE__))
-          respond(%{id: id, ok: false, reason: "transaction_or_read_check_failed"})
+
+          reason =
+            if match?(
+                 %RuntimeError{message: "health_check_expired_or_invalid_before_update"},
+                 error
+               ),
+               do: "health_freshness_before_update",
+               else: "transaction_or_read_check_failed"
+
+          respond(%{id: id, ok: false, reason: reason})
+          # Keep the failed response readable until the host collects it and
+          # removes this client. The Repo transaction has already rolled back.
+          # A lost host leaves no transaction open and exits after ten seconds.
+          Process.sleep(10000)
       end
     end
   end

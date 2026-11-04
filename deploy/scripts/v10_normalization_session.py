@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[2]
 BASE = Path('/data/blockscout-dev-private/v10-normalization-sessions')
 FORMAT = 'blockscout-dev-v10-normalization-session-v1'
 PROFILE_FORMAT = 'blockscout-dev-v10-normalization-session-v2'
+HEALTH_START_RESERVE_SECONDS = 15
 LIMITS = dict(max_batches=25, max_rows=25000, wal_bytes=128 * 1024**2,
               next_wal_reserve_bytes=16 * 1024**2, space_bytes=512 * 1024**2,
               free_bytes=200 * 1024**3, start_seconds=600, health_seconds=30,
@@ -170,6 +171,8 @@ class Client:
                 break
             time.sleep(0.1)
         value = json.loads(U.private(response))
+        if value.get('id') == identifier and value.get('ok') is False and value.get('reason') == 'health_freshness_before_update':
+            raise U.UpgradeError('Application-health evidence expired before UPDATE; retain the pending checkpoint for reconciliation')
         P.require(value.get('id') == identifier and value.get('ok') is True,
                   'Session transaction/read failed; retain the pending checkpoint and inspect its private log')
         return value['data']
@@ -286,6 +289,9 @@ def load(path, manifest, check_resources=True):
     frozen = U.private(path.parent / 'inputs.json')
     inputs = json.loads(frozen)
     limits = profile_limits(inputs)
+    reserve = inputs.get('health_start_reserve_seconds', HEALTH_START_RESERVE_SECONDS)
+    P.require(type(reserve) is int and reserve == HEALTH_START_RESERVE_SECONDS,
+              'Frozen health-start reserve changed')
     P.require(state['format'] == (PROFILE_FORMAT if 'profile' in inputs else FORMAT)
               and inputs == state['inputs'] and R.digest(frozen) == state['inputs_sha256']
               and inputs['chain_id'] == manifest['chain_id']
@@ -368,6 +374,8 @@ def public(path, state):
             'wal_measurements_complete': state['wal_measurements_complete'], 'next_before_block': state['cursor'],
             'pending_transaction': state['pending'] is not None, 'limits': profile_limits(state['inputs']),
             'profile': state['inputs'].get('profile', 'pilot-v1'),
+            'health_start_reserve_seconds': state['inputs'].get('health_start_reserve_seconds', 0),
+            'closure': state.get('closure'),
             'maintenance_selected_rows': state['inputs'].get('maintenance_rows_before', 0) + state['rows'],
             'vacuum_review_row_limit': OBSERVATION_LIMITS['maintenance_max_rows'] if state['inputs'].get('maintenance_origin') else None,
             'timing_totals': state.get('timing_totals'), 'latest_attempt': state.get('latest_attempt'),
@@ -377,12 +385,51 @@ def public(path, state):
             'retention': 'Two rotating raw snapshots for this new session; the pending slot is retained until commit reconciliation. Earlier pilot journals are retained. Compact latest checkpoint and aggregate totals survive rotation; older per-row rollback snapshots are not retained.'}
 
 
-def finish(path, state, reason):
+def finish(path, state, reason, close_attempt=True):
     state.update(phase='finished', stop_reason=reason)
-    if state.get('latest_attempt'):
+    if close_attempt and state.get('latest_attempt'):
         state['latest_attempt'].update(finished_at=datetime.now(timezone.utc).isoformat(), finishing_rows=state['rows'])
     sync_json(path, state)
     return public(path, state)
+
+
+def close_unapplied(api, root, path, manifest):
+    """Close only a proved-original pending target; never request data updates."""
+    before_state = U.private(path)
+    state = load(path, manifest, check_resources=False)
+    if state['phase'] == 'finished':
+        return public(path, state)
+    P.require(not active(api, path, state), 'A live client must finish before closing its pending target')
+    pending = state['pending']
+    P.require(pending is not None and pending['result'] is None,
+              'Close-unapplied requires an unresolved pending target with no saved commit result')
+    inputs = state['inputs']
+    source = B.clean_source(api, root)
+    P.require(source[1] == '10.2.6', 'Tool source release changed')
+    P.context(api, root, Path(inputs['upgrade_state']))
+    api.ensure_stable(inputs['runtime_before'], api.inspect_project(manifest), 'Runtime changed before pending-target closure')
+    audit = path.parent / 'close-before.json'
+    if audit.exists():
+        saved = json.loads(U.private(audit))
+        P.require(saved['inputs_sha256'] == state['inputs_sha256']
+                  and saved['checkpoint_sha256'] == state['checkpoint_sha256']
+                  and saved['pending']['sha256'] == pending['sha256'], 'Earlier closure proof belongs to another checkpoint')
+    else:
+        R.write_new(audit, before_state)
+    with Client(api, path, inputs, read_only=True) as client:
+        state['client_name'] = client.name
+        anchor = target(state['last']) if state['last'] else inputs['anchor']
+        P.require(observed(anchor, client.request('inspect', anchor)) == 'normalized', 'Latest committed checkpoint no longer verifies')
+        saved = json.loads(U.private(path.parent / pending['slot']))
+        P.require(observed(target(saved), client.request('inspect', target(saved))) == 'original',
+                  'Pending rows are not unchanged originals; retain the journal for commit reconciliation')
+        api.ensure_stable(inputs['runtime_before'], api.inspect_project(manifest), 'Runtime changed during pending-target closure')
+        monitor(path, inputs, read_only=True)
+        state.update(abandoned=pending, pending=None,
+                     closure={'data_observed': 'original', 'database_writes': False,
+                              'pending_sha256': pending['sha256'], 'before_state_sha256': R.digest(U.private(audit)),
+                              'tool_source_commit': source[0], 'closed_at_utc': datetime.now(timezone.utc).isoformat()})
+        return finish(path, state, 'unchanged_pending_target_closed', close_attempt=False)
 
 
 def transaction_activity_sql(root):
@@ -521,6 +568,7 @@ def prepare(api, root, after_path, after_session=False, profile=None):
     path = directory / 'state.json'
     script = (root / 'deploy/scripts/v10/normalization_pilot.exs').read_bytes()
     inputs = {'environment': 'dev', 'chain_id': manifest['chain_id'], 'limits': limits, 'tool_source_commit': source[0],
+              'health_start_reserve_seconds': HEALTH_START_RESERVE_SECONDS,
               'script_sha256': R.digest(script), 'upgrade_state': str(upgrade_path), 'start_cursor': cursor,
               'start_parent': str(after_path), 'start_parent_sha256': R.digest(U.private(after_path)), 'anchor': anchor,
               'candidate_image': upgrade['candidate_image'], 'network': upgrade['network'],
@@ -596,6 +644,9 @@ def execute(api, root, path, manifest):
         return public(path, state)
     inputs = state['inputs']
     limits = profile_limits(inputs)
+    # Freshness must cover host publication and the client's bounded prechecks.
+    # The SQL-side 30-second cutoff remains unchanged.
+    refresh_after = limits['health_seconds'] - inputs.get('health_start_reserve_seconds', HEALTH_START_RESERVE_SECONDS)
     monitor(path, inputs)
     P.require(B.clean_source(api, root) == (inputs['tool_source_commit'], '10.2.6'), 'Resume from the session creation commit')
     P.require(state.get('preparation_complete', 'resources_before' in state) and 'resources_before' in state,
@@ -652,14 +703,14 @@ def execute(api, root, path, manifest):
                     # next session. Keep their raw slot, without moving cursor.
                     state.update(abandoned=pending, pending=None)
                     return finish(path, state, reason)
-                if time.monotonic() - health_at >= limits['health_seconds']:
+                if time.monotonic() - health_at >= refresh_after:
                     P.context(api, root, Path(inputs['upgrade_state']))
                     health_at = time.monotonic()
                 session_resources(state, client.request('resources'))
                 monitor(path, inputs)
                 P.require(B.clean_source(api, root) == (inputs['tool_source_commit'], '10.2.6'), 'Tool source changed before a write')
                 api.ensure_stable(inputs['runtime_before'], api.inspect_project(manifest), 'Runtime changed before a write')
-                if time.monotonic() - health_at >= limits['health_seconds']:
+                if time.monotonic() - health_at >= refresh_after:
                     P.context(api, root, Path(inputs['upgrade_state']))
                     health_at = time.monotonic()
                 spec['health_valid_until_unix_ms'] = int((time.time() + limits['health_seconds'] - (time.monotonic() - health_at)) * 1000)
@@ -677,7 +728,7 @@ def execute(api, root, path, manifest):
                 pending['result'] = metrics
                 sync_json(path, state)
             api.ensure_stable(inputs['runtime_before'], api.inspect_project(manifest), 'Runtime changed during transaction')
-            if time.monotonic() - health_at >= limits['health_seconds']:
+            if time.monotonic() - health_at >= refresh_after:
                 P.context(api, root, Path(inputs['upgrade_state']))
                 health_at = time.monotonic()
             monitor(path, inputs)
@@ -719,7 +770,7 @@ def execute(api, root, path, manifest):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group(required=True)
-    for name in ('prepare', 'run', 'resume', 'status', 'retention-plan', 'diagnose'):
+    for name in ('prepare', 'run', 'resume', 'status', 'retention-plan', 'diagnose', 'close-unapplied'):
         modes.add_argument('--' + name, action='store_true')
     start = parser.add_mutually_exclusive_group()
     start.add_argument('--after-state', type=Path)
@@ -737,6 +788,10 @@ def main():
                 P.require(args.state is not None and args.after_state is None and args.after_session is None,
                           'Diagnosis requires only the saved session state')
                 result = diagnose(D, ROOT, args.state, manifest)
+            elif args.close_unapplied:
+                P.require(args.state is not None and args.after_state is None and args.after_session is None,
+                          'Close-unapplied requires only the saved session state')
+                result = close_unapplied(D, ROOT, args.state, manifest)
             elif args.retention_plan:
                 P.require(args.state is None and args.after_state is None and args.after_session is None, 'Retention inventory needs no state argument')
                 result = retention_plan(D, manifest)
