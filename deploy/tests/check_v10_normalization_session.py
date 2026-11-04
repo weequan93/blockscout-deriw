@@ -57,6 +57,21 @@ def check(image, network, token, environment, sql, pg, directory):
         assert prepared['database_writes'] is False
         assert prepared['resources']['autovacuum_effectively_enabled']
         assert not prepared['resources']['sustained_ready']
+        activity = prepared['resources']['transactions']
+        assert activity['observer']['database_oid'] == identity['oid']
+        assert activity['client_transactions_over_300s'] == 0 and activity['long_client_sessions'] == []
+
+        # Exercise the exact SQL projection with deterministic activity rows.
+        # The ordinary preparation above also executes it against the real view.
+        activity_rows = "SELECT 1000000+g AS pid,'active'::text AS state,clock_timestamp()-make_interval(secs=>350+g) AS xact_start,CASE WHEN g%2=0 THEN '3'::xid ELSE NULL::xid END AS backend_xmin,CASE WHEN g%3=0 THEN '4'::xid ELSE NULL::xid END AS backend_xid,'Client'::text AS wait_event_type,'ClientRead'::text AS wait_event,current_user AS usename,'private-activity-marker'::text AS application_name,current_database() AS datname,'client backend'::text AS backend_type FROM generate_series(1,30) g"
+        query = J.transaction_activity_sql(ROOT).replace('FROM pg_stat_activity', 'FROM (' + activity_rows + ') fake_activity')
+        output = sql('BEGIN; SET TRANSACTION READ ONLY; SET LOCAL statement_timeout=\'1500ms\'; ' + query + '; ROLLBACK;')
+        sample = json.loads(next(line for line in output.splitlines() if line.startswith('{')))
+        assert sample['client_transactions_over_300s'] == 30
+        assert sample['long_transactions_with_snapshot'] == 15 and sample['long_transactions_with_assigned_xid'] == 10
+        assert len(sample['long_client_sessions']) == 20 and sample['long_client_sessions'][0]['pid'] == 1000030
+        assert all(item['application_kind'] == 'other_named' for item in sample['long_client_sessions'])
+        assert 'private-activity-marker' not in json.dumps(sample)
         result = J.execute(api, ROOT, path, manifest)
         assert result['completed_batches'] == 5 and result['selected_rows_verified'] == 5000
         assert result['updated_rows_observed'] == 5000 and result['next_before_block'] == 110
@@ -99,6 +114,24 @@ def check(image, network, token, environment, sql, pg, directory):
         assert resumed['charged_chunk_wal_bytes'] == J.LIMITS['wal_bytes']
         assert not resumed['wal_measurements_complete'] and not resumed['pending_transaction']
         assert J.load(path, manifest)['checkpoint_hash'] == checkpoint
+
+        # A metadata-only client observes the old epoch after 3 GiB drift, while
+        # the normal writer still rejects that budget before issuing a command.
+        inputs = J.load(next_path, manifest)['inputs']
+        with patch.object(J.P, 'free_bytes', return_value=885 * 1024**3):
+            with J.Client(api, next_path, inputs, read_only=True) as observer:
+                assert observer.request('resources')['transactions']['observer']['database_oid'] == identity['oid']
+                try:
+                    observer.request('migrate')
+                    raise AssertionError('read-only client accepted a write')
+                except J.U.UpgradeError:
+                    pass
+            writer = J.Client(api, next_path, inputs)
+            try:
+                writer.request('migrate')
+                raise AssertionError('writer ignored old consumption budget')
+            except J.U.UpgradeError:
+                pass
 
         # Hold the very lock used by ordinary vacuum in another real session.
         # The new transaction must finish while that lock is still held.
@@ -176,6 +209,8 @@ def check(image, network, token, environment, sql, pg, directory):
             'constant_size_latest_checkpoint_continuation': True, 'ordinary_vacuum_lock_coexistence_verified': True,
             'late_insert_excluded_by_repeatable_read_snapshot': True,
             'concurrent_update_caused_serialization_rollback': True,
+            'transaction_activity_detail_limit_and_privacy_checked': True,
+            'read_only_observation_after_space_drift_checked': True, 'writer_budget_still_enforced': True,
             'finished_resume_did_not_update_again': True, 'migration_completion_records_unchanged': True,
             'full_table_run_enabled': False, 'host_runtime_health_stubbed': True, 'live_services_accessed': False}
 

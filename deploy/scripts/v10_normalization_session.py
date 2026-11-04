@@ -14,6 +14,7 @@ import uuid
 
 import candidate_build as B
 import containerd_maintenance as M
+import deploy_check as C
 import dev_config as D
 import release as R
 import v10_normalization_pilot as P
@@ -54,8 +55,9 @@ def journal_size(directory):
     return total
 
 
-def monitor(path, inputs):
-    P.monitor({'space_before': inputs['space_before']})
+def monitor(path, inputs, read_only=False):
+    if not read_only:
+        P.monitor({'space_before': inputs['space_before']})
     P.require(journal_size(path.parent) <= LIMITS['journal_bytes'], 'Session journal size cap reached')
     P.require(journal_size(BASE) <= LIMITS['all_session_journal_bytes'], 'New session journals reached their aggregate cap; review retention')
 
@@ -67,8 +69,10 @@ def checkpoint_digest(state):
 
 class Client:
     """One isolated Repo and mailbox; waits never retain a database transaction."""
-    def __init__(self, api, path, inputs):
+    def __init__(self, api, path, inputs, read_only=False):
+        P.require(type(read_only) is bool, 'Invalid client observation mode')
         self.api, self.path, self.inputs = api, path, inputs
+        self.read_only = read_only
         self.process = self.log = None
         self.name = 'blockscout-v10-schema-' + uuid.uuid4().hex[:16]
 
@@ -101,7 +105,7 @@ class Client:
             started = time.monotonic()
             while b'BLOCKSCOUT_SESSION_READY' not in U.private(log_path)[initial_log_size:]:
                 P.require(self.process.poll() is None and time.monotonic() - started < 60, 'Session client startup failed')
-                monitor(self.path, self.inputs)
+                monitor(self.path, self.inputs, read_only=self.read_only)
                 time.sleep(0.1)
             return self
         except BaseException:
@@ -109,6 +113,12 @@ class Client:
             raise
 
     def request(self, command, payload=None):
+        P.require(command in ('inspect', 'resources', 'sample', 'migrate'), 'Unsupported session command')
+        P.require(not self.read_only or command in ('inspect', 'resources', 'sample'),
+                  'Read-only observation clients cannot request normalization writes')
+        # Check the applicable budget before publishing any request, especially
+        # before a command that can write. Observation never resets that budget.
+        monitor(self.path, self.inputs, read_only=self.read_only)
         channel = self.path.parent / 'channel'
         response = channel / 'response.json'
         if response.exists():
@@ -127,7 +137,7 @@ class Client:
             P.require(self.process.poll() is None, 'Session client stopped; inspect its private log')
             P.require(time.monotonic() - started < 60, 'Session command exceeded 60 seconds')
             P.require(os.fstat(self.log.fileno()).st_size <= LIMITS['log_bytes'], 'Session log cap reached')
-            monitor(self.path, self.inputs)
+            monitor(self.path, self.inputs, read_only=self.read_only)
             raw = self.transport(['docker', 'exec', self.name, 'sh', '-c',
                                 'if test -f /tmp/channel/response.json; then cat /tmp/channel/response.json; fi'], timeout=10)
             if raw:
@@ -211,7 +221,8 @@ def resource_guard(data, baseline=None):
     P.require(report['autovacuum_effectively_enabled'], 'Autovacuum/track_counts is disabled')
     P.require(0 <= data['table']['dead_rows'] <= LIMITS['dead_rows'], 'Estimated dead-row ceiling reached; review vacuum')
     P.require(data['transactions']['oldest_transaction_seconds'] <= LIMITS['oldest_transaction_seconds'],
-              'An existing long transaction needs review; no session was terminated')
+              'An existing long transaction needs review (observed ' + str(data['transactions']['oldest_transaction_seconds'])
+              + ' seconds, limit ' + str(LIMITS['oldest_transaction_seconds']) + '); no session was terminated')
     if baseline:
         P.require(data['table']['stats_reset'] == baseline['table']['stats_reset']
                   and data['wal']['stats_reset'] == baseline['wal']['stats_reset'], 'Statistics reset during session')
@@ -305,6 +316,60 @@ def public(path, state):
             'migration_completion_records_unchanged': True, 'historical_rpc_used': False,
             'vacuum_or_tuning_performed': False, 'sustained_full_table_run_enabled': False,
             'retention': 'Two rotating raw snapshots for this new session; the pending slot is retained until commit reconciliation. Earlier pilot journals are retained. Compact latest checkpoint and aggregate totals survive rotation; older per-row rollback snapshots are not retained.'}
+
+
+def transaction_activity_sql(root):
+    """Use exactly the same metadata query as newly frozen session clients."""
+    source = (root / 'deploy/scripts/v10/normalization_pilot.exs').read_text()
+    matches = re.findall(r'^  @transaction_activity_sql ~S"""\n(.*?)^  """$', source, re.M | re.S)
+    P.require(len(matches) == 1 and matches[0].lstrip().startswith('WITH clients AS MATERIALIZED'),
+              'Transaction metadata query marker changed')
+    return matches[0]
+
+
+def diagnose(api, root, path, manifest):
+    """Read saved evidence and existing backend metadata, with no new client."""
+    state = load(path, manifest, check_resources=False)
+    inputs, saved = state['inputs'], state.get('resources_before') or {}
+    current = P.free_bytes()
+    used = max(0, inputs['space_before'] - current)
+    report = {'status': 'normalization_session_diagnostics', 'state': str(path), 'read_only': True,
+              'raw_values_suppressed': True, 'new_client_started': False, 'database_writes': False,
+              'phase': state['phase'], 'preparation_complete': state.get('preparation_complete', 'resources_before' in state),
+              'verified_rows': state['rows'], 'pending_transaction': state['pending'] is not None,
+              'saved_observed_at': saved.get('observed_at'), 'saved_transactions': saved.get('transactions'),
+              'starting_data_free_bytes': inputs['space_before'], 'current_data_free_bytes': current,
+              'observed_net_consumption_bytes': used, 'current_free_space_floor_met': current >= LIMITS['free_bytes'],
+              'old_session_consumption_limit_exceeded': used > LIMITS['space_bytes'],
+              'write_limits_unchanged': True}
+    # The filesystem evidence remains returnable even if the running backend
+    # is unavailable or has changed. Never start an alternate application.
+    try:
+        before = api.inspect_project(manifest)
+        P.require(before['backend']['Image'] == inputs['candidate_image'], 'Backend image differs from saved session')
+        sql = json.dumps(transaction_activity_sql(root))
+        code = '''
+true = Explorer.Migrator.StartupControl.disabled?()
+{:ok, report} = Explorer.Repo.transaction(fn ->
+  q = fn sql -> Explorer.Repo.query!(sql, [], log: false, timeout: 2000).rows end
+  q.("SET TRANSACTION READ ONLY")
+  q.("SET LOCAL statement_timeout='1500ms'")
+  q.("SET LOCAL lock_timeout='500ms'")
+  [[identity]] = q.("SELECT jsonb_build_object('database',current_database(),'oid',(SELECT oid::bigint FROM pg_database WHERE datname=current_database()),'address',host(inet_server_addr()),'port',inet_server_port(),'postgres_major',current_setting('server_version_num')::integer/10000)")
+  [[result]] = q.(SQL)
+  %{database_identity: identity, transactions: result}
+end, timeout: 5000)
+IO.puts("BLOCKSCOUT_DEPLOY_CHECK=" <> Jason.encode!(report))
+'''.replace('q.(SQL)', 'q.(' + sql + ')')
+        raw = api.run(['docker', 'exec', 'backend', '/app/bin/blockscout', 'rpc', code], timeout=15)
+        checked = C.marked_json(api, raw)
+        P.require(checked['database_identity'] == inputs['payload']['database_identity'],
+                  'Backend database differs from saved session')
+        api.ensure_stable(before, api.inspect_project(manifest), 'Runtime changed during transaction diagnosis')
+        report['live_backend_transactions'] = checked['transactions']
+    except Exception as error:
+        report['live_backend_error'] = str(error) if isinstance(error, U.UpgradeError) else 'Backend metadata check unavailable; raw values suppressed'
+    return report
 
 
 def prepare(api, root, after_path, after_session=False):
@@ -516,7 +581,7 @@ def execute(api, root, path, manifest):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group(required=True)
-    for name in ('prepare', 'run', 'resume', 'status', 'retention-plan'):
+    for name in ('prepare', 'run', 'resume', 'status', 'retention-plan', 'diagnose'):
         modes.add_argument('--' + name, action='store_true')
     start = parser.add_mutually_exclusive_group()
     start.add_argument('--after-state', type=Path)
@@ -526,8 +591,12 @@ def main():
     try:
         P.require(sys.platform.startswith('linux') and os.geteuid() == 0, 'Run on the Linux dev server as root')
         manifest, _, _ = D.configuration(ROOT, 'dev')
-        with M.global_lock(not (args.status or args.retention_plan)), B.build_lock(D, D.MANAGED_RELEASES, ROOT):
-            if args.retention_plan:
+        with M.global_lock(not (args.status or args.retention_plan or args.diagnose)), B.build_lock(D, D.MANAGED_RELEASES, ROOT):
+            if args.diagnose:
+                P.require(args.state is not None and args.after_state is None and args.after_session is None,
+                          'Diagnosis requires only the saved session state')
+                result = diagnose(D, ROOT, args.state, manifest)
+            elif args.retention_plan:
                 P.require(args.state is None and args.after_state is None and args.after_session is None, 'Retention inventory needs no state argument')
                 result = retention_plan(D, manifest)
             elif args.prepare or args.run:

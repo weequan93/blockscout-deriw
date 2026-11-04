@@ -328,6 +328,38 @@ defmodule BlockscoutNormalizationCheck do
 end
 
 defmodule BlockscoutNormalizationSession do
+  @transaction_activity_sql ~S"""
+  WITH clients AS MATERIALIZED (
+    SELECT pid,state,xact_start,backend_xmin,backend_xid,wait_event_type,wait_event,usename,application_name
+    FROM pg_stat_activity
+    WHERE datname=current_database() AND backend_type='client backend' AND pid<>pg_backend_pid()
+  ), old_clients AS MATERIALIZED (
+    SELECT * FROM clients WHERE xact_start<clock_timestamp()-interval '300 seconds'
+  ), details AS (
+    SELECT jsonb_build_object(
+      'pid',pid,'state',state,
+      'transaction_age_seconds',EXTRACT(epoch FROM clock_timestamp()-xact_start)::bigint,
+      'snapshot_present',backend_xmin IS NOT NULL,
+      'snapshot_age_xids',CASE WHEN backend_xmin IS NULL THEN NULL ELSE age(backend_xmin) END,
+      'assigned_xid_present',backend_xid IS NOT NULL,
+      'wait_type',wait_event_type,'wait_event',wait_event,
+      'same_role_as_observer',usename=current_user,
+      'application_kind',CASE WHEN application_name='psql' THEN 'psql' WHEN application_name='pg_dump' THEN 'pg_dump' WHEN application_name LIKE 'blockscout-v10-%' THEN 'v10_maintenance' WHEN application_name='' THEN 'unset' ELSE 'other_named' END
+    ) AS item FROM old_clients ORDER BY xact_start,pid LIMIT 20
+  )
+  SELECT jsonb_build_object(
+    'observed_at',clock_timestamp()::text,
+    'observer',jsonb_build_object('role_oid',(SELECT oid::bigint FROM pg_roles WHERE rolname=current_user),'can_read_all_stats',pg_has_role(current_user,'pg_read_all_stats','MEMBER'),'database_oid',(SELECT oid::bigint FROM pg_database WHERE datname=current_database())),
+    'oldest_transaction_seconds',COALESCE((SELECT max(EXTRACT(epoch FROM clock_timestamp()-xact_start)) FROM clients),0)::bigint,
+    'oldest_snapshot_xid_age',COALESCE((SELECT max(age(backend_xmin)) FROM clients),0),
+    'idle_in_transaction_sessions',(SELECT count(*) FROM clients WHERE state LIKE 'idle in transaction%'),
+    'client_transactions_over_300s',(SELECT count(*) FROM old_clients),
+    'long_transactions_with_snapshot',(SELECT count(*) FROM old_clients WHERE backend_xmin IS NOT NULL),
+    'long_transactions_with_assigned_xid',(SELECT count(*) FROM old_clients WHERE backend_xid IS NOT NULL),
+    'long_client_sessions',COALESCE((SELECT jsonb_agg(item) FROM details),'[]'::jsonb)
+  )
+  """
+
   # All waits for the host occur outside transactions. No open snapshot is kept
   # while the host fsyncs a checkpoint or checks application health.
   def read(payload, mode) do
@@ -425,7 +457,7 @@ defmodule BlockscoutNormalizationSession do
 
             [[transactions]] =
               q.(
-                "SELECT jsonb_build_object('oldest_transaction_seconds',COALESCE(max(EXTRACT(epoch FROM clock_timestamp()-xact_start)) FILTER (WHERE pid<>pg_backend_pid() AND backend_type='client backend'),0)::bigint,'oldest_snapshot_xid_age',COALESCE(max(age(backend_xmin)),0),'idle_in_transaction_sessions',count(*) FILTER (WHERE state LIKE 'idle in transaction%')) FROM pg_stat_activity WHERE datname=current_database()",
+                @transaction_activity_sql,
                 []
               )
 

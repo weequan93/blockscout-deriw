@@ -13,6 +13,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'deploy/scripts'))
 import v10_normalization_session as J
+REAL_CLIENT = J.Client
 
 
 def resources():
@@ -267,6 +268,83 @@ class SessionTests(unittest.TestCase):
         with self.assertRaisesRegex(J.U.UpgradeError, 'Preparation was incomplete'):
             self.execute(path)
         self.assertEqual(self.migrates, 0)
+
+    def test_read_only_client_can_observe_after_consumption_drift_but_cannot_send_migrate(self):
+        path = self.prepare()
+        inputs = J.load(path, self.manifest)['inputs']
+        channel = path.parent / 'channel'
+        channel.mkdir(mode=0o700)
+        log_path = path.parent / 'client.log.private'
+        J.R.write_new(log_path, b'')
+        client = REAL_CLIENT(self.api, path, inputs, read_only=True)
+        client.process = types.SimpleNamespace(poll=lambda: None)
+        response = {'observed': True}
+        sent = []
+        def transport(command, **kwargs):
+            sent.append(command)
+            request = json.loads(J.U.private(channel / 'request.json'))
+            return json.dumps({'id': request['id'], 'ok': True, 'data': response})
+        with log_path.open('ab') as client.log, patch.object(J.P, 'free_bytes', return_value=885 * 1024**3), \
+                patch.object(client, 'transport', side_effect=transport):
+            self.assertEqual(client.request('resources'), response)
+            count = len(sent)
+            with self.assertRaisesRegex(J.U.UpgradeError, 'cannot request normalization writes'):
+                client.request('migrate')
+            self.assertEqual(len(sent), count)
+            normal = REAL_CLIENT(self.api, path, inputs)
+            with patch.object(normal, 'transport') as normal_transport:
+                with self.assertRaisesRegex(J.U.UpgradeError, 'free-space/consumption'):
+                    normal.request('migrate')
+                normal_transport.assert_not_called()
+
+    def test_diagnosis_reads_saved_and_backend_metadata_without_old_budget_or_a_new_client(self):
+        path = self.prepare()
+        state = J.load(path, self.manifest)
+        state['inputs'].update(candidate_image='sha256:' + 'a' * 64, payload={'database_identity': {'oid': 42}})
+        frozen = J.R.encoded(state['inputs'])
+        J.sync_json(path.parent / 'inputs.json', state['inputs'])
+        state['inputs_sha256'] = J.R.digest(frozen)
+        state['checkpoint_hash'] = state['inputs_sha256']
+        state['checkpoint_sha256'] = J.checkpoint_digest(state)
+        state['resources_before']['transactions']['oldest_transaction_seconds'] = 323
+        J.sync_json(path, state)
+        before = J.U.private(path)
+        live = {'observer': {'database_oid': 42, 'role_oid': 10, 'can_read_all_stats': True},
+                'oldest_transaction_seconds': 0, 'long_client_sessions': []}
+        self.api.require = J.P.require
+        self.api.ConfigError = J.D.ConfigError
+        self.api.inspect_project = lambda *a: {'backend': {'Image': state['inputs']['candidate_image']}}
+        calls = []
+        def run(command, **kwargs):
+            calls.append(command)
+            return 'BLOCKSCOUT_DEPLOY_CHECK=' + json.dumps({'database_identity': {'oid': 42}, 'transactions': live})
+        self.api.run = run
+        with patch.object(J.P, 'free_bytes', return_value=885 * 1024**3), \
+                patch.object(J.P, 'monitor', side_effect=AssertionError('old write budget used')), \
+                patch.object(J, 'Client', side_effect=AssertionError('new container started')):
+            report = J.diagnose(self.api, ROOT, path, self.manifest)
+        self.assertEqual(report['saved_transactions']['oldest_transaction_seconds'], 323)
+        self.assertEqual(report['live_backend_transactions'], live)
+        self.assertTrue(report['old_session_consumption_limit_exceeded'])
+        self.assertTrue(report['current_free_space_floor_met'])
+        self.assertFalse(report['new_client_started'])
+        self.assertFalse(report['database_writes'])
+        self.assertEqual(J.U.private(path), before)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][:5], ['docker', 'exec', 'backend', '/app/bin/blockscout', 'rpc'])
+        self.assertIn('SET TRANSACTION READ ONLY', calls[0][5])
+        self.assertNotIn('pg_terminate_backend', calls[0][5])
+
+        self.api.run = lambda *a, **k: 'BLOCKSCOUT_DEPLOY_CHECK=' + json.dumps({'database_identity': {'oid': 43}, 'transactions': live})
+        report = J.diagnose(self.api, ROOT, path, self.manifest)
+        self.assertIn('Backend database differs', report['live_backend_error'])
+        self.assertNotIn('live_backend_transactions', report)
+
+        self.api.run = lambda *a, **k: (_ for _ in ()).throw(J.D.ConfigError('private connection secret'))
+        report = J.diagnose(self.api, ROOT, path, self.manifest)
+        self.assertIn('live_backend_error', report)
+        self.assertEqual(report['saved_transactions']['oldest_transaction_seconds'], 323)
+        self.assertNotIn('private connection secret', json.dumps(report))
 
 
 if __name__ == '__main__':
