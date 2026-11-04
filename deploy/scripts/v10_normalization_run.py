@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run at most five bounded normalization batches with durable checkpoints."""
+"""Run a finite normalization pilot with durable checkpoints and shared budgets."""
 from datetime import datetime, timezone
 import argparse
 import json
@@ -24,6 +24,9 @@ ROOT = Path(__file__).resolve().parents[2]
 BASE = Path('/data/blockscout-dev-private/v10-normalization-runs')
 FORMAT = 'blockscout-dev-v10-normalization-run-v1'
 WAL_BUDGET = 128 * 1024**2
+NEXT_BATCH_WAL_RESERVE = 16 * 1024**2
+MAX_BATCHES = 25
+MAX_ROWS = 25000
 START_WINDOW_SECONDS = 600
 PHASES = {'prepared', 'sampling', 'sampled', 'preparing_batch', 'batch_prepared', 'applying_batch', 'running', 'finished'}
 STAGE = 'preflight'
@@ -51,6 +54,7 @@ def public(path, state, status):
             'observed_chunk_wal_sum_bytes': sum(v for v in measurements if v is not None),
             'wal_measurements_complete': all(v is not None for v in measurements),
             'charged_chunk_wal_bytes': charged, 'chunk_wal_budget_bytes': WAL_BUDGET,
+            'minimum_next_batch_wal_bytes': state['inputs'].get('minimum_next_batch_wal_bytes', 0),
             'new_batch_start_window_seconds': START_WINDOW_SECONDS,
             'starting_data_free_bytes': state['inputs']['space_before'], 'observed_data_free_bytes': available,
             'observed_net_data_consumption_bytes': max(0, state['inputs']['space_before'] - available),
@@ -85,6 +89,8 @@ def limit_reason(state, next_rows=0):
         return 'next_batch_exceeds_remaining_rows'
     if charged >= WAL_BUDGET:
         return 'chunk_wal_budget_exhausted'
+    if WAL_BUDGET - charged < state['inputs'].get('minimum_next_batch_wal_bytes', 0):
+        return 'next_batch_wal_reserve_reached'
     if time.time() - state['inputs']['created_epoch'] >= START_WINDOW_SECONDS:
         return 'new_batch_start_window_expired'
     return None
@@ -106,9 +112,11 @@ def load(api, path, manifest):
     P.require(state.get('format') == FORMAT and inputs.get('environment') == 'dev' and inputs.get('chain_id') == manifest['chain_id']
               and state.get('phase') in PHASES and type(state.get('writes_may_have_started')) is bool,
               'Invalid bounded run state')
-    P.require(type(inputs.get('max_batches')) is int and 1 <= inputs['max_batches'] <= 5
-              and type(inputs.get('max_rows')) is int and 1 <= inputs['max_rows'] <= 5000
+    P.require(type(inputs.get('max_batches')) is int and 1 <= inputs['max_batches'] <= MAX_BATCHES
+              and type(inputs.get('max_rows')) is int and 1 <= inputs['max_rows'] <= MAX_ROWS
               and inputs.get('wal_budget_bytes') == WAL_BUDGET and inputs.get('start_window_seconds') == START_WINDOW_SECONDS
+              and type(inputs.get('minimum_next_batch_wal_bytes', 0)) is int
+              and inputs.get('minimum_next_batch_wal_bytes', 0) in (0, NEXT_BATCH_WAL_RESERVE)
               and type(inputs.get('created_epoch')) in (int, float) and inputs['created_epoch'] > 0
               and type(inputs.get('space_before')) is int and inputs['space_before'] >= 200 * 1024**3,
               'Run limits changed or exceed the finite pilot caps')
@@ -159,8 +167,8 @@ def load(api, path, manifest):
 
 
 def prepare(api, root, after_path, max_batches, max_rows):
-    P.require(type(max_batches) is int and 1 <= max_batches <= 5 and type(max_rows) is int and 1 <= max_rows <= 5000,
-              'Choose at most five batches and 5000 selected rows')
+    P.require(type(max_batches) is int and 1 <= max_batches <= MAX_BATCHES and type(max_rows) is int and 1 <= max_rows <= MAX_ROWS,
+              'Choose at most 25 batches and 25000 selected rows')
     manifest, _, _ = api.configuration(root, 'dev')
     previous = P.load(api, after_path, manifest)
     cursor = P.completed_cursor(previous)
@@ -173,6 +181,7 @@ def prepare(api, root, after_path, max_batches, max_rows):
               'candidate_image': previous['candidate_image'], 'tool_source_commit': source[0],
               'script_sha256': R.digest((root / 'deploy/scripts/v10/normalization_pilot.exs').read_bytes()),
               'max_batches': max_batches, 'max_rows': max_rows, 'wal_budget_bytes': WAL_BUDGET,
+              'minimum_next_batch_wal_bytes': NEXT_BATCH_WAL_RESERVE,
               'start_window_seconds': START_WINDOW_SECONDS, 'created_epoch': time.time(), 'space_before': P.free_bytes()}
     P.require(inputs['space_before'] >= 200 * 1024**3, 'Less than 200 GiB data free')
     B.validate_state_directory(api, BASE, root)

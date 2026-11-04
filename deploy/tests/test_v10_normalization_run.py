@@ -26,6 +26,7 @@ class RunTests(unittest.TestCase):
         self.api.run.side_effect = lambda command, **kw: 'owned-client' if self.active and command[:2] == ['docker', 'ps'] else ''
         self.active, self.fail_before, self.lose_after = False, False, False
         self.migrates, self.samples = 0, 0
+        self.wal_per_batch = 1000
         self.normalized = {20, 10}
         self.addCleanup(patch.stopall)
         patch.object(J, 'BASE', self.f.base / 'runs').start()
@@ -73,7 +74,7 @@ class RunTests(unittest.TestCase):
             self.lose_after = False
             raise J.U.UpgradeError('simulated lost commit response')
         return {**self.result(state, mode), 'updated_rows': count, 'elapsed_ms': 20,
-                'cluster_wal_delta_bytes': 1000, 'already_normalized': False}
+                'cluster_wal_delta_bytes': self.wal_per_batch, 'already_normalized': False}
 
     def sample(self, api, root, after_path):
         self.samples += 1
@@ -205,6 +206,50 @@ class RunTests(unittest.TestCase):
         self.assertEqual(result['status'], 'client_in_progress')
         self.assertEqual(self.migrates, 0)
         self.assertFalse(any(c.args[0][:2] == ['docker', 'rm'] for c in self.api.run.call_args_list))
+
+    def test_remaining_wal_reserve_stops_before_sampling_or_preparing_another_batch(self):
+        self.wal_per_batch = J.WAL_BUDGET - J.NEXT_BATCH_WAL_RESERVE + 1
+        result = self.execute(self.prepare(batches=5, rows=10))
+        self.assertEqual(result['stop_reason'], 'next_batch_wal_reserve_reached')
+        self.assertEqual(result['completed_batches'], 1)
+        self.assertEqual(self.samples, 1)
+        self.assertIsNone(result['pending_batch_state'])
+        self.assertLess(result['charged_chunk_wal_bytes'], J.WAL_BUDGET)
+
+    def test_expanded_pilot_reaches_25_batches_without_changing_shared_budgets(self):
+        targets = [{'block': 200, 'rows': 1}, {'block': 100, 'rows': 1}]
+        self.fixture.sample.update(before_block=201, newest_selected_block=200, oldest_selected_block=100,
+                                   excluded_boundary_block=99,
+                                   selected_blocks=[{'block': r['block'], 'rows': 1, 'needs': 1, 'row_bytes': 324} for r in targets])
+        self.f.state['block_rows'] = targets
+        self.f.state['migration_payload'].update(blocks=[200, 100], block_rows=targets)
+        self.f.state['baseline'] = J.P.baseline(self.result(self.f.state, 'inspect', normalized=set()))
+        self.f.state['migration_payload']['baseline'] = {k: self.f.state['baseline'][k] for k in ('full_hashes', 'semantic_hashes', 'statuses')}
+        self.normalized = {200, 100}
+        self.fixture.write()
+        path = self.prepare(batches=25, rows=25000)
+        result = self.execute(path)
+        self.assertEqual(result['completed_batches'], 25)
+        self.assertEqual(result['selected_rows_verified'], 50)
+        self.assertEqual(result['next_before_block'], 50)
+        self.assertEqual(result['chunk_wal_budget_bytes'], 128 * 1024**2)
+        self.assertEqual(result['new_batch_start_window_seconds'], 600)
+        self.assertEqual(self.migrates, 25)
+        for batches, rows in ((26, 25000), (25, 25001)):
+            with self.assertRaises(J.U.UpgradeError):
+                self.prepare(batches=batches, rows=rows)
+
+    def test_legacy_frozen_run_inputs_without_the_new_reserve_remain_readable(self):
+        path = self.prepare()
+        state = json.loads(path.read_text())
+        state['inputs'].pop('minimum_next_batch_wal_bytes')
+        content = J.R.encoded(state['inputs'])
+        (path.parent / 'inputs.json').write_bytes(content)
+        state['inputs_sha256'] = J.R.digest(content)
+        J.R.update_state(path, state)
+        loaded = J.load(self.api, path, self.manifest)
+        self.assertEqual(J.public(path, loaded, 'status')['minimum_next_batch_wal_bytes'], 0)
+        self.assertIsNone(J.limit_reason(loaded))
 
 
 if __name__ == '__main__':
