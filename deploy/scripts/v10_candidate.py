@@ -12,6 +12,7 @@ import candidate_build as B
 import containerd_maintenance as M
 import dev_config as D
 import upgrade_plan as U
+import v10_nft as N
 
 ROOT = Path(__file__).resolve().parents[2]
 FORMAT = 'blockscout-v10-upgrade-candidate-v1'
@@ -91,6 +92,7 @@ def prepare(api, root, private, output, storage):
     STAGE = 'source_version'
     source = source_plan(api, root, manifest, model, before)
     environment = model['services']['backend']['environment']
+    N.plan(api, model)
     api.require(HOLD not in environment, 'Captured profile must not override the candidate image migration hold')
     STAGE = 'market_provider'
     market = B.market_policy().provider_check(api, environment)
@@ -118,7 +120,8 @@ def build(api, root, private, output, storage, check=False, reuse=False):
     existing = B.image_info(api, source['tag'], missing=True)
     summary = {'environment': 'dev', 'source_commit': source['source_commit'], 'release_version': '10.2.6',
                'platform': source['platform'], 'candidate_tag': source['tag'], 'automatic_background_migrations_held': True,
-               'activation_performed': False, 'deployment_permitted': False, 'storage': capacity, 'native_coin_market': market}
+               'activation_performed': False, 'deployment_permitted': False, 'storage': capacity, 'native_coin_market': market,
+               'paired_activation_services': ['backend', 'nft_media_handler']}
     if check:
         return {'status': 'v10_candidate_build_ready', **summary, 'candidate_already_exists': existing is not None}
     api.require((existing is not None) == reuse, 'Existing candidate requires --reuse; otherwise omit --reuse')
@@ -133,8 +136,13 @@ def build(api, root, private, output, storage, check=False, reuse=False):
     STAGE = 'release_config'
     image = B.image_info(api, source['tag'])
     validate_image(api, image, source)
-    checks = B.smoke_image(api, image['Id'], source, model['services']['backend']['environment'], directory,
-                           extra_expression=held_expression())
+    nft_plan = N.plan(api, model)
+    backend_environment = {**model['services']['backend']['environment'], **nft_plan['backend_environment']}
+    checks = B.smoke_image(api, image['Id'], source, backend_environment, directory,
+                           extra_expression=held_expression() +
+                           'true = Application.get_env(:nft_media_handler, :r2_folder) == System.get_env("NFT_MEDIA_HANDLER_BUCKET_FOLDER"); ')
+    nft_checks = N.smoke_worker(api, image['Id'], source['release_version'],
+                                model['services']['nft_media_handler']['environment'], directory)
     STAGE = 'post_build'
     api.require(B.clean_source(api, root) == (source['source_commit'], '10.2.6'), 'Source changed during build')
     api.require(api.load_private(private, requirements) == values, 'Private input changed during build')
@@ -145,8 +153,9 @@ def build(api, root, private, output, storage, check=False, reuse=False):
     result = {'format': FORMAT, **summary, 'image_id': image['Id'], 'build_fingerprint': source['fingerprint'],
               'build_arguments': source['build_arguments'], 'migration_inventory_sha256': source['migration_inventory_sha256'],
               'smoke_checks': checks, 'baseline_image_ids': {name: row['Image'] for name, row in before.items()},
+              'nft_role_plan': nft_plan, 'nft_worker_release_config_checks': nft_checks,
               'private_input_file': str(private), 'storage_state': str(storage),
-              'scope': 'Committed AMD64 build, release configuration and selected repair/hold checks. No full application startup, live migration, background-worker execution or deployment.'}
+              'scope': 'Committed AMD64 build, backend and NFT worker release configuration, preserved bucket folder and selected repair/hold checks. No full application startup, live migration, background-worker execution or deployment.'}
     path = directory / 'candidate.json'
     with B.private_log(path) as stream:
         stream.write((json.dumps(result, indent=2, sort_keys=True) + '\n').encode())

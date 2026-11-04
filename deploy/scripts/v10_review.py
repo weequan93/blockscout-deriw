@@ -14,6 +14,7 @@ import dev_config as D
 import release as R
 import upgrade_plan as U
 import v10_candidate as V
+import v10_nft as N
 
 ROOT = Path(__file__).resolve().parents[2]
 STAGE = 'receipt'
@@ -32,6 +33,9 @@ def candidate(api, root, receipt_path, private, before, manifest):
     api.require(saved.get('private_input_file') == str(private.resolve()), 'Use the candidate original private inputs')
     api.require(saved.get('smoke_checks') == [{'mode': value, 'passed': True} for value in ('unset', 'false', 'true')],
                 'Candidate release checks are incomplete')
+    api.require(saved.get('nft_worker_release_config_checks') ==
+                {'passed': True, 'static_peer_discovery': True, 'producer_node': N.PRODUCER},
+                'Candidate NFT worker configuration has not been verified')
     api.require(saved.get('baseline_image_ids') == {name: row['Image'] for name, row in before.items()}
                 and set(before) == set(manifest['baseline_image_ids']), 'Live service images changed after candidate build')
     commit, version = B.clean_source(api, root)
@@ -140,6 +144,7 @@ def review(api, root, receipt_path, private):
     history = U.history_report(root, api)
     STAGE = 'runtime_prerequisites'
     model = api.managed_model(root, manifest, values)
+    api.require(saved.get('nft_role_plan') == N.plan(api, model), 'NFT role/folder settings changed since the candidate build')
     mounts = C.mount_access(api, model['services']['backend'], before['backend'], inventory['identity'])
     health = C.live_health(api, before)
     capacity = V.storage_ready(Path(saved['storage_state']))
@@ -148,7 +153,7 @@ def review(api, root, receipt_path, private):
     api.require(C.private_receipt(api, receipt_path, root) == saved
                 and B.image_info(api, saved['candidate_tag'])['Id'] == image['Id'], 'Candidate receipt/tag changed during review')
     api.require(B.clean_source(api, root) == (review_commit, '10.2.6'), 'Review source changed during metadata reads')
-    blockers = ['snapshot_recovery_unverified', 'migration_working_space_unverified']
+    blockers = ['migration_working_space_unverified']
     if any(row['unexpected_pending_versions'] for row in migrations):
         blockers.append('pending_versions_outside_reviewed_sequence')
     if not all(health.values()) or not mounts['numeric_user_and_groups_match']:
@@ -159,6 +164,8 @@ def review(api, root, receipt_path, private):
             'candidate_image': image['Id'], 'candidate_source_commit': saved['source_commit'],
             'review_source_commit': review_commit,
             'automatic_background_migrations_held': True, 'deployment_permitted': False, 'snapshot_verified': False,
+            'recovery_policy': {'route': 'operator_manual', 'recovery_verified': False,
+                                'operator_authorized_without_verification': True, 'decision_date': '2026-11-04'},
             'blockers': blockers, 'migration_sequence': migrations,
             'upstream_pending_count': sum(len(row['upstream_pending_versions']) for row in migrations),
             'deferred_custom_count': sum(len(row['deferred_custom_versions']) for row in migrations),

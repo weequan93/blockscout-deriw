@@ -21,6 +21,7 @@ TESTS = [
     "apps/indexer/test/indexer/block/fetcher/receipt_fallback_test.exs",
     "apps/indexer/test/indexer/temporary/uncataloged_token_transfers_config_test.exs",
     "apps/explorer/test/explorer/migrator/startup_control_test.exs",
+    "apps/nft_media_handler/test/nft_media_handler/v10_peer_config_test.exs",
 ]
 
 

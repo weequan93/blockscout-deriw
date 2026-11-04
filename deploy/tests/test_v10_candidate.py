@@ -31,8 +31,12 @@ class CandidateTests(unittest.TestCase):
         self.before = {'backend': {'Image': IMAGE, 'Id': 'c' * 64,
                                    'Config': {'Env': ['RELEASE_VERSION=9.0.1']}, 'State': {'Running': True}}}
         self.model = {'services': {'backend': {
-            'environment': {'CHAIN_ID': '18417507517', 'RELEASE_COOKIE': SECRET},
-            'build': {'args': {'CHAIN_TYPE': 'arbitrum', 'RELEASE_VERSION': '9.0.1'}}}}}
+            'environment': {'CHAIN_ID': '18417507517', 'RELEASE_COOKIE': SECRET, 'RELEASE_NODE': V.N.PRODUCER,
+                            'NFT_MEDIA_HANDLER_ENABLED': 'true', 'NFT_MEDIA_HANDLER_REMOTE_DISPATCHER_NODE_MODE_ENABLED': 'true'},
+            'build': {'args': {'CHAIN_TYPE': 'arbitrum', 'RELEASE_VERSION': '9.0.1'}}},
+            'nft_media_handler': {'environment': {'RELEASE_NODE': V.N.WORKER, 'NFT_MEDIA_HANDLER_ENABLED': 'true',
+                'NFT_MEDIA_HANDLER_REMOTE_DISPATCHER_NODE_MODE_ENABLED': 'true', 'NFT_MEDIA_HANDLER_IS_WORKER': 'true',
+                'NFT_MEDIA_HANDLER_NODES_MAP': json.dumps({V.N.PRODUCER: '/folder_1'})}}}}
         self.report = {'changed_runtime_fields': [], 'live_declared_environment_drift': [], 'live_images_differing_from_capture': []}
         self.api = types.SimpleNamespace(
             require=V.D.require, ConfigError=V.D.ConfigError, env_map=V.D.env_map, read_json=V.D.read_json,
@@ -57,6 +61,7 @@ class CandidateTests(unittest.TestCase):
                 (V.B, 'market_policy', {'return_value': types.SimpleNamespace(provider_check=Mock(return_value={'status': 'ok'}), FIELDS=set())}),
                 (V.B, 'image_info', {'side_effect': [existing, self.image, self.image]}),
                 (V.B, 'compile_image', {}), (V.B, 'clean_source', {'return_value': (COMMIT, '10.2.6')}),
+                (V.N, 'smoke_worker', {'return_value': {'passed': True, 'static_peer_discovery': True, 'producer_node': V.N.PRODUCER}}),
                 (V.B, 'smoke_image', {'return_value': [{'mode': value, 'passed': True} for value in ('unset', 'false', 'true')]})]:
                 mocks[name] = stack.enter_context(patch.object(module, name, **options))
             yield mocks
@@ -83,6 +88,8 @@ class CandidateTests(unittest.TestCase):
         self.assertEqual(data['format'], V.FORMAT)
         self.assertNotEqual(data['format'], V.B.FORMAT)
         self.assertEqual(data['build_arguments'][V.HOLD], 'true')
+        self.assertEqual(data['nft_role_plan']['backend_environment']['NFT_MEDIA_HANDLER_BUCKET_FOLDER'], '/folder_1')
+        self.assertTrue(data['nft_worker_release_config_checks']['passed'])
         self.assertFalse(data['deployment_permitted'])
         self.assertEqual(receipt.stat().st_mode & 0o777, 0o600)
         self.assertNotIn(SECRET, receipt.read_text() + stdout.getvalue())

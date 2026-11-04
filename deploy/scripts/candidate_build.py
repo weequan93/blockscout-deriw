@@ -148,7 +148,7 @@ def smoke_expression(mode,extra_expression=''):
   +market_policy().smoke_expression()+extra_expression+'IO.puts("'+MARKER+'")')
 
 
-def smoke_script(mode,extra_expression=''):
+def eval_script(expression):
  # jq @sh quotes values rather than executing their contents. Runtime config must
  # see this environment before release eval loads Config.Provider.
  return ("set -eu\numask 077\ncat > /tmp/candidate-env.json\n"
@@ -157,7 +157,11 @@ def smoke_script(mode,extra_expression=''):
   'rm /tmp/candidate-env.json\n'
   'test -s "/app/releases/$RELEASE_VERSION/config_helper.exs"\n'
   'test -s "/app/releases/$RELEASE_VERSION/runtime.exs"\n'
-  "exec /app/bin/blockscout eval '"+smoke_expression(mode,extra_expression)+"'\n")
+  "exec /app/bin/blockscout eval '"+expression+"'\n")
+
+
+def smoke_script(mode,extra_expression=''):
+ return eval_script(smoke_expression(mode,extra_expression))
 
 
 def smoke_image(api,image,source,backend_environment,directory,extra_expression=''):

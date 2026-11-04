@@ -32,6 +32,8 @@ class ReviewTests(unittest.TestCase):
         inventory_hash = hashlib.sha256(json.dumps(self.plan['target_migration_sha256'], sort_keys=True).encode()).hexdigest()
         self.saved = {'format': T.V.FORMAT, 'environment': 'dev', 'release_version': '10.2.6', 'platform': 'linux/amd64',
                       'source_commit': ORIGINAL, 'activation_performed': False, 'automatic_background_migrations_held': True,
+                      'nft_worker_release_config_checks': {'passed': True, 'static_peer_discovery': True, 'producer_node': T.N.PRODUCER},
+                      'nft_role_plan': {'fixture': 'role-plan'},
                       'private_input_file': str(self.private), 'baseline_image_ids': {'backend': BASELINE},
                       'candidate_tag': 'deriw-blockscout:upgrade-v10-' + ORIGINAL[:12] + '-arbitrum-amd64',
                       'image_id': IMAGE, 'migration_inventory_sha256': inventory_hash,
@@ -95,6 +97,7 @@ class ReviewTests(unittest.TestCase):
         for mutate in (
             lambda saved: saved.update(build_fingerprint='wrong'),
             lambda saved: saved.update(smoke_checks=[]),
+            lambda saved: saved.pop('nft_worker_release_config_checks'),
             lambda saved: saved.update(private_input_file='/different/private.json'),
             lambda saved: saved.update(baseline_image_ids={}),
             lambda saved: saved.update(migration_inventory_sha256='wrong'),
@@ -161,16 +164,20 @@ class ReviewTests(unittest.TestCase):
                 patch.object(T.U, 'history_report', return_value={'read_only': True}), \
                 patch.object(T.C, 'mount_access', return_value={'numeric_user_and_groups_match': True}), \
                 patch.object(T.C, 'live_health', return_value={'backend_readiness_ok': True, 'nft_connection_and_queue_ok': True}), \
+                patch.object(T.N, 'plan', return_value=self.saved['nft_role_plan']), \
                 patch.object(T.V, 'storage_ready', return_value={'migration_space_verified': False}):
             return T.review(self.api, ROOT, self.receipt_path, self.private)
 
-    def test_review_reports_actual_artifact_and_keeps_recovery_and_space_unapproved(self):
+    def test_review_records_manual_recovery_without_claiming_a_verified_snapshot(self):
         result = self.complete_review()
         self.assertEqual(result['upstream_pending_count'], 29)
         self.assertEqual(result['deferred_custom_count'], 2)
         self.assertEqual(result['candidate_image'], IMAGE)
         self.assertFalse(result['deployment_permitted'])
-        self.assertEqual(result['blockers'], ['snapshot_recovery_unverified', 'migration_working_space_unverified'])
+        self.assertFalse(result['snapshot_verified'])
+        self.assertEqual(result['recovery_policy']['route'], 'operator_manual')
+        self.assertTrue(result['recovery_policy']['operator_authorized_without_verification'])
+        self.assertEqual(result['blockers'], ['migration_working_space_unverified'])
 
     def test_nonempty_dropped_table_and_unexpected_versions_are_flagged(self):
         self.tables[0]['has_rows'] = True

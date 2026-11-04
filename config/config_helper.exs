@@ -357,6 +357,20 @@ defmodule ConfigHelper do
     error -> raise "Invalid JSON in environment variable #{env_var}: #{inspect(error)}"
   end
 
+  def nft_media_peer_nodes do
+    peers = parse_json_env_var("NFT_MEDIA_HANDLER_NODES_MAP")
+
+    unless is_map(peers) and map_size(peers) <= 16 and
+             Enum.all?(Map.keys(peers), fn node ->
+               is_binary(node) and byte_size(node) <= 255 and
+                 Regex.match?(~r/^[A-Za-z0-9_][A-Za-z0-9_.-]*@[A-Za-z0-9_][A-Za-z0-9_.-]*$/, node)
+             end) do
+      raise ArgumentError, "NFT_MEDIA_HANDLER_NODES_MAP must contain at most 16 valid node names"
+    end
+
+    peers |> Map.keys() |> Enum.sort() |> Enum.map(&String.to_atom/1)
+  end
+
   @spec parse_list_env_var(String.t(), String.t() | nil) :: list()
   def parse_list_env_var(env_var, default_value \\ nil) do
     addresses_var = safe_get_env(env_var, default_value)

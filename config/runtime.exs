@@ -1738,6 +1738,16 @@ config :indexer, Indexer.Fetcher.Zilliqa.ScillaSmartContracts.Supervisor,
 
 config :indexer, Indexer.Fetcher.Zilliqa.Zrc2Tokens.Supervisor, disabled?: ConfigHelper.chain_type() != :zilliqa
 
+nft_media_topologies =
+  if nmh_enabled? && nmh_remote? && nmh_worker? do
+    case ConfigHelper.nft_media_peer_nodes() do
+      [] -> []
+      hosts -> [nft_media_handler: [strategy: Cluster.Strategy.Epmd, config: [hosts: hosts, timeout: 5_000]]]
+    end
+  else
+    []
+  end
+
 config :libcluster,
   topologies: [
     k8sDNS: [
@@ -1747,7 +1757,7 @@ config :libcluster,
         application_name: "blockscout"
       ]
     ]
-  ]
+  ] ++ nft_media_topologies
 
 Code.require_file("#{config_env()}.exs", "config/runtime")
 
