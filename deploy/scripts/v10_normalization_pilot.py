@@ -21,6 +21,7 @@ import v10_upgrade as U
 ROOT = Path(__file__).resolve().parents[2]
 BASE = Path('/data/blockscout-dev-private/v10-normalization')
 FORMAT = 'blockscout-dev-v10-normalization-pilot-v1'
+BATCH_FORMAT = 'blockscout-dev-v10-normalization-batch-v1'
 WAL_LIMIT = 256 * 1024**2
 STAGE = 'preflight'
 
@@ -54,6 +55,30 @@ def baseline(result):
     return {**snapshot, 'statuses': result['statuses']}
 
 
+def block_rows(value):
+    """Validate a descending manifest of complete blocks under the row cap."""
+    require(isinstance(value, list) and 0 < len(value) <= 1000, 'Invalid bounded block manifest')
+    previous, total = 2**63, 0
+    for row in value:
+        require(isinstance(row, dict) and set(row) == {'block', 'rows'}
+                and type(row['block']) is int and 0 <= row['block'] < previous
+                and type(row['rows']) is int and 0 < row['rows'] <= 1000, 'Invalid complete block/count')
+        previous = row['block']
+        total += row['rows']
+    require(total <= 1000, 'Batch exceeds 1000 rows')
+    return total
+
+
+def check_block_rows(state, snapshot):
+    if state.get('format') == BATCH_FORMAT:
+        counts = {}
+        for row in snapshot['rows']:
+            height = row.get('block_number')
+            require(type(height) is int, 'Snapshot block identity missing')
+            counts[height] = counts.get(height, 0) + 1
+        require(counts == {r['block']: r['rows'] for r in state['block_rows']}, 'Selected per-block counts changed')
+
+
 def public(path, state, result=None):
     observed = baseline(result) if result else state['baseline']
     metrics = state.get('apply_result') or {}
@@ -65,14 +90,20 @@ def public(path, state, result=None):
         'legacy_error_messages_to_relocate': sum(r.get('error') is not None for r in original),
         'created_contract_destinations_to_fill': sum(r.get('created_contract_address_hash') is not None and r.get('to_address_hash') is None for r in original),
     }
-    return {'state': str(path), 'environment': 'dev', 'planned_transform_counts': transforms, 'block': state['block'], 'rows_in_block': state['expected_rows'],
+    batch = state.get('format') == BATCH_FORMAT
+    target = ({'selected_block_count': len(state['block_rows']), 'selected_rows': state['expected_rows'],
+               'newest_selected_block': state['block_rows'][0]['block'], 'oldest_selected_block': state['block_rows'][-1]['block'],
+               'sample_sha256': state['sample_sha256']} if batch else
+              {'block': state['block'], 'rows_in_block': state['expected_rows']})
+    return {'state': str(path), 'environment': 'dev', 'planned_transform_counts': transforms, **target,
             'rows_needing_normalization': observed['needs_normalization'], 'recorded_phase': state['phase'],
             'writes_may_have_started': state['writes_may_have_started'],
             'updated_rows': metrics.get('updated_rows'), 'update_elapsed_ms': metrics.get('elapsed_ms'),
             'observed_cluster_wal_delta_bytes': metrics.get('cluster_wal_delta_bytes'), 'wal_limit_bytes': WAL_LIMIT,
             'automatic_background_migrations_held': True, 'migration_completion_records_unchanged': True,
             'application_restarted': False, 'historical_rpc_used': False,
-            'scope': 'One selected stored block. Cluster WAL delta includes concurrent writers and excludes the final commit record; it is not a per-row or full-table forecast. Global normalization/index/PK work remains held.'}
+            'scope': ('Saved complete-block sample only. ' if batch else 'One selected stored block. ') +
+                     'Cluster WAL delta includes concurrent writers and excludes the final commit record; it is not a per-row or full-table forecast. Global normalization/index/PK work remains held.'}
 
 
 def write_state(path, state, phase):
@@ -85,15 +116,28 @@ def write_state(path, state, phase):
 
 def load(api, path, manifest):
     require(path.is_absolute() and path.resolve() == path and path.name == 'state.json' and path.parent.parent == BASE
-            and re.fullmatch(r'pilot-[0-9TZ-]+-[a-f0-9]{8}', path.parent.name), 'Unexpected private pilot path')
+            and re.fullmatch(r'(pilot|batch)-[0-9TZ-]+-[a-f0-9]{8}', path.parent.name), 'Unexpected private normalization path')
     require(path.parent.stat().st_uid == os.geteuid() and stat.S_IMODE(path.parent.stat().st_mode) == 0o700,
             'Pilot directory ownership/permissions changed')
     state = json.loads(U.private(path))
-    require(state.get('format') == FORMAT and state.get('environment') == 'dev' and state.get('chain_id') == manifest['chain_id']
+    require(state.get('format') in (FORMAT, BATCH_FORMAT) and state.get('environment') == 'dev' and state.get('chain_id') == manifest['chain_id']
             and state.get('phase') in ('preparing', 'prepared', 'write_requested', 'applied')
             and type(state.get('writes_may_have_started')) is bool, 'Unexpected pilot state')
-    require(type(state.get('block')) is int and 0 <= state['block'] < 2**63
-            and type(state.get('expected_rows')) is int and state['expected_rows'] in range(1, 1001), 'Invalid pilot target')
+    require(type(state.get('expected_rows')) is int and state['expected_rows'] in range(1, 1001), 'Invalid normalization row limit')
+    if state['format'] == BATCH_FORMAT:
+        require(path.parent.name.startswith('batch-') and block_rows(state.get('block_rows')) == state['expected_rows'], 'Invalid batch target')
+        sample = U.private(path.parent / 'sample.json')
+        require(R.digest(sample) == state['sample_sha256'], 'Frozen sample changed')
+        sample = json.loads(sample)
+        require(sample['upgrade_state'] == state['upgrade_state'] and sample['candidate_image'] == state['candidate_image']
+                and sample['selected_rows'] == state['expected_rows'] and sample['blockers'] == []
+                and [{'block': r['block'], 'rows': r['rows']} for r in sample['selected_blocks']] == state['block_rows'],
+                'Frozen sample target changed')
+        require(state['migration_payload']['blocks'] == [r['block'] for r in state['block_rows']]
+                and state['migration_payload']['block_rows'] == state['block_rows'], 'Batch payload target changed')
+    else:
+        require(path.parent.name.startswith('pilot-') and type(state.get('block')) is int and 0 <= state['block'] < 2**63
+                and state['migration_payload']['block'] == state['block'] and 'blocks' not in state['migration_payload'], 'Invalid pilot target')
     require(re.fullmatch(r'sha256:[a-f0-9]{64}', state['candidate_image'])
             and re.fullmatch(r'blockscout-v10-schema-[a-f0-9]{16}', state['client_name']), 'Invalid pilot client/image')
     require(R.digest(U.private(path.parent / 'migrate.exs')) == state['script_sha256'], 'Frozen pilot script changed')
@@ -101,9 +145,10 @@ def load(api, path, manifest):
         saved = json.loads(U.private(path.parent / 'baseline.json'))
         require(R.digest(R.encoded(saved)) == state['baseline_sha256'] and state['baseline'] == saved,
                 'Saved row snapshot changed')
+        check_block_rows(state, saved)
         expected = {k: saved[k] for k in ('full_hashes', 'semantic_hashes', 'statuses')}
         require(state['migration_payload']['baseline'] == expected, 'Pilot baseline payload changed')
-    require(state['migration_payload']['block'] == state['block'] and state['migration_payload']['expected_rows'] == state['expected_rows']
+    require(state['migration_payload']['expected_rows'] == state['expected_rows']
             and state['migration_payload']['wal_limit_bytes'] == WAL_LIMIT, 'Pilot resource/target limits changed')
     return state
 
@@ -169,6 +214,7 @@ def prepare(api, root, upgrade_path, block, expected_rows):
 
 def reconcile(state, result):
     current = baseline(result)
+    check_block_rows(state, current)
     saved = state['baseline']
     require(len(current['rows']) == state['expected_rows'] and current['semantic_hashes'] == saved['semantic_hashes']
             and current['statuses'] == saved['statuses'], 'Selected data semantics, row count or migration records changed')

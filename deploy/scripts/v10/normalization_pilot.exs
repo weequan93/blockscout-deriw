@@ -1,10 +1,26 @@
-# One explicitly selected block. Starts only a Repo; no application or worker.
+# Explicitly selected complete blocks. Starts only a Repo; no application or worker.
 payload = Jason.decode!(File.read!("/tmp/upgrade/payload.json"))
 mode = payload["mode"]
 true = mode in ["inspect", "migrate"]
 block = payload["block"]
+batch? = is_list(payload["blocks"])
+blocks = if batch?, do: payload["blocks"], else: [block]
 expected_rows = payload["expected_rows"]
-true = is_integer(block) and block >= 0 and is_integer(expected_rows) and expected_rows in 1..1000
+true = is_integer(expected_rows) and expected_rows in 1..1000
+
+true =
+  length(blocks) in 1..1000 and
+    Enum.all?(blocks, &(is_integer(&1) and &1 >= 0 and &1 < 9_223_372_036_854_775_808))
+
+true = blocks == Enum.sort(Enum.uniq(blocks), :desc)
+
+if batch? do
+  true = Enum.map(payload["block_rows"], & &1["block"]) == blocks
+  true = Enum.all?(payload["block_rows"], &(is_integer(&1["rows"]) and &1["rows"] in 1..1000))
+  true = Enum.sum(Enum.map(payload["block_rows"], & &1["rows"])) == expected_rows
+end
+
+args = if batch?, do: [blocks], else: [block]
 true = Explorer.Migrator.StartupControl.disabled?()
 
 for app <- [:crypto, :ssl, :postgrex, :ecto_sql],
@@ -41,12 +57,19 @@ semantic = ~S"""
 needs =
   ~S|(it.trace_address IS NOT NULL OR it.value=0 OR (it.call_type_enum IS NULL AND it.call_type IS NOT NULL) OR it.error IS NOT NULL OR (it.created_contract_address_hash IS NOT NULL AND it.to_address_hash IS NULL)) IS TRUE|
 
+target =
+  if batch?,
+    do:
+      ~S|it.block_number=ANY($1::bigint[]) ORDER BY it.block_number DESC,it.transaction_index DESC,it."index" DESC|,
+    else: ~S|it.block_number=$1 ORDER BY it.transaction_index DESC,it."index" DESC|
+
 sql =
   "SELECT to_jsonb(it), md5(to_jsonb(it)::text), md5((" <>
     semantic <>
     ")::text), " <>
     needs <>
-    ~S|, pg_column_size(it) FROM public.internal_transactions it LEFT JOIN public.transaction_errors te ON te.id=it.error_id WHERE it.block_number=$1 ORDER BY it.transaction_index DESC,it."index" DESC LIMIT 1001|
+    ~S|, pg_column_size(it) FROM public.internal_transactions it LEFT JOIN public.transaction_errors te ON te.id=it.error_id WHERE | <>
+    target <> " LIMIT 1001"
 
 status_names =
   ~w(empty_internal_transactions_data reindex_duplicated_internal_transactions heavy_indexes_create_internal_transactions_block_number_transaction_index_index_index heavy_indexes_create_internal_transactions_not_null_constraints heavy_indexes_create_internal_transactions_pkey)
@@ -58,6 +81,13 @@ started = System.monotonic_time(:millisecond)
     fn ->
       if mode == "inspect", do: q.("SET TRANSACTION READ ONLY", [])
       q.("SET LOCAL enable_seqscan=off", [])
+      q.("SET LOCAL enable_bitmapscan=off", [])
+      q.("SET LOCAL enable_sort=off", [])
+      q.("SET LOCAL enable_incremental_sort=off", [])
+      # The callback necessarily sorts its <=1000 locked rows. Do not spend
+      # this short transaction compiling a plan with discouraged-sort costs.
+      q.("SET LOCAL jit=off", [])
+
       [[true]] = q.("SELECT pg_try_advisory_xact_lock(184175075,1026)", [])
 
       [[database, oid, address, port, 15, false]] =
@@ -116,7 +146,7 @@ started = System.monotonic_time(:millisecond)
         )
         |> List.flatten()
 
-      [[[%{"Plan" => root}]]] = q.("EXPLAIN (FORMAT JSON) " <> sql, [block])
+      [[[%{"Plan" => root}]]] = q.("EXPLAIN (FORMAT JSON) " <> sql, args)
       nodes = walk.(root)
       [scan] = Enum.filter(nodes, &(&1["Relation Name"] == "internal_transactions"))
 
@@ -128,7 +158,7 @@ started = System.monotonic_time(:millisecond)
 
       snapshot = fn ->
         records =
-          q.(sql, [block])
+          q.(sql, args)
           |> Enum.sort_by(fn [row, _, _, _, _] -> {row["block_hash"], row["block_index"]} end)
 
         true = length(records) == expected_rows
@@ -136,6 +166,12 @@ started = System.monotonic_time(:millisecond)
         true = bytes <= 16 * 1024 * 1024
         rows = Enum.map(records, &Enum.at(&1, 0))
         true = byte_size(Jason.encode!(rows)) <= 16 * 1024 * 1024
+
+        if batch? do
+          true =
+            Enum.frequencies_by(rows, & &1["block_number"]) ==
+              Map.new(payload["block_rows"], &{&1["block"], &1["rows"]})
+        end
 
         %{
           rows: rows,
@@ -161,7 +197,7 @@ started = System.monotonic_time(:millisecond)
 
             true ->
               true = before.full_hashes == baseline["full_hashes"]
-              {:ok, {count, nil}} = worker.update_batch([block])
+              {:ok, {count, nil}} = worker.update_batch(blocks)
               true = count == before.needs_normalization
               {count, false}
           end
