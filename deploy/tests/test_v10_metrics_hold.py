@@ -31,6 +31,7 @@ class MetricsHoldTests(unittest.TestCase):
         patch.object(H.P, 'context', return_value=(self.manifest, {'candidate_image': self.runtime['backend']['Image']})).start()
         self.running, self.bad_target, self.lose_reply = True, False, False
         self.stops, self.starts = 0, 0
+        self.current_queries = []
         patch.object(H, 'rpc', side_effect=self.rpc).start()
         self.path = None
 
@@ -48,9 +49,10 @@ class MetricsHoldTests(unittest.TestCase):
             self.starts += 1
             self.running = True
         return {'mode': mode, 'metrics_worker_running': self.running, 'metrics_worker_held': not self.running,
-                'other_web_children_preserved': True, 'original_query_active': self.running,
+                'current_metric_queries': self.current_queries,
+                'other_web_children_preserved': True, 'original_query_active': self.running and payload['pid'] is not None,
                 'target': [{'expected_query': not self.bad_target, 'same_role': True, 'assigned_xid_present': False,
-                            'backend_start': '2026-11-04 03:30:20+00'}] if self.running else []}
+                            'backend_start': '2026-11-04 03:30:20+00'}] if self.running and payload['pid'] is not None else []}
 
     def prepare(self):
         with contextlib.redirect_stdout(io.StringIO()):
@@ -91,10 +93,48 @@ class MetricsHoldTests(unittest.TestCase):
         self.assertEqual(self.stops, 1)
         self.assertEqual(H.load(self.path)['phase'], 'held')
 
-    def test_wrong_target_cannot_prepare_a_mutation(self):
+    def test_stale_target_does_not_authorize_cancel_but_can_hold_the_known_collector(self):
         self.bad_target = True
-        with self.assertRaises(H.U.UpgradeError):
-            self.prepare()
+        self.prepare()
+        self.assertEqual(self.stops, 0)
+        self.assertIsNone(H.load(self.path)['inputs']['payload']['backend_start'])
+        result = self.execute()
+        self.assertEqual(self.stops, 1)
+        self.assertTrue(result['observed']['metrics_worker_held'])
+
+    def test_collector_only_hold_needs_no_query_identity(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = H.prepare(self.api, ROOT, Path('/private/upgrade/state.json'))
+        self.path = Path(result['state'])
+        self.assertFalse(result['query_target_provided'])
+        self.assertEqual(H.load(self.path)['inputs']['payload'],
+                         {'pid': None, 'query_start': None, 'backend_start': None, 'query_md5': H.QUERY_MD5})
+        self.execute()
+        self.assertEqual(self.stops, 1)
+
+    def test_partial_query_identity_is_rejected(self):
+        for pid, started in ((32950, None), (None, '2026-11-04 08:30:20+00')):
+            with self.assertRaises(H.U.UpgradeError):
+                H.prepare(self.api, ROOT, Path('/private/upgrade/state.json'), pid, started)
+        self.assertEqual(self.stops, 0)
+        self.assertEqual(list(self.base.iterdir()), [])
+
+    def test_current_query_is_resolved_and_frozen_without_a_copied_pid(self):
+        selected = {'pid': 123, 'query_start': '2026-11-04 10:30:20+00',
+                    'backend_start': '2026-11-04 03:30:20+00', 'query_md5': H.QUERY_MD5}
+        self.current_queries = [selected]
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = H.prepare(self.api, ROOT, Path('/private/upgrade/state.json'))
+        self.path = Path(result['state'])
+        self.assertEqual(result['target_selection'], 'current_query_fingerprint')
+        self.assertEqual(H.load(self.path)['inputs']['payload'], selected)
+        self.execute()
+        self.assertEqual(self.stops, 1)
+
+    def test_ambiguous_current_queries_stop_before_preparing_any_change(self):
+        self.current_queries = [{}, {}]
+        with self.assertRaisesRegex(H.U.UpgradeError, 'Multiple matching'):
+            H.prepare(self.api, ROOT, Path('/private/upgrade/state.json'))
         self.assertEqual(self.stops, 0)
         self.assertEqual(list(self.base.iterdir()), [])
 

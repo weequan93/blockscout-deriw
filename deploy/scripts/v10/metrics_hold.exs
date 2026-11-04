@@ -27,10 +27,20 @@ defmodule BlockscoutV10MetricsHold do
     {pid, Enum.reject(all, &(elem(&1, 0) == @worker)) |> Enum.sort()}
   end
 
+  defp target(%{"pid" => nil}), do: []
+
   defp target(payload) do
     query(
       "SELECT jsonb_build_object('pid',pid,'backend_start',backend_start::text,'query_start',query_start::text,'state',state,'expected_query',md5(query)=$2 AND query_start=$3::text::timestamptz,'snapshot_present',backend_xmin IS NOT NULL,'assigned_xid_present',backend_xid IS NOT NULL,'same_role',usename=current_user) FROM pg_stat_activity WHERE pid=$1 AND datname=current_database() AND backend_type='client backend' AND pid<>pg_backend_pid()",
       [payload["pid"], @query_md5, payload["query_start"]]
+    )
+    |> List.flatten()
+  end
+
+  defp current_metric_queries do
+    query(
+      "SELECT jsonb_build_object('pid',pid,'backend_start',backend_start::text,'query_start',query_start::text,'query_md5',md5(query)) FROM pg_stat_activity WHERE md5(query)=$1 AND datname=current_database() AND usename=current_user AND backend_type='client backend' AND state='active' AND backend_xid IS NULL AND pid<>pg_backend_pid() ORDER BY query_start,pid LIMIT 2",
+      [@query_md5]
     )
     |> List.flatten()
   end
@@ -40,21 +50,23 @@ defmodule BlockscoutV10MetricsHold do
     true = is_pid(Process.whereis(Explorer.Repo))
     "10.2.6" = Application.spec(:explorer, :vsn) |> to_string()
     true = payload["query_md5"] == @query_md5
-    true = is_integer(payload["pid"]) and payload["pid"] > 0
+
+    true =
+      (is_nil(payload["pid"]) and is_nil(payload["query_start"])) or
+        (is_integer(payload["pid"]) and payload["pid"] > 0 and is_binary(payload["query_start"]))
+
     true = payload["mode"] in ["observe", "hold", "restore"]
     {before_pid, siblings} = children()
     observed = target(payload)
 
-    if payload["mode"] == "hold" and is_pid(before_pid) do
-      # An exited target is harmless. A PID reused for another query is never
-      # cancelled. The fixed fingerprint identifies the source-reviewed metric.
-      true =
-        observed == [] or
-          Enum.all?(
-            observed,
-            &(&1["expected_query"] and &1["same_role"] and not &1["assigned_xid_present"])
-          )
-    end
+    # The supervisor child and a historical database query are separate targets.
+    # Pausing the known collector is valid after its old query finishes. A stale
+    # query identity never authorizes a cancellation or changes the saved target.
+    cancel_eligible =
+      Enum.any?(observed, fn row ->
+        row["expected_query"] and row["same_role"] and not row["assigned_xid_present"] and
+          row["backend_start"] == payload["backend_start"]
+      end)
 
     cancellation =
       case payload["mode"] do
@@ -64,11 +76,15 @@ defmodule BlockscoutV10MetricsHold do
           nil = Process.whereis(@worker)
           # Terminating the owner normally releases its database task. Cancel only
           # the still-running, exact original SELECT if it outlived that owner.
-          query(
-            "SELECT pg_cancel_backend(pid) FROM pg_stat_activity WHERE pid=$1 AND md5(query)=$2 AND query_start=$3::text::timestamptz AND backend_start=$4::text::timestamptz AND datname=current_database() AND usename=current_user AND backend_type='client backend' AND state='active' AND backend_xid IS NULL AND pid<>pg_backend_pid()",
-            [payload["pid"], @query_md5, payload["query_start"], payload["backend_start"]]
-          )
-          |> List.flatten()
+          if cancel_eligible do
+            query(
+              "SELECT pg_cancel_backend(pid) FROM pg_stat_activity WHERE pid=$1 AND md5(query)=$2 AND query_start=$3::text::timestamptz AND backend_start=$4::text::timestamptz AND datname=current_database() AND usename=current_user AND backend_type='client backend' AND state='active' AND backend_xid IS NULL AND pid<>pg_backend_pid()",
+              [payload["pid"], @query_md5, payload["query_start"], payload["backend_start"]]
+            )
+            |> List.flatten()
+          else
+            []
+          end
 
         "restore" ->
           if before_pid == :undefined do
@@ -105,6 +121,9 @@ defmodule BlockscoutV10MetricsHold do
       target: remaining,
       cancellation_requested: cancellation != [],
       cancellation_accepted: cancellation == [true],
+      query_target_provided: not is_nil(payload["pid"]),
+      cancellation_eligible_at_check: cancel_eligible,
+      current_metric_queries: current_metric_queries(),
       application_restarted: false,
       database_rows_modified: false,
       original_query_active:

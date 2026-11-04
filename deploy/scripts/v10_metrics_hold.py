@@ -48,15 +48,19 @@ def load(path):
 def public(path, state, observed=None):
     return {'status': 'metrics_hold_' + state['phase'], 'state': str(path), 'environment': 'dev',
             'tool_source_commit': state['inputs']['tool_source_commit'],
-            'effect': 'Pause periodic indexer health-metric refreshes. Existing gauge values may remain stale. Cancel only the exact original missing-blocks SELECT if still active. No backend restart or normalization/database-row write.',
+            'effect': 'Pause periodic indexer health-metric refreshes. Existing gauges may remain stale. Optional query cancellation requires the exact saved identity; stale or absent targets are left alone. No backend restart or normalization/database-row write.',
+            'query_target_provided': state['inputs']['payload']['pid'] is not None,
+            'target_selection': state['inputs'].get('target_selection', 'explicit'),
             'restore': 'Use --restore --state with this journal after maintenance; restoring immediately starts metric collection again.',
             'persistent_environment_changed': False, 'automatic_background_migrations_held': True,
             **({'observed': observed} if observed else {})}
 
 
-def prepare(api, root, upgrade_path, pid, query_start):
-    P.require(type(pid) is int and 0 < pid < 2**31 and isinstance(query_start, str)
-              and re.fullmatch(r'[0-9:.+ TZ-]{10,64}', query_start), 'Provide the observed PID and query-start timestamp')
+def prepare(api, root, upgrade_path, pid=None, query_start=None):
+    P.require((pid is None and query_start is None) or
+              (type(pid) is int and 0 < pid < 2**31 and isinstance(query_start, str)
+               and re.fullmatch(r'[0-9:.+ TZ-]{10,64}', query_start)),
+              'Provide both observed query fields or omit both for a collector-only hold')
     manifest, upgrade = P.context(api, root, upgrade_path)
     source = B.clean_source(api, root)
     P.require(source[1] == '10.2.6', 'Tool source release changed')
@@ -67,9 +71,19 @@ def prepare(api, root, upgrade_path, pid, query_start):
     P.require(result.get('metrics_worker_running') is True and result.get('other_web_children_preserved') is True,
               'Expected running metrics child is absent; inspect its owner before creating another hold')
     targets = result['target']
-    P.require(len(targets) <= 1 and (not targets or (targets[0]['expected_query'] and targets[0]['same_role']
-              and not targets[0]['assigned_xid_present'])), 'Target changed; no runtime change or cancellation was requested')
-    if targets:
+    P.require(len(targets) <= 1, 'Unexpected target observation')
+    selection = 'explicit' if pid is not None else 'collector_only'
+    if pid is None:
+        candidates = result.get('current_metric_queries') or []
+        P.require(len(candidates) <= 1, 'Multiple matching monitoring queries need review; no runtime change was requested')
+        if candidates:
+            selected = candidates[0]
+            P.require(selected['query_md5'] == QUERY_MD5 and type(selected['pid']) is int and selected['pid'] > 0
+                      and isinstance(selected['query_start'], str) and isinstance(selected['backend_start'], str),
+                      'Invalid current monitoring-query identity')
+            payload.update({k: selected[k] for k in ('pid', 'query_start', 'backend_start')})
+            selection = 'current_query_fingerprint'
+    if targets and targets[0]['expected_query'] and targets[0]['same_role'] and not targets[0]['assigned_xid_present']:
         payload['backend_start'] = targets[0]['backend_start']
     api.ensure_stable(before, api.inspect_project(manifest), 'Deployment changed while observing metrics')
     B.validate_state_directory(api, BASE, root)
@@ -78,7 +92,7 @@ def prepare(api, root, upgrade_path, pid, query_start):
     directory.mkdir(mode=0o700)
     path = directory / 'state.json'
     inputs = {'upgrade_state': str(upgrade_path), 'candidate_image': upgrade['candidate_image'], 'runtime_before': before,
-              'tool_source_commit': source[0], 'script_sha256': R.digest(script), 'payload': payload}
+              'tool_source_commit': source[0], 'script_sha256': R.digest(script), 'payload': payload, 'target_selection': selection}
     R.write_new(directory / 'inputs.json', R.encoded(inputs))
     R.write_new(directory / 'metrics.exs', script)
     state = {'format': FORMAT, 'phase': 'prepared', 'inputs': inputs, 'inputs_sha256': R.digest(R.encoded(inputs))}

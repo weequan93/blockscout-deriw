@@ -49,15 +49,17 @@ find_target = fn ->
 end
 payload = find_target.()
 true = is_map(payload)
+inspection = BlockscoutV10MetricsHold.run(%{"mode"=>"observe","pid"=>nil,"query_start"=>nil,"backend_start"=>nil,"query_md5"=>"d63aea58d81cc7d2d9c7ad5cd82809dd"})
+[selected] = inspection.current_metric_queries
+true = selected == payload
 before = Explorer.Repo.query!("SELECT to_jsonb(s) FROM migrations_status s ORDER BY migration_name",[],log: false).rows
-# An identity mismatch must not stop the owner or signal a database query.
-try do
-  BlockscoutV10MetricsHold.run(Map.merge(payload,%{"mode"=>"hold","query_start"=>"2000-01-01 00:00:00+00"}))
-  raise "mismatched_target_was_accepted"
-rescue
-  _ in MatchError -> :ok
-end
-true = is_pid(Process.whereis(Indexer.Prometheus.Metrics))
+# A stale target may now be an unrelated query. Hold the known collector, but
+# leave that database session and its unrelated lock entirely alone.
+[[unrelated_pid,unrelated_start,unrelated_backend]] = Explorer.Repo.query!("SELECT a.pid,a.query_start::text,a.backend_start::text FROM pg_stat_activity a JOIN pg_locks l ON l.pid=a.pid WHERE l.relation='blocks'::regclass AND l.mode='AccessExclusiveLock' AND l.granted",[],log: false).rows
+stale = Map.merge(payload,%{"pid"=>unrelated_pid,"query_start"=>unrelated_start,"backend_start"=>unrelated_backend,"mode"=>"hold"})
+stale_hold = BlockscoutV10MetricsHold.run(stale)
+true = stale_hold.metrics_worker_held and not stale_hold.cancellation_requested and not stale_hold.cancellation_eligible_at_check
+[[1]] = Explorer.Repo.query!("SELECT count(*) FROM pg_locks WHERE pid=$1 AND relation='blocks'::regclass AND mode='AccessExclusiveLock' AND granted",[unrelated_pid],log: false).rows
 held = BlockscoutV10MetricsHold.run(Map.put(payload,"mode","hold"))
 true = held.metrics_worker_held and not held.original_query_active and held.other_web_children_preserved
 true = Process.alive?(sibling)
@@ -68,12 +70,16 @@ restored = BlockscoutV10MetricsHold.run(Map.put(payload,"mode","restore"))
 true = restored.metrics_worker_running and restored.other_web_children_preserved
 second = find_target.()
 true = is_map(second)
+collector_only = BlockscoutV10MetricsHold.run(%{"mode"=>"hold","pid"=>nil,"query_start"=>nil,"backend_start"=>nil,"query_md5"=>"d63aea58d81cc7d2d9c7ad5cd82809dd"})
+true = collector_only.metrics_worker_held and not collector_only.query_target_provided and not collector_only.cancellation_requested
+# If owner shutdown released the query, no signal is needed at all. Otherwise
+# the exact original target can still be reconciled by an explicit pinned hold.
 held_again = BlockscoutV10MetricsHold.run(Map.put(second,"mode","hold"))
 true = held_again.metrics_worker_held and not held_again.original_query_active
 true = Process.alive?(sibling)
 true = before == Explorer.Repo.query!("SELECT to_jsonb(s) FROM migrations_status s ORDER BY migration_name",[],log: false).rows
 nil = Process.whereis(Explorer.Supervisor)
-IO.puts("BLOCKSCOUT_DEPLOY_CHECK=" <> Jason.encode!(%{status: "passed",actual_compiled_metrics_worker: true,known_missing_blocks_query_observed: true,wrong_query_identity_rejected: true,hold_and_idempotent_hold_checked: true,restore_and_second_hold_checked: true,unrelated_sibling_preserved: true,original_query_released: true,migration_records_unchanged: true,application_restart: false,live_services_accessed: false}))
+IO.puts("BLOCKSCOUT_DEPLOY_CHECK=" <> Jason.encode!(%{status: "passed",actual_compiled_metrics_worker: true,known_missing_blocks_query_observed: true,current_query_fingerprint_discovery_checked: true,stale_query_not_cancelled: true,unrelated_database_lock_preserved: true,collector_only_hold_checked: true,hold_and_idempotent_hold_checked: true,restore_and_second_hold_checked: true,unrelated_sibling_preserved: true,original_query_released: true,migration_records_unchanged: true,application_restart: false,live_services_accessed: false}))
 '''
         result = subprocess.run(command, input=U.archive(environment, {}, source.encode()), capture_output=True, timeout=75)
         (directory / 'metrics-hold.log').write_bytes(result.stdout + result.stderr)
