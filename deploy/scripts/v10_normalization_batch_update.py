@@ -57,7 +57,7 @@ def receipt(path, digest, manifest):
     return saved, content, targets
 
 
-def prepare(api, root, sample_path, digest):
+def prepare(api, root, sample_path, digest, limits=None):
     global STAGE
     STAGE = 'sample_receipt'
     manifest, _, _ = api.configuration(root, 'dev')
@@ -95,6 +95,12 @@ def prepare(api, root, sample_path, digest):
              'tool_source_commit': source[0], 'network': upgrade['network'], 'backend_environment': upgrade['backend_environment'],
              'client_name': 'blockscout-v10-schema-' + uuid.uuid4().hex[:16], 'migration_payload': payload,
              'script_sha256': R.digest(script), 'runtime_before': before}
+    if limits is not None:
+        P.require(set(limits) == {'wal_limit_bytes', 'space_before', 'controller_state'}
+                  and type(limits['space_before']) is int and limits['space_before'] >= 200 * 1024**3
+                  and Path(limits['controller_state']).is_absolute(), 'Invalid bounded-run limits')
+        state.update(limits)
+        payload['wal_limit_bytes'] = P.wal_limit(state)
     R.write_new(path, R.encoded(state))
     print(json.dumps({'phase': 'batch_inputs_saved', 'state': str(path), 'database_writes': False}), flush=True)
     STAGE = 'private_bounded_snapshot'

@@ -209,6 +209,32 @@ class PilotTests(unittest.TestCase):
                 P.prepare(self.api, ROOT, Path('/fixture/upgrade/state.json'), 171635973, 1)
         self.assertEqual(len(list(self.base.glob('pilot-*'))), 1)
 
+    def test_run_guard_stops_before_write_journaling_and_is_skipped_for_commit_reconciliation(self):
+        guard = Mock(side_effect=P.U.UpgradeError('finite run expired'))
+        with self.guarded(lambda *args: self.raw) as (call, _), self.assertRaises(P.U.UpgradeError):
+            P.apply(self.api, ROOT, self.path, self.manifest, before_update=guard)
+        self.assertFalse(json.loads(self.path.read_text())['writes_may_have_started'])
+        self.assertEqual([c.args[-1] for c in call.call_args_list], ['inspect'])
+        guard.reset_mock()
+        with self.guarded(lambda *args: self.normalized) as (call, _):
+            result = P.apply(self.api, ROOT, self.path, self.manifest, before_update=guard)
+        guard.assert_not_called()
+        self.assertTrue(result['result_reconciled_without_second_update'])
+        self.assertEqual([c.args[-1] for c in call.call_args_list], ['inspect'])
+
+    def test_lower_child_wal_limit_is_enforced_and_reported_without_permitting_a_larger_limit(self):
+        self.state['wal_limit_bytes'] = 1024 * 1024
+        self.state['migration_payload']['wal_limit_bytes'] = self.state['wal_limit_bytes']
+        self.write()
+        with self.guarded(lambda *args: self.normalized if args[-1] == 'migrate' else self.raw):
+            result = P.apply(self.api, ROOT, self.path, self.manifest)
+        self.assertEqual(result['wal_limit_bytes'], 1024 * 1024)
+        self.state['wal_limit_bytes'] = 2 * P.WAL_LIMIT
+        self.state['migration_payload']['wal_limit_bytes'] = self.state['wal_limit_bytes']
+        self.write()
+        with self.assertRaises(P.U.UpgradeError):
+            P.load(self.api, self.path, self.manifest)
+
 
 if __name__ == '__main__':
     unittest.main()

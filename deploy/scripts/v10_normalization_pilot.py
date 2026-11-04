@@ -41,6 +41,12 @@ def monitor(state):
             'Pilot free-space/consumption limit reached')
 
 
+def wal_limit(state):
+    limit = state.get('wal_limit_bytes', WAL_LIMIT)
+    require(type(limit) is int and 0 < limit <= WAL_LIMIT, 'Invalid normalization WAL limit')
+    return limit
+
+
 def baseline(result):
     snapshot = result.get('snapshot') or {}
     rows = snapshot.get('rows')
@@ -128,7 +134,7 @@ def public(path, state, result=None):
             'rows_needing_normalization': observed['needs_normalization'], 'recorded_phase': state['phase'],
             'writes_may_have_started': state['writes_may_have_started'],
             'updated_rows': metrics.get('updated_rows'), 'update_elapsed_ms': metrics.get('elapsed_ms'),
-            'observed_cluster_wal_delta_bytes': metrics.get('cluster_wal_delta_bytes'), 'wal_limit_bytes': WAL_LIMIT,
+            'observed_cluster_wal_delta_bytes': metrics.get('cluster_wal_delta_bytes'), 'wal_limit_bytes': wal_limit(state),
             'automatic_background_migrations_held': True, 'migration_completion_records_unchanged': True,
             'application_restarted': False, 'historical_rpc_used': False,
             'scope': ('Saved complete-block sample only. ' if batch else 'One selected stored block. ') +
@@ -193,7 +199,7 @@ def load(api, path, manifest):
         expected = {k: saved[k] for k in ('full_hashes', 'semantic_hashes', 'statuses')}
         require(state['migration_payload']['baseline'] == expected, 'Pilot baseline payload changed')
     require(state['migration_payload']['expected_rows'] == state['expected_rows']
-            and state['migration_payload']['wal_limit_bytes'] == WAL_LIMIT, 'Pilot resource/target limits changed')
+            and state['migration_payload']['wal_limit_bytes'] == wal_limit(state), 'Pilot resource/target limits changed')
     return state
 
 
@@ -280,7 +286,7 @@ def reconcile(state, result):
     return 'original'
 
 
-def apply(api, root, path, manifest, resume=False):
+def apply(api, root, path, manifest, resume=False, before_update=None):
     state = load(api, path, manifest)
     require(state['phase'] != 'preparing' and (resume or state['phase'] == 'prepared'), 'Use resume for a prior pilot attempt')
     context(api, root, Path(state['upgrade_state']))
@@ -297,13 +303,15 @@ def apply(api, root, path, manifest, resume=False):
     if observed == 'original':
         state.setdefault('space_before', free_bytes())
         monitor(state)
+        if before_update:
+            before_update()
         state['writes_may_have_started'] = True
         write_state(path, state, 'write_requested')
         result = client(api, path, state, 'migrate')
         require(reconcile(state, result) == 'normalized', 'Normalization result did not match the prepared semantics')
         require(type(result.get('updated_rows')) is int and 0 <= result['updated_rows'] <= state['expected_rows']
                 and type(result.get('elapsed_ms')) is int and 0 <= result['elapsed_ms'] <= 10000
-                and type(result.get('cluster_wal_delta_bytes')) is int and 0 <= result['cluster_wal_delta_bytes'] <= WAL_LIMIT,
+                and type(result.get('cluster_wal_delta_bytes')) is int and 0 <= result['cluster_wal_delta_bytes'] <= wal_limit(state),
                 'Pilot metrics exceeded the checked bounds')
         state['apply_result'] = {k: result[k] for k in ('updated_rows', 'elapsed_ms', 'cluster_wal_delta_bytes', 'already_normalized')}
         if callback_plan(result):
