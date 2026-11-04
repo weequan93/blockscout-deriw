@@ -39,7 +39,7 @@ for app <- [:crypto, :ssl, :postgrex, :ecto_sql], do: ({:ok, _} = Application.en
         F.cleanup_container(name, token)
 
 
-def main():
+def main(pilot_check=None):
     token = uuid.uuid4().hex[:16]
     directory = Path(tempfile.mkdtemp(prefix='v10-normalization-plan-'))
     os.chmod(directory, 0o700)
@@ -77,6 +77,10 @@ def main():
         first = inspect(image['Id'], network, token, environment)
         assert first['status'] == 'normalization_pilot_candidate_selected' and first['selected_block'] == 20
         assert first['sample_rows'] == 2 and first['rows_needing_normalization_in_sample'] == 2
+        if pilot_check is not None:
+            result = pilot_check(image['Id'], network, token, environment, sql, pg, directory)
+            print(json.dumps(result))
+            return 0
         sql("INSERT INTO internal_transactions SELECT (jsonb_populate_record(NULL::internal_transactions, to_jsonb(t) || jsonb_build_object('block_index',g,'index',g))).* FROM (SELECT * FROM internal_transactions WHERE block_number=20 LIMIT 1) t CROSS JOIN generate_series(100,1100) g")
         large = inspect(image['Id'], network, token, environment)
         assert large['sample_rows'] == 1001 and not large['sample_is_complete_block']

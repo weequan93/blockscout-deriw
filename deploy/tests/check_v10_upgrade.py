@@ -37,7 +37,7 @@ def evaluate(image, network, name, token, environment, payload, expected_failure
         F.cleanup_container(name, token)
 
 
-def startup(image, network, token, environment, directory):
+def startup(image, network, token, environment, directory, api_check=None):
     names = {role: 'v10-startup-' + role + '-' + token for role in ('rpc', 'redis', 'backend', 'worker')}
     rpc = r'''const http=require('http');
 const one=q=>({jsonrpc:'2.0',id:q.id,result:({eth_chainId:'0x449c54bbd',net_version:'18417507517',eth_blockNumber:'0x14',eth_gasPrice:'0x1',eth_getBalance:'0x0',eth_getCode:'0x',eth_call:'0x',eth_getLogs:[],eth_getTransactionReceipt:null})[q.method]??null});
@@ -94,6 +94,8 @@ http.createServer((req,res)=>{let b='';req.on('data',x=>b+=x);req.on('end',()=>{
         for path in paths:
             body = F.run(['docker', 'exec', names['backend'], 'curl', '-fsS', '--max-time', '8', 'http://127.0.0.1:4000' + path])
             assert isinstance(json.loads(body), dict)
+        if api_check is not None:
+            api_check(names['backend'])
         return {'full_backend_and_standalone_worker_started': True, 'readiness_passed': True,
                 'actual_runtime_hold_and_history_policy_checked': True, 'automatic_nft_connection_checked': True,
                 'representative_api_routes_passed': paths, 'fixture_block_fetchers_paused': True,

@@ -126,7 +126,7 @@ def remove_client(api, state_path, state):
     api.run(['docker', 'rm', '-f', row['Id']], timeout=30)
 
 
-def client(api, state_path, state, mode, directory=None):
+def client(api, state_path, state, mode, directory=None, monitor=None, progress_phase=None, timeout_seconds=None):
     directory = directory or state_path.parent
     script = (directory / 'migrate.exs').read_bytes()
     data = deepcopy(state['migration_payload'])
@@ -144,11 +144,11 @@ def client(api, state_path, state, mode, directory=None):
             started = time.monotonic()
             announced = started
             while process.poll() is None:
-                require(time.monotonic() - started < (1800 if mode == 'migrate' else 90), 'Schema client exceeded time limit')
+                require(time.monotonic() - started < (timeout_seconds or (1800 if mode == 'migrate' else 90)), 'Schema client exceeded time limit')
                 if mode == 'migrate':
-                    space(state)
+                    (monitor or space)(state)
                 if time.monotonic() - announced >= 20:
-                    print(json.dumps({'phase': 'applying_reviewed_schema' if mode == 'migrate' else 'checking_stopped_database',
+                    print(json.dumps({'phase': progress_phase or ('applying_reviewed_schema' if mode == 'migrate' else 'checking_stopped_database'),
                                       'elapsed_seconds': int(time.monotonic() - started)}), flush=True)
                     announced = time.monotonic()
                 time.sleep(1)
