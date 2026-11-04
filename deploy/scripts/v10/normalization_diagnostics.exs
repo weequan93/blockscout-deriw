@@ -53,7 +53,10 @@ defmodule BlockscoutNormalizationDiagnostics do
       end)
 
     Enum.group_by(
-      [{"d63aea58d81cc7d2d9c7ad5cd82809dd", "missing_blocks_metrics"} | pairs],
+      [
+        {"d63aea58d81cc7d2d9c7ad5cd82809dd", "missing_blocks_metrics"},
+        {"f7d49ed68ea1ac040431775d295eaae5", "empty_blocks_sanitizer_empty_denormalized"} | pairs
+      ],
       &elem(&1, 0),
       &elem(&1, 1)
     )
