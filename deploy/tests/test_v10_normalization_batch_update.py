@@ -3,6 +3,7 @@ from copy import deepcopy
 import io
 import json
 from pathlib import Path
+import re
 import sys
 from unittest.mock import patch
 import unittest
@@ -161,6 +162,80 @@ class BatchUpdateTests(unittest.TestCase):
         self.assertEqual(prepare.call_args.args[-2:], (self.sample_path, self.digest))
         self.assertEqual(apply.call_args.args[2], self.f.path)
         self.assertNotIn(F.SECRET, output.getvalue())
+
+    def retry_fixture(self, raw=None, status='not_applied'):
+        self.f.state.update(phase='write_requested', writes_may_have_started=True)
+        self.f.write()
+        self.f.api.configuration = lambda *a: (self.f.manifest, {}, {})
+        inspected = deepcopy(raw or self.f.raw)
+        inspected['callback_plan'] = {'access': 'Index Scan', 'index': 'block_number_idx', 'planned_rows': 2, 'estimated_total_cost': 10.0}
+        with self.f.guarded(lambda *a: inspected), \
+                patch.object(B.P, 'status', return_value={'status': status}), contextlib.redirect_stdout(io.StringIO()):
+            return B.prepare_retry(self.f.api, ROOT, self.f.path)
+
+    def test_retry_preserves_parent_bytes_and_original_rows_with_a_new_frozen_client(self):
+        result = self.retry_fixture()
+        path = Path(result['state'])
+        state = B.P.load(self.f.api, path, self.f.manifest)
+        self.assertNotEqual(path, self.f.path)
+        self.assertEqual(state['phase'], 'prepared')
+        self.assertFalse(state['writes_may_have_started'])
+        self.assertEqual(state['baseline'], self.f.state['baseline'])
+        self.assertEqual(state['migration_payload'], self.f.state['migration_payload'])
+        self.assertEqual((path.parent / 'parent-state.json').read_bytes(), self.f.path.read_bytes())
+        self.assertEqual(state['retry_parent_sha256'], B.R.digest(self.f.path.read_bytes()))
+        self.assertNotEqual(state['client_name'], self.f.state['client_name'])
+        self.assertEqual(state['callback_plan']['index'], 'block_number_idx')
+        self.assertNotIn(F.SECRET, json.dumps(result))
+
+    def test_retry_rejects_a_committed_batch_or_a_changed_original_row(self):
+        with self.assertRaises(B.U.UpgradeError):
+            self.retry_fixture(status='verified')
+        changed = deepcopy(self.f.raw)
+        changed['snapshot']['full_hashes'][0] = 'f' * 32
+        with self.assertRaises(B.U.UpgradeError):
+            self.retry_fixture(raw=changed)
+        self.assertEqual(json.loads(self.f.path.read_text())['phase'], 'write_requested')
+
+    def test_parent_journal_change_blocks_a_prepared_retry_before_any_client(self):
+        result = self.retry_fixture()
+        self.f.state['phase'] = 'applied'
+        self.f.write()
+        with self.f.guarded(lambda *a: self.f.raw) as (call, _), self.assertRaises(B.U.UpgradeError):
+            B.P.apply(self.f.api, ROOT, Path(result['state']), self.f.manifest)
+        call.assert_not_called()
+
+    def test_retry_cli_applies_only_the_new_child_journal(self):
+        child = self.f.base / 'batch-20261104T060000Z-0123abcd' / 'state.json'
+        argv = ['batch', '--retry', '--state', str(self.f.path)]
+        with patch.object(B.sys, 'argv', argv), patch.object(B.sys, 'platform', 'linux'), \
+                patch.object(B.os, 'geteuid', return_value=0), \
+                patch.object(B.D, 'configuration', return_value=(self.f.manifest, {}, {})), \
+                patch.object(B.M, 'global_lock', return_value=contextlib.nullcontext()), \
+                patch.object(B.B, 'build_lock', return_value=contextlib.nullcontext()), \
+                patch.object(B, 'prepare_retry', return_value={'status': 'normalization_batch_retry_prepared', 'state': str(child)}) as prepare, \
+                patch.object(B.P, 'apply', return_value={'status': 'verified', 'updated_rows': 2}) as apply, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(B.main(), 0)
+        self.assertEqual(prepare.call_args.args[-1], self.f.path)
+        self.assertEqual(apply.call_args.args[2], child)
+
+    def test_planner_guard_uses_the_same_lock_query_as_the_pinned_callback(self):
+        source = (ROOT / 'apps/explorer/lib/explorer/migrator/empty_internal_transactions_data.ex').read_text()
+        client = (ROOT / 'deploy/scripts/v10/normalization_pilot.exs').read_text()
+        original = re.search(r'lock_query =(.+?)\n\n        extract_error_query', source, re.S)[1]
+        guarded = re.search(r'lock_query =(.+?)\n\n          \{lock_sql', client, re.S)[1]
+        self.assertEqual(re.sub(r'\s+', '', original.replace('block_numbers', 'blocks')), re.sub(r'\s+', '', guarded))
+
+    def test_client_failure_reports_only_an_allowlisted_stage_from_private_logs(self):
+        def fail(*args, **kwargs):
+            path = self.f.path.parent / 'migrate-0123abcd.log.private'
+            B.R.write_new(path, ('BLOCKSCOUT_NORMALIZATION_STAGE=callback_update\n' + F.SECRET + '\n').encode())
+            raise B.U.UpgradeError('Schema client failed')
+        with patch.object(B.P.U, 'client', side_effect=fail), self.assertRaises(B.U.UpgradeError) as error:
+            B.P.client(self.f.api, self.f.path, self.f.state, 'migrate')
+        self.assertIn('callback_update', str(error.exception))
+        self.assertNotIn(F.SECRET, str(error.exception))
 
 
 if __name__ == '__main__':

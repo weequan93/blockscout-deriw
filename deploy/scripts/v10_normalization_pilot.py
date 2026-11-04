@@ -79,6 +79,19 @@ def check_block_rows(state, snapshot):
         require(counts == {r['block']: r['rows'] for r in state['block_rows']}, 'Selected per-block counts changed')
 
 
+def callback_plan(result):
+    plan = result.get('callback_plan')
+    if plan is None:
+        return None
+    require(isinstance(plan, dict) and set(plan) == {'access', 'index', 'planned_rows', 'estimated_total_cost'}
+            and plan['access'] in ('Index Scan', 'Index Only Scan', 'Bitmap Heap Scan')
+            and isinstance(plan['index'], str) and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,62}', plan['index'])
+            and type(plan['planned_rows']) is int and plan['planned_rows'] >= 0
+            and type(plan['estimated_total_cost']) in (int, float) and plan['estimated_total_cost'] >= 0,
+            'Invalid callback plan metadata')
+    return dict(plan)
+
+
 def public(path, state, result=None):
     observed = baseline(result) if result else state['baseline']
     metrics = state.get('apply_result') or {}
@@ -95,7 +108,9 @@ def public(path, state, result=None):
                'newest_selected_block': state['block_rows'][0]['block'], 'oldest_selected_block': state['block_rows'][-1]['block'],
                'sample_sha256': state['sample_sha256']} if batch else
               {'block': state['block'], 'rows_in_block': state['expected_rows']})
+    plan = callback_plan(result or state.get('apply_result') or state)
     return {'state': str(path), 'environment': 'dev', 'planned_transform_counts': transforms, **target,
+            **({'callback_plan': plan} if plan else {}),
             'rows_needing_normalization': observed['needs_normalization'], 'recorded_phase': state['phase'],
             'writes_may_have_started': state['writes_may_have_started'],
             'updated_rows': metrics.get('updated_rows'), 'update_elapsed_ms': metrics.get('elapsed_ms'),
@@ -135,6 +150,21 @@ def load(api, path, manifest):
                 'Frozen sample target changed')
         require(state['migration_payload']['blocks'] == [r['block'] for r in state['block_rows']]
                 and state['migration_payload']['block_rows'] == state['block_rows'], 'Batch payload target changed')
+        if state.get('retry_of'):
+            previous_path = Path(state['retry_of'])
+            require(previous_path.is_absolute() and previous_path.resolve() == previous_path and previous_path != path
+                    and previous_path.parent.parent == BASE and previous_path.name == 'state.json'
+                    and re.fullmatch(r'batch-[0-9TZ-]+-[a-f0-9]{8}', previous_path.parent.name), 'Unexpected parent batch journal')
+            previous_bytes = U.private(path.parent / 'parent-state.json')
+            require(R.digest(previous_bytes) == state['retry_parent_sha256']
+                    and R.digest(U.private(previous_path)) == state['retry_parent_sha256'], 'Previous retry journal changed')
+            previous = json.loads(previous_bytes)
+            require(previous['format'] == BATCH_FORMAT and previous['phase'] == 'write_requested'
+                    and previous['writes_may_have_started'] is True
+                    and all(previous[k] == state[k] for k in ('block_rows', 'expected_rows', 'sample_sha256', 'baseline_sha256',
+                                                             'baseline', 'migration_payload', 'candidate_image', 'candidate_source_commit',
+                                                             'upgrade_state', 'network', 'backend_environment')),
+                    'Retry changed original rows, targets or release inputs')
     else:
         require(path.parent.name.startswith('pilot-') and type(state.get('block')) is int and 0 <= state['block'] < 2**63
                 and state['migration_payload']['block'] == state['block'] and 'blocks' not in state['migration_payload'], 'Invalid pilot target')
@@ -163,7 +193,19 @@ def context(api, root, path):
 
 
 def client(api, path, state, mode):
-    return U.client(api, path, state, mode, monitor=monitor, progress_phase='checking_selected_block' if mode == 'inspect' else 'normalizing_selected_block', timeout_seconds=60)
+    global STAGE
+    logs_before = set(path.parent.glob(mode + '-*.log.private'))
+    try:
+        return U.client(api, path, state, mode, monitor=monitor, progress_phase='checking_selected_block' if mode == 'inspect' else 'normalizing_selected_block', timeout_seconds=60)
+    except U.UpgradeError:
+        stages = {'table_lock', 'snapshot_plan', 'before_snapshot', 'callback_plan', 'callback_update',
+                  'after_snapshot', 'final_checks', 'committed', 'inspected'}
+        for log in sorted(set(path.parent.glob(mode + '-*.log.private')) - logs_before):
+            markers = re.findall(r'^BLOCKSCOUT_NORMALIZATION_STAGE=([a-z_]+)$', U.private(log).decode(errors='replace'), re.M)
+            if markers and markers[-1] in stages:
+                STAGE = markers[-1]
+                raise U.UpgradeError('Normalization client failed during ' + STAGE + '; inspect its server-only log') from None
+        raise
 
 
 def prepare(api, root, upgrade_path, block, expected_rows):
@@ -250,6 +292,8 @@ def apply(api, root, path, manifest, resume=False):
                 and type(result.get('cluster_wal_delta_bytes')) is int and 0 <= result['cluster_wal_delta_bytes'] <= WAL_LIMIT,
                 'Pilot metrics exceeded the checked bounds')
         state['apply_result'] = {k: result[k] for k in ('updated_rows', 'elapsed_ms', 'cluster_wal_delta_bytes', 'already_normalized')}
+        if callback_plan(result):
+            state['apply_result']['callback_plan'] = callback_plan(result)
         R.update_state(path, state)
         monitor(state)
     else:

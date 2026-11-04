@@ -1,4 +1,8 @@
 # Explicitly selected complete blocks. Starts only a Repo; no application or worker.
+import Ecto.Query
+import Explorer.QueryHelper, only: [select_ctid: 1]
+alias Explorer.Chain.InternalTransaction
+
 payload = Jason.decode!(File.read!("/tmp/upgrade/payload.json"))
 mode = payload["mode"]
 true = mode in ["inspect", "migrate"]
@@ -42,6 +46,7 @@ worker = Explorer.Migrator.EmptyInternalTransactionsData
 nil = Process.whereis(worker)
 
 q = fn sql, args -> Explorer.Repo.query!(sql, args, log: false, timeout: 6000).rows end
+stage = fn name -> IO.puts("BLOCKSCOUT_NORMALIZATION_STAGE=" <> name) end
 
 walk = fn root ->
   walk = fn recur, node -> [node | Enum.flat_map(node["Plans"] || [], &recur.(recur, &1))] end
@@ -84,8 +89,6 @@ started = System.monotonic_time(:millisecond)
       q.("SET LOCAL enable_bitmapscan=off", [])
       q.("SET LOCAL enable_sort=off", [])
       q.("SET LOCAL enable_incremental_sort=off", [])
-      # The callback necessarily sorts its <=1000 locked rows. Do not spend
-      # this short transaction compiling a plan with discouraged-sort costs.
       q.("SET LOCAL jit=off", [])
 
       [[true]] = q.("SELECT pg_try_advisory_xact_lock(184175075,1026)", [])
@@ -136,6 +139,8 @@ started = System.monotonic_time(:millisecond)
 
       # Held only for the short write transaction. This prevents new rows from
       # making the bounded block grow while update_batch/1 processes the block.
+      stage.("table_lock")
+
       if mode == "migrate",
         do: q.("LOCK TABLE public.internal_transactions IN SHARE ROW EXCLUSIVE MODE", [])
 
@@ -146,6 +151,7 @@ started = System.monotonic_time(:millisecond)
         )
         |> List.flatten()
 
+      stage.("snapshot_plan")
       [[[%{"Plan" => root}]]] = q.("EXPLAIN (FORMAT JSON) " <> sql, args)
       nodes = walk.(root)
       [scan] = Enum.filter(nodes, &(&1["Relation Name"] == "internal_transactions"))
@@ -182,9 +188,65 @@ started = System.monotonic_time(:millisecond)
         }
       end
 
+      stage.("before_snapshot")
       before = snapshot.()
       baseline = payload["baseline"]
       if baseline, do: true = before.semantic_hashes == baseline["semantic_hashes"]
+
+      # Snapshot ordering and callback ordering differ. The callback sorts only
+      # the selected rows by transaction hash. Discouraging that sort can make
+      # PostgreSQL walk the whole transaction-hash index instead of seeking the
+      # selected blocks. Keep its normal sort/bitmap choices in this transaction.
+      q.("SET LOCAL enable_sort=on", [])
+      q.("SET LOCAL enable_incremental_sort=on", [])
+      q.("SET LOCAL enable_bitmapscan=on", [])
+      stage.("callback_plan")
+
+      callback_plan =
+        if batch? do
+          # This is the lock query from the pinned compiled callback. EXPLAIN
+          # without ANALYZE does not execute it or acquire its row locks.
+          lock_query =
+            from(it in InternalTransaction,
+              select: select_ctid(it),
+              select_merge: %{error: it.error},
+              where:
+                it.block_number in ^blocks and
+                  (not is_nil(it.trace_address) or it.value == ^0 or
+                     (is_nil(it.call_type_enum) and not is_nil(it.call_type)) or
+                     not is_nil(it.error) or
+                     (not is_nil(it.created_contract_address_hash) and is_nil(it.to_address_hash))),
+              order_by: [asc: it.transaction_hash, asc: it.index],
+              lock: "FOR UPDATE"
+            )
+
+          {lock_sql, lock_args} = Ecto.Adapters.SQL.to_sql(:all, Explorer.Repo, lock_query)
+          [[[%{"Plan" => lock_root}]]] = q.("EXPLAIN (FORMAT JSON) " <> lock_sql, lock_args)
+          lock_nodes = walk.(lock_root)
+
+          [access] =
+            Enum.filter(lock_nodes, &(&1["Relation Name"] == "internal_transactions"))
+
+          seeks =
+            Enum.filter(lock_nodes, fn node ->
+              node["Node Type"] in ["Index Scan", "Index Only Scan", "Bitmap Index Scan"] and
+                node["Index Name"] in indexes and
+                String.contains?(node["Index Cond"] || "", "block_number")
+            end)
+
+          unless access["Node Type"] in ["Index Scan", "Index Only Scan", "Bitmap Heap Scan"] and
+                   seeks != [] and
+                   not Enum.any?(lock_nodes, &(&1["Node Type"] == "Seq Scan")),
+                 do: raise("callback_requires_bounded_block_index")
+
+          %{
+            access: access["Node Type"],
+            index: hd(seeks)["Index Name"],
+            planned_rows: lock_root["Plan Rows"],
+            estimated_total_cost: lock_root["Total Cost"]
+          }
+        end
+
       [[lsn]] = q.("SELECT pg_current_wal_insert_lsn()::text", [])
 
       {changed, already} =
@@ -197,6 +259,7 @@ started = System.monotonic_time(:millisecond)
 
             true ->
               true = before.full_hashes == baseline["full_hashes"]
+              stage.("callback_update")
               {:ok, {count, nil}} = worker.update_batch(blocks)
               true = count == before.needs_normalization
               {count, false}
@@ -205,9 +268,15 @@ started = System.monotonic_time(:millisecond)
           {0, false}
         end
 
+      q.("SET LOCAL enable_sort=off", [])
+      q.("SET LOCAL enable_incremental_sort=off", [])
+      q.("SET LOCAL enable_bitmapscan=off", [])
+      stage.("after_snapshot")
       after_data = snapshot.()
       true = before.semantic_hashes == after_data.semantic_hashes
       if mode == "migrate", do: 0 = after_data.needs_normalization
+
+      stage.("final_checks")
 
       after_statuses =
         q.(
@@ -241,6 +310,7 @@ started = System.monotonic_time(:millisecond)
         cluster_wal_delta_bytes: wal,
         access: scan["Node Type"],
         index: scan["Index Name"],
+        callback_plan: callback_plan,
         elapsed_ms: elapsed
       }
     end,
@@ -249,4 +319,5 @@ started = System.monotonic_time(:millisecond)
 
 nil = Process.whereis(Explorer.Supervisor)
 nil = Process.whereis(worker)
+stage.(if mode == "migrate", do: "committed", else: "inspected")
 IO.puts("BLOCKSCOUT_DEPLOY_CHECK=" <> Jason.encode!(report))

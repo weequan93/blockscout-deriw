@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Normalize one pinned complete-block sample with the pilot's atomic checks."""
+from copy import deepcopy
 from datetime import datetime, timezone
 import argparse
 import json
@@ -98,7 +99,10 @@ def prepare(api, root, sample_path, digest):
     R.write_new(path, R.encoded(state))
     print(json.dumps({'phase': 'batch_inputs_saved', 'state': str(path), 'database_writes': False}), flush=True)
     STAGE = 'private_bounded_snapshot'
-    saved = P.baseline(P.client(api, path, state, 'inspect'))
+    inspected = P.client(api, path, state, 'inspect')
+    saved = P.baseline(inspected)
+    if P.callback_plan(inspected):
+        state['callback_plan'] = P.callback_plan(inspected)
     P.check_block_rows(state, saved)
     P.require(len(saved['rows']) == sample['selected_rows'] and saved['needs_normalization'] == sample['rows_needing_normalization'],
               'Sample row count or normalization work changed; repeat read-only sampling')
@@ -114,11 +118,59 @@ def prepare(api, root, sample_path, digest):
             'note': 'Complete original rows, sample and client saved privately. Prepared only; no data update or worker start.'}
 
 
+def prepare_retry(api, root, previous_path):
+    """Freeze a new client while preserving the failed attempt and original rows."""
+    global STAGE
+    STAGE = 'retry_original_snapshot'
+    manifest, _, _ = api.configuration(root, 'dev')
+    previous = P.load(api, previous_path, manifest)
+    P.require(previous['format'] == P.BATCH_FORMAT and previous['phase'] == 'write_requested'
+              and previous['writes_may_have_started'], 'Retry requires a saved attempted batch')
+    previous_bytes = U.private(previous_path)
+    observed = P.status(api, root, previous_path, manifest)
+    P.require(observed['status'] == 'not_applied', 'Reconcile the previous batch; only unchanged original rows may use a new client')
+    before = api.inspect_project(manifest)
+    api.ensure_stable(previous['runtime_before'], before, 'Runtime changed since the original batch')
+    source = B.clean_source(api, root)
+    P.require(source[1] == '10.2.6', 'Normalization source version changed')
+    B.validate_state_directory(api, P.BASE, root)
+    directory = P.BASE / ('batch-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ-') + uuid.uuid4().hex[:8])
+    directory.mkdir(mode=0o700)
+    path = directory / 'state.json'
+    script = (root / 'deploy/scripts/v10/normalization_pilot.exs').read_bytes()
+    R.write_new(directory / 'migrate.exs', script)
+    for name in ('sample.json', 'baseline.json'):
+        R.write_new(directory / name, U.private(previous_path.parent / name))
+    R.write_new(directory / 'parent-state.json', previous_bytes)
+    state = deepcopy(previous)
+    for name in ('apply_result', 'space_before', 'callback_plan'):
+        state.pop(name, None)
+    state.update(phase='preparing', writes_may_have_started=False, retry_of=str(previous_path),
+                 retry_parent_sha256=R.digest(previous_bytes), tool_source_commit=source[0],
+                 client_name='blockscout-v10-schema-' + uuid.uuid4().hex[:16],
+                 script_sha256=R.digest(script), runtime_before=before)
+    R.write_new(path, R.encoded(state))
+    print(json.dumps({'phase': 'retry_inputs_saved', 'state': str(path), 'retry_of': str(previous_path), 'database_writes': False}), flush=True)
+    STAGE = 'retry_bounded_callback_plan'
+    inspected = P.client(api, path, state, 'inspect')
+    P.require(P.reconcile(state, inspected) == 'original', 'The retry must retain every original row and migration record')
+    plan = P.callback_plan(inspected)
+    P.require(plan is not None, 'The new retry client must verify its bounded callback plan')
+    state['callback_plan'] = plan
+    P.require(R.digest(U.private(previous_path)) == state['retry_parent_sha256'], 'Previous journal changed during retry preparation')
+    api.ensure_stable(before, api.inspect_project(manifest), 'Runtime changed while preparing the retry')
+    P.require(B.clean_source(api, root) == source, 'Tool source changed during retry preparation')
+    P.monitor(state)
+    P.write_state(path, state, 'prepared')
+    return {'status': 'normalization_batch_retry_prepared', 'retry_of': str(previous_path), **P.public(path, state),
+            'note': 'Original journal, sample and row snapshot preserved. The new client passed read-only callback planning; no data update yet.'}
+
+
 def main():
     global STAGE
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group(required=True)
-    for name in ('prepare', 'run', 'apply', 'resume', 'status'):
+    for name in ('prepare', 'run', 'apply', 'resume', 'status', 'prepare-retry', 'retry'):
         modes.add_argument('--' + name, action='store_true')
     parser.add_argument('--sample-file', type=Path)
     parser.add_argument('--sample-sha256')
@@ -128,7 +180,16 @@ def main():
         P.require(sys.platform.startswith('linux') and os.geteuid() == 0, 'Run on the Linux dev server as root')
         manifest, _, _ = D.configuration(ROOT, 'dev')
         with M.global_lock(not args.status), B.build_lock(D, D.MANAGED_RELEASES, ROOT):
-            if args.prepare or args.run:
+            if args.prepare_retry or args.retry:
+                P.require(args.state is not None and args.sample_file is None and args.sample_sha256 is None,
+                          'Retry requires only the previous batch state')
+                result = prepare_retry(D, ROOT, args.state)
+                if args.retry:
+                    print(json.dumps(result, indent=2), flush=True)
+                    args.state = Path(result['state'])
+                    STAGE = 'bounded_retry_apply'
+                    result = P.apply(D, ROOT, args.state, manifest)
+            elif args.prepare or args.run:
                 P.require(args.state is None and args.sample_file is not None and args.sample_sha256 is not None,
                           'Prepare requires the private sample and its exact SHA-256')
                 result = prepare(D, ROOT, args.sample_file, args.sample_sha256)
