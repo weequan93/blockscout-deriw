@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read a bounded set of complete stored blocks below a verified pilot cursor."""
+"""Read complete stored blocks below a verified normalization pilot or batch."""
 from datetime import datetime, timezone
 import argparse
 import json
@@ -71,12 +71,12 @@ def sample(api, root, pilot_path):
     STAGE = 'completed_pilot'
     manifest, _, _ = api.configuration(root, 'dev')
     pilot = P.load(api, pilot_path, manifest)
-    api.require(pilot['phase'] == 'applied' and pilot['writes_may_have_started'], 'The previous pilot must be recorded applied')
+    cursor = P.completed_cursor(pilot)
     verified = P.status(api, root, pilot_path, manifest)
     api.require(verified['status'] == 'verified' and verified['rows_needing_normalization'] == 0,
-                'Verify the previous pilot before selecting older work')
+                'Verify the previous normalization before selecting older work')
     STAGE = 'bounded_older_sample'
-    report = N.collect(api, root, Path(pilot['upgrade_state']), before_block=pilot['block'], batch_sample=True, projector=project)
+    report = N.collect(api, root, Path(pilot['upgrade_state']), before_block=cursor, batch_sample=True, projector=project)
     # Keep the complete block manifest on the server; stdout has a small preview.
     B.validate_state_directory(api, BASE, root)
     BASE.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -86,14 +86,14 @@ def sample(api, root, pilot_path):
     R.write_new(receipt, R.encoded(record))
     blocks = report.pop('selected_blocks')
     preview = blocks if len(blocks) <= 6 else blocks[:3] + blocks[-3:]
-    return {**report, 'sample_file': str(receipt), 'sample_sha256': R.digest(R.encoded(record)),
+    return {**report, 'after_state': str(pilot_path), 'sample_file': str(receipt), 'sample_sha256': R.digest(R.encoded(record)),
             'block_preview': preview, 'preview_truncated': len(preview) < len(blocks),
             'note': 'Complete block/count manifest saved privately on this server. No normalization was performed by sampling.'}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--pilot-state', type=Path, required=True)
+    parser.add_argument('--after-state', '--pilot-state', dest='pilot_state', type=Path, required=True)
     args = parser.parse_args()
     try:
         D.require(sys.platform.startswith('linux') and os.geteuid() == 0, 'Run on the Linux dev server as root')

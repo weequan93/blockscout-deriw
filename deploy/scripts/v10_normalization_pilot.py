@@ -69,6 +69,20 @@ def block_rows(value):
     return total
 
 
+def completed_cursor(state):
+    require(state.get('phase') == 'applied' and state.get('writes_may_have_started') is True,
+            'The previous normalization must be recorded applied')
+    if state.get('format') == FORMAT:
+        block = state.get('block')
+        require(type(block) is int and 0 <= block < 2**63, 'Invalid completed pilot cursor')
+        return block
+    require(state.get('format') == BATCH_FORMAT and block_rows(state.get('block_rows')) == state.get('expected_rows'),
+            'Invalid completed batch cursor')
+    # Resume below the oldest whole block actually applied. A sampled but
+    # excluded boundary block is still eligible in the next read.
+    return state['block_rows'][-1]['block']
+
+
 def check_block_rows(state, snapshot):
     if state.get('format') == BATCH_FORMAT:
         counts = {}

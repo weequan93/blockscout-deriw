@@ -68,11 +68,10 @@ def prepare(api, root, sample_path, digest):
     P.require(sample['candidate_image'] == upgrade['candidate_image'], 'The sample image differs from the active upgrade')
     pilot_path = Path(sample['previous_pilot_state'])
     previous = P.load(api, pilot_path, manifest)
-    P.require(previous['format'] == P.FORMAT and previous['phase'] == 'applied' and previous['writes_may_have_started']
-              and previous['upgrade_state'] == str(upgrade_path) and previous['block'] == sample['before_block'],
-              'Previous pilot/cursor changed')
+    P.require(previous['upgrade_state'] == str(upgrade_path) and P.completed_cursor(previous) == sample['before_block'],
+              'Previous normalization/cursor changed')
     verified = P.status(api, root, pilot_path, manifest)
-    P.require(verified['status'] == 'verified' and verified['rows_needing_normalization'] == 0, 'Previous pilot no longer verifies')
+    P.require(verified['status'] == 'verified' and verified['rows_needing_normalization'] == 0, 'Previous normalization no longer verifies')
     before = api.inspect_project(manifest)
     source = B.clean_source(api, root)
     P.require(source[1] == '10.2.6', 'Normalization source version changed')

@@ -71,7 +71,7 @@ class BatchTests(unittest.TestCase):
                 'groups': [{'block': b, 'rows': 1, 'needs': 1, 'row_bytes': 400} for b in range(20, 12, -1)]}
         report = B.project(data, self.free)
         api = types.SimpleNamespace(require=B.D.require, configuration=Mock(return_value=({'chain_id': '18417507517'}, {}, {})))
-        pilot = {'phase': 'applied', 'writes_may_have_started': True, 'block': 21, 'upgrade_state': '/fixture/upgrade/state.json'}
+        pilot = {'format': B.P.FORMAT, 'phase': 'applied', 'writes_may_have_started': True, 'block': 21, 'upgrade_state': '/fixture/upgrade/state.json'}
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp).resolve() / 'samples'
             with patch.object(B, 'BASE', base), patch.object(B.P, 'load', return_value=pilot), \
@@ -98,6 +98,31 @@ class BatchTests(unittest.TestCase):
                 B.N.expression(ROOT, before_block=value, batch_sample=True)
         with self.assertRaises(B.D.ConfigError):
             B.N.expression(ROOT, batch_sample=True)
+
+    def test_continuation_uses_the_oldest_applied_block_and_retains_the_excluded_boundary(self):
+        state = {'format': B.P.BATCH_FORMAT, 'phase': 'applied', 'writes_may_have_started': True,
+                 'block_rows': [{'block': 30, 'rows': 1}, {'block': 21, 'rows': 1}], 'expected_rows': 2,
+                 'upgrade_state': '/fixture/upgrade/state.json'}
+        report = B.project(self.data, self.free)
+        api = types.SimpleNamespace(require=B.D.require, configuration=Mock(return_value=({'chain_id': '18417507517'}, {}, {})))
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(B, 'BASE', Path(tmp).resolve() / 'samples'), \
+                    patch.object(B.P, 'load', return_value=state), \
+                    patch.object(B.P, 'status', return_value={'status': 'verified', 'rows_needing_normalization': 0}), \
+                    patch.object(B.N, 'collect', return_value=report) as collect:
+                result = B.sample(api, ROOT, Path('/fixture/batch/state.json'))
+        self.assertEqual(collect.call_args.kwargs['before_block'], 21)
+        self.assertEqual(result['newest_selected_block'], 20)
+        self.assertEqual(result['after_state'], '/fixture/batch/state.json')
+
+    def test_incomplete_or_malformed_batches_cannot_advance_the_cursor(self):
+        state = {'format': B.P.BATCH_FORMAT, 'phase': 'applied', 'writes_may_have_started': True,
+                 'block_rows': [{'block': 30, 'rows': 1}, {'block': 21, 'rows': 1}], 'expected_rows': 2}
+        for field, value in (('phase', 'write_requested'), ('writes_may_have_started', False), ('expected_rows', 1),
+                             ('block_rows', [{'block': 21, 'rows': 1}, {'block': 30, 'rows': 1}])):
+            changed = {**state, field: value}
+            with self.assertRaises(B.D.ConfigError):
+                B.P.completed_cursor(changed)
 
 
 if __name__ == '__main__':
