@@ -30,6 +30,8 @@ ROOT = Path(__file__).resolve().parents[2]
 BASE = Path('/data/blockscout-dev-private/v10-vacuum')
 FORMAT = 'blockscout-dev-v10-vacuum-window-v1'
 TRANSACTION_GUARD_SCOPE = 'pre_vacuum_clients'
+HEALTH_RECHECK_POLICY = 'bounded-v1'
+HEALTH_RETRY_MIN_SECONDS = 8
 SQL = 'VACUUM (VERBOSE, INDEX_CLEANUP ON, TRUNCATE OFF, PARALLEL 0) public.internal_transactions'
 SQL_MD5 = hashlib.md5(SQL.encode()).hexdigest()
 LIMITS = dict(duration_seconds=3600, preparation_seconds=600, poll_seconds=10, health_seconds=30,
@@ -37,6 +39,7 @@ LIMITS = dict(duration_seconds=3600, preparation_seconds=600, poll_seconds=10, h
               cluster_wal_bytes=16 * 1024**3, relation_read_bytes=2 * 1024**4,
               oldest_transaction_seconds=300, journal_bytes=64 * 1024**2, log_bytes=16 * 1024**2,
               aggregate_journal_bytes=256 * 1024**2)
+INDEX_CLEANUP_LIMITS = {**LIMITS, 'duration_seconds': 14400}
 RPC_SCRIPT = '''set -eu
 umask 077
 vacuum_probe_file=$(mktemp /tmp/blockscout-v10-vacuum-observe.XXXXXXXX)
@@ -50,6 +53,67 @@ class ResourceReviewError(U.UpgradeError):
     def __init__(self, message, data):
         super().__init__(message)
         self.review = {'transactions': data['transactions'], 'query_diagnostics': data.get('query_diagnostics', [])}
+
+
+class HealthReviewError(U.UpgradeError):
+    def __init__(self, samples):
+        stage = samples[-1]['report'].get('verification_failure', {}).get('stage', 'incomplete_runtime_check')
+        super().__init__('Runtime health check failed during ' + stage + '; vacuum remains unqualified')
+        self.samples = samples
+
+
+def health_verification(api, upgrade_path, upgrade, manifest, path=None, state=None, monitoring=False):
+    budget = LIMITS['health_seconds']
+    if monitoring and state and state.get('last_health_at_utc'):
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(state['last_health_at_utc'])).total_seconds()
+        P.require(0 <= age < budget, 'Vacuum health evidence expired before verification')
+        budget -= age
+    # Leave one second for the final identity observation and lease publication.
+    deadline = time.monotonic() + max(0, budget - 1)
+    policy = state['inputs'].get('health_recheck_policy') if state else HEALTH_RECHECK_POLICY
+    attempts = 2 if policy == HEALTH_RECHECK_POLICY else 1
+    samples = []
+    for attempt in range(1, attempts + 1):
+        if path and state:
+            disk_guard(path, state['inputs'])
+        report = U.verify(api, upgrade_path, upgrade, manifest, deadline=deadline)
+        if time.monotonic() > deadline:
+            report = {**report, 'status': 'needs_attention',
+                      'verification_failure': {'stage': 'verification_deadline', 'kind': 'deadline_reached'},
+                      'verification_probes': {**report.get('verification_probes', {}), 'verification_deadline': False}}
+        sample = {'observed_at_utc': datetime.now(timezone.utc).isoformat(), 'attempt': attempt, 'report': report}
+        samples.append(sample)
+        if path and state:
+            fd = os.open(path.parent / 'health-observations.jsonl', os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, 'ab') as stream:
+                stream.write(json.dumps(sample, sort_keys=True, separators=(',', ':')).encode() + b'\n')
+                stream.flush()
+                os.fsync(stream.fileno())
+            state['latest_health'] = sample
+            state['health_rechecks'] = state.get('health_rechecks', 0) + (attempt > 1)
+            R.update_state(path, state)
+        if report['status'] == 'verified' and time.monotonic() <= deadline:
+            if attempt > 1:
+                print(json.dumps({'phase': 'runtime_health_recovered', 'state': str(path) if path else None,
+                                  'attempts': attempt, 'initial_failure': samples[0]['report'].get('verification_failure')}), flush=True)
+            return report
+        probes = report.get('verification_probes', {})
+        services = report.get('services', {})
+        hard_failure = any(probes.get(key) is False for key in ('runtime_settings', 'automatic_migrators_absent', 'service_lifecycle'))
+        hard_failure |= set(U.PAIR) != set(services) or any(row.get('status') != 'running' or row.get('restart_count') != 0 for row in services.values())
+        hard_failure |= report.get('verification_failure', {}).get('kind') == 'identity_mismatch'
+        if hard_failure or attempt == attempts or deadline - time.monotonic() < HEALTH_RETRY_MIN_SECONDS:
+            break
+        # No lease is renewed from a failed sample. The independent watchdog
+        # remains active throughout this one short recheck.
+        time.sleep(0.25)
+    raise HealthReviewError(samples)
+
+
+def runtime_context(api, root, upgrade_path, path=None, state=None, monitoring=False):
+    return P.context(api, root, upgrade_path,
+        verifier=lambda api, upgrade_path, upgrade, manifest: health_verification(
+            api, upgrade_path, upgrade, manifest, path, state, monitoring))
 
 
 def observer_source(root):
@@ -93,6 +157,16 @@ def observe(api, source, payload, target=None, verify_anchor=False, vacuum_query
     return result
 
 
+def profile_limits(inputs):
+    profile = inputs.get('profile')
+    P.require(profile in (None, 'index-cleanup-v1'), 'Unknown vacuum window profile')
+    limits = INDEX_CLEANUP_LIMITS if profile else LIMITS
+    P.require(inputs['limits'] == limits, 'Frozen vacuum limits changed')
+    P.require(inputs['payload'].get('duration_seconds', 3600) == limits['duration_seconds'],
+              'Frozen vacuum duration changed')
+    return limits
+
+
 def load(path):
     P.require(path.is_absolute() and path.resolve() == path and path.parent.parent == BASE and path.name == 'state.json'
               and re.fullmatch(r'vacuum-[0-9TZ-]+-[a-f0-9]{8}', path.parent.name), 'Unexpected vacuum journal path')
@@ -100,8 +174,9 @@ def load(path):
     state = json.loads(U.private(path))
     frozen = U.private(path.parent / 'inputs.json')
     inputs = json.loads(frozen)
+    profile_limits(inputs)
     P.require(state['format'] == FORMAT and inputs == state['inputs'] and state['inputs_sha256'] == R.digest(frozen)
-              and inputs['limits'] == LIMITS and inputs['sql'] == SQL
+              and inputs['sql'] == SQL
               and state['phase'] in ('prepared', 'launch_requested', 'vacuum_requested', 'finished'), 'Vacuum state/inputs changed')
     for name, digest in inputs['files'].items():
         P.require(name in ('migrate.exs', 'observer.exs') and R.digest(U.private(path.parent / name)) == digest,
@@ -115,6 +190,7 @@ def load(path):
               and inputs['payload'].get('transaction_guard_scope') == scope
               and inputs['payload'].get('oldest_transaction_seconds') == inputs['limits']['oldest_transaction_seconds'],
               'Frozen vacuum transaction guard changed')
+    P.require(inputs.get('health_recheck_policy') in (None, HEALTH_RECHECK_POLICY), 'Frozen vacuum health policy changed')
     if state.get('vacuum_query_started_at'):
         proof = U.private(path.parent / 'vacuum-start.json')
         P.require(R.digest(proof) == state['vacuum_start_sha256']
@@ -197,7 +273,7 @@ def record(path, value):
     target = path.parent / 'observations.jsonl'
     fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, 'ab') as stream:
-        stream.write(R.encoded(value) + b'\n')
+        stream.write(json.dumps(value, sort_keys=True, separators=(',', ':')).encode() + b'\n')
         stream.flush()
         os.fsync(stream.fileno())
     R.update_state(path.parent / 'resources-latest.json', value)
@@ -205,12 +281,15 @@ def record(path, value):
 
 def public(path, state):
     return {'status': 'vacuum_window_' + state['phase'], 'state': str(path), 'stop_reason': state.get('stop_reason'),
-            'sql': SQL, 'limits': state['inputs']['limits'], 'target': state.get('target'),
+            'sql': SQL, 'limits': state['inputs']['limits'], 'profile': state['inputs'].get('profile', 'one-hour'),
+            'target': state.get('target'),
             'vacuum_sql_completed': state.get('vacuum_sql_completed', False),
             'completion_verified': state.get('completion_verified', False),
             'observations': state.get('observations', 0), 'latest': state.get('latest'),
             'transaction_guard_scope': state['inputs'].get('transaction_guard_scope', 'all_other_clients'),
             'vacuum_query_started_at': state.get('vacuum_query_started_at'),
+            'health_recheck_policy': state['inputs'].get('health_recheck_policy', 'single_check'),
+            'latest_health': state.get('latest_health'), 'health_rechecks': state.get('health_rechecks', 0),
             'normalization_cursor': state['inputs']['normalization_cursor'],
             'maintenance_selected_rows': state['inputs']['maintenance_selected_rows'],
             'normalization_gate_reopened': False, 'table_or_global_settings_changed': False,
@@ -218,7 +297,9 @@ def public(path, state):
             'note': 'One cost-limited ordinary-vacuum window. Interrupted work can leave useful partial cleanup but does not qualify a completed cycle. Completion still requires review of index cleanup, dead-row reduction and subsequent reuse.'}
 
 
-def prepare(api, root, after_path, metrics_path, empty_path):
+def prepare(api, root, after_path, metrics_path, empty_path, profile=None):
+    P.require(profile in (None, 'index-cleanup-v1'), 'Unknown vacuum window profile')
+    limits = INDEX_CLEANUP_LIMITS if profile else LIMITS
     manifest, _, _ = api.configuration(root, 'dev')
     previous = J.load(after_path, manifest, check_resources=False)
     P.require(previous['phase'] == 'finished' and previous['pending'] is None and previous['rows'] > 0
@@ -226,7 +307,7 @@ def prepare(api, root, after_path, metrics_path, empty_path):
               'Vacuum qualification starts from a finished normalization review checkpoint')
     no_normalizer(api, manifest)
     ancestor = previous['inputs']
-    _, upgrade = P.context(api, root, Path(ancestor['upgrade_state']))
+    _, upgrade = runtime_context(api, root, Path(ancestor['upgrade_state']))
     source = B.clean_source(api, root)
     P.require(source[1] == '10.2.6', 'Tool source release changed')
     api.run(['git', '-C', str(root), 'merge-base', '--is-ancestor', upgrade['candidate_source_commit'], source[0]])
@@ -241,8 +322,9 @@ def prepare(api, root, after_path, metrics_path, empty_path):
     token = uuid.uuid4().hex[:16]
     script = (root / 'deploy/scripts/v10/vacuum.exs').read_bytes()
     observer = observer_source(root)
-    inputs = {'limits': dict(LIMITS), 'sql': SQL, 'tool_source_commit': source[0], 'chain_id': manifest['chain_id'],
+    inputs = {'limits': dict(limits), 'sql': SQL, 'tool_source_commit': source[0], 'chain_id': manifest['chain_id'],
               'transaction_guard_scope': TRANSACTION_GUARD_SCOPE,
+              'health_recheck_policy': HEALTH_RECHECK_POLICY,
               'candidate_image': upgrade['candidate_image'], 'network': upgrade['network'],
               'backend_environment': upgrade['backend_environment'], 'runtime_before': before,
               'upgrade_state': ancestor['upgrade_state'], 'normalization_state': str(after_path),
@@ -255,11 +337,14 @@ def prepare(api, root, after_path, metrics_path, empty_path):
               'payload': {**ancestor['payload'], 'anchor': J.target(previous['last']),
                           'statuses': previous['last']['baseline']['statuses'],
                           'transaction_guard_scope': TRANSACTION_GUARD_SCOPE,
-                          'oldest_transaction_seconds': LIMITS['oldest_transaction_seconds'],
+                          'oldest_transaction_seconds': limits['oldest_transaction_seconds'],
+                          'duration_seconds': limits['duration_seconds'],
                           'application_name': 'blockscout-v10-vacuum-' + token, 'token': token}}
     # Include absent completion records: appearance of a held worker's record
     # must be detected just as a change to an existing record would be.
     inputs['payload']['status_names'] = list(K.HISTORY_WORKERS)
+    if profile:
+        inputs['profile'] = profile
     data = check_resources(observe(api, observer, inputs['payload'], verify_anchor=True, runtime=before), inputs)
     B.validate_state_directory(api, BASE, root)
     BASE.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -294,7 +379,8 @@ def validate_target(target, payload):
               and target['query_md5'] == SQL_MD5 and target['database_oid'] == payload['database_identity']['oid']
               and type(target['role_oid']) is int
               and target['settings'] == {'maintenance_work_mem': '512MB', 'vacuum_cost_limit': '200',
-                  'vacuum_cost_delay': '2ms', 'lock_timeout': '500ms', 'statement_timeout': '1h',
+                  'vacuum_cost_delay': '2ms', 'lock_timeout': '500ms',
+                  'statement_timeout': {3600: '1h', 14400: '4h'}[payload.get('duration_seconds', 3600)],
                   'client_connection_check_interval': '1s'},
               'Vacuum socket identity/settings unavailable')
 
@@ -360,6 +446,9 @@ def renew(api, path, state):
 def finish(api, path, state, reason, result=None):
     inputs = state['inputs']
     cleanup(api, path, inputs)
+    if result is not None:
+        validate_result(result, state)
+        state['vacuum_sql_completed'] = result['mode'] == 'completed'
     state.update(phase='finished', stop_reason=reason, result=result, finished_at_utc=datetime.now(timezone.utc).isoformat())
     R.update_state(path, state)
     return public(path, state)
@@ -380,7 +469,7 @@ def execute(api, root, path, resume=False):
         return public(path, state)
     P.require(resume or state['phase'] == 'prepared', 'Resume the saved vacuum window; never launch it twice')
     P.require(B.clean_source(api, root) == (inputs['tool_source_commit'], '10.2.6'), 'Use the vacuum creation commit')
-    manifest, _ = P.context(api, root, Path(inputs['upgrade_state']))
+    manifest, _ = runtime_context(api, root, Path(inputs['upgrade_state']), path, state)
     no_normalizer(api, manifest)
     api.ensure_stable(inputs['runtime_before'], api.inspect_project(manifest), 'Runtime changed before vacuum')
     P.require(R.digest(U.private(Path(inputs['normalization_state']))) == inputs['normalization_state_sha256'], 'Normalization checkpoint changed')
@@ -411,7 +500,7 @@ def execute(api, root, path, resume=False):
             validate_target(target, inputs['payload'])
             state.update(target=target, phase='vacuum_requested', requested_at_utc=datetime.now(timezone.utc).isoformat(), lease_sequence=0)
             R.update_state(path, state)
-            P.context(api, root, Path(inputs['upgrade_state']))
+            runtime_context(api, root, Path(inputs['upgrade_state']), path, state)
             api.ensure_stable(inputs['runtime_before'], api.inspect_project(manifest), 'Runtime changed before vacuum dispatch')
             data = check_resources(observe(api, observer, inputs['payload'], target, runtime=inputs['runtime_before']), {**inputs, 'target': target}, baseline)
             validate_activity(data, target)
@@ -432,7 +521,6 @@ def execute(api, root, path, resume=False):
             P.require(owned_client(api, path, inputs), 'Vacuum client exited without a completion receipt; no relaunch is permitted')
             elapsed = (datetime.now(timezone.utc) - datetime.fromisoformat(state['requested_at_utc'])).total_seconds()
             P.require(0 <= elapsed <= inputs['limits']['duration_seconds'], 'Vacuum duration budget reached')
-            P.context(api, root, Path(inputs['upgrade_state']))
             api.ensure_stable(inputs['runtime_before'], api.inspect_project(manifest), 'Runtime changed during vacuum')
             data = observe(api, observer, inputs['payload'], state['target'],
                            vacuum_query_started_at=state.get('vacuum_query_started_at'), runtime=inputs['runtime_before'])
@@ -444,6 +532,8 @@ def execute(api, root, path, resume=False):
                                           'vacuum_query_started_at': state.get('vacuum_query_started_at')}, baseline)
             state['observations'] += 1
             R.update_state(path, state)
+            runtime_context(api, root, Path(inputs['upgrade_state']), path, state, monitoring=True)
+            api.ensure_stable(inputs['runtime_before'], api.inspect_project(manifest), 'Runtime changed during health verification')
             print(json.dumps({'phase': 'observing_vacuum', 'state': str(path), 'elapsed_seconds': int(elapsed),
                               'progress': data['vacuum'], 'transaction_review': data['transactions'],
                               'query_diagnostics': data.get('query_diagnostics', [])}), flush=True)
@@ -453,7 +543,7 @@ def execute(api, root, path, resume=False):
                 time.sleep(inputs['limits']['poll_seconds'])
         # Completion is a SQL receipt plus fresh identity/anchor/resource checks.
         cleanup(api, path, inputs)
-        P.context(api, root, Path(inputs['upgrade_state']))
+        runtime_context(api, root, Path(inputs['upgrade_state']), path, state)
         after = observe(api, observer, inputs['payload'], state.get('target'), verify_anchor=True,
                         vacuum_query_started_at=state.get('vacuum_query_started_at'), runtime=inputs['runtime_before'])
         after = record_observation(path, state, after)
@@ -484,24 +574,25 @@ def main():
     parser.add_argument('--metrics-hold', type=Path)
     parser.add_argument('--empty-blocks-hold', type=Path)
     parser.add_argument('--state', type=Path)
+    parser.add_argument('--profile', choices=('index-cleanup-v1',))
     args = parser.parse_args()
     try:
         P.require(sys.platform.startswith('linux') and os.geteuid() == 0, 'Run on the Linux dev server as root')
         if args.status:
-            P.require(args.state and not any((args.after_session, args.metrics_hold, args.empty_blocks_hold)), 'Use only the saved vacuum state')
+            P.require(args.state and not any((args.after_session, args.metrics_hold, args.empty_blocks_hold, args.profile)), 'Use only the saved vacuum state')
             print(json.dumps(public(args.state, load(args.state)), indent=2))
             return 0
         with M.global_lock(True), B.build_lock(D, D.MANAGED_RELEASES, ROOT):
             if args.prepare or args.run:
                 P.require(args.state is None and args.after_session and args.metrics_hold and args.empty_blocks_hold,
                           'Prepare requires the finished normalization checkpoint and both hold journals')
-                result = prepare(D, ROOT, args.after_session, args.metrics_hold, args.empty_blocks_hold)
+                result = prepare(D, ROOT, args.after_session, args.metrics_hold, args.empty_blocks_hold, args.profile)
                 args.state = Path(result['state'])
                 if args.run:
                     print(json.dumps(result, indent=2), flush=True)
                     result = execute(D, ROOT, args.state)
             else:
-                P.require(args.state and not any((args.after_session, args.metrics_hold, args.empty_blocks_hold)), 'Use only the saved vacuum state')
+                P.require(args.state and not any((args.after_session, args.metrics_hold, args.empty_blocks_hold, args.profile)), 'Use only the saved vacuum state')
                 result = execute(D, ROOT, args.state, resume=True)
         print(json.dumps(result, indent=2))
         return 0 if args.prepare or result.get('completion_verified') else 1
@@ -529,6 +620,8 @@ def error_report(error):
         report['system_errno'] = context.errno
     if isinstance(error, ResourceReviewError):
         report['transaction_review'] = error.review
+    if isinstance(error, HealthReviewError):
+        report['health_observations'] = error.samples
     return report
 
 

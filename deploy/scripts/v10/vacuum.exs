@@ -1,7 +1,6 @@
 defmodule BlockscoutV10Vacuum do
   @sql "VACUUM (VERBOSE, INDEX_CLEANUP ON, TRUNCATE OFF, PARALLEL 0) public.internal_transactions"
   @lease_ms 45000
-  @duration_ms 3_600_000
 
   def sql, do: @sql
   def fingerprint, do: Base.encode16(:crypto.hash(:md5, @sql), case: :lower)
@@ -58,7 +57,8 @@ defmodule BlockscoutV10Vacuum do
 
           current_start =
             if owned && owned["state"] in ["active", "idle"] &&
-                 owned["query_md5"] == fingerprint(), do: owned["query_start"]
+                 owned["query_md5"] == fingerprint(),
+               do: owned["query_start"]
 
           saved_start = payload["vacuum_query_started_at"]
           if saved_start && current_start, do: true = saved_start == current_start
@@ -176,7 +176,7 @@ defmodule BlockscoutV10Vacuum do
     reason =
       cond do
         now - renewed_at >= @lease_ms -> "host_lease_expired"
-        now - started >= @duration_ms -> "duration_limit"
+        now - started >= payload["duration_seconds"] * 1000 -> "duration_limit"
         true -> nil
       end
 
@@ -214,6 +214,10 @@ defmodule BlockscoutV10Vacuum do
     true = Explorer.Migrator.StartupControl.disabled?()
     nil = Process.whereis(Explorer.Supervisor)
     nil = Process.whereis(Explorer.Migrator.EmptyInternalTransactionsData)
+    payload = Map.put_new(payload, "duration_seconds", 3600)
+    duration = payload["duration_seconds"]
+    true = is_integer(duration) and duration in [3600, 14400]
+    duration_ms = duration * 1000
 
     options =
       Explorer.Repo.config()
@@ -237,7 +241,7 @@ defmodule BlockscoutV10Vacuum do
         prepare: :unnamed,
         parameters: [
           application_name: payload["application_name"],
-          statement_timeout: "3600000",
+          statement_timeout: Integer.to_string(duration_ms),
           lock_timeout: "500",
           maintenance_work_mem: "512MB",
           vacuum_cost_limit: "200",
@@ -288,7 +292,7 @@ defmodule BlockscoutV10Vacuum do
     task =
       Task.async(fn ->
         try do
-          result = Postgrex.query!(conn, @sql, [], timeout: @duration_ms + 5000)
+          result = Postgrex.query!(conn, @sql, [], timeout: duration_ms + 5000)
           :vacuum = result.command
           # VERBOSE messages remain private in the durable client log.
           emit("BLOCKSCOUT_VACUUM_VERBOSE=", Map.get(result, :messages, []))

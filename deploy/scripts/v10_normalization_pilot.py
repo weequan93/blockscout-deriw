@@ -203,11 +203,11 @@ def load(api, path, manifest):
     return state
 
 
-def context(api, root, path):
+def context(api, root, path, verifier=None):
     manifest, _, _ = api.configuration(root, 'dev')
     upgrade = U.load_state(api, path, manifest)
     require(upgrade['phase'] == 'active', 'The v10 upgrade must remain active')
-    result = U.verify(api, path, upgrade, manifest)
+    result = (verifier or U.verify)(api, path, upgrade, manifest)
     require(result['status'] == 'verified', 'Active v10 runtime needs attention before normalization')
     return manifest, upgrade
 

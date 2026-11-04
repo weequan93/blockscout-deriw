@@ -291,6 +291,60 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(selected['services']['backend']['image'], 'fixture-proposed-backend')
         self.assertEqual(selected['services']['backend']['environment'][U.V.HOLD], 'false')
 
+    def healthy_verification_pair(self, failed_stage=None):
+        self.state['phase'] = 'active'
+        self.manifest['http_rpc'] = 'http://fixture.invalid'
+        for name in U.PAIR:
+            self.current[name]['Image'] = IMAGE
+            self.current[name]['Config']['Labels'].update({U.STATE_LABEL: str(self.path), U.ROLE_LABEL: name})
+        def run(command, **kwargs):
+            if command[-1] == self.manifest['http_rpc']:
+                return json.dumps({'result': hex(int(self.manifest['chain_id']))})
+            if '/api/health/readiness' in command[-1]:
+                return 'OK'
+            if command[:4] == ['docker', 'exec', 'backend', '/app/bin/blockscout']:
+                return U.C.MARKER + json.dumps({'settings_ok': True, 'automatic_migrators_absent': True, 'market_price_ready': True})
+            if command[:4] == ['docker', 'exec', 'nft_media_handler', '/app/bin/blockscout']:
+                return U.C.MARKER + json.dumps({'v10_queue_protocol_ok': True, 'connected': True})
+            for route in ('blocks', 'transactions', 'tokens'):
+                if command[-1].endswith('/api/v2/' + route):
+                    if failed_stage == 'api_' + route:
+                        raise U.D.ConfigError('Docker/Compose read failed or exceeded limit; raw output suppressed')
+                    return json.dumps({'items': []})
+            raise AssertionError('Unexpected verification probe')
+        self.api.run.side_effect = run
+        self.api.rpc_chain.side_effect = lambda manifest, runner=None: U.D.rpc_chain(manifest, runner=runner or run)
+
+    def test_failed_api_probe_keeps_its_name_and_previous_check_results(self):
+        self.healthy_verification_pair(failed_stage='api_tokens')
+        result = U.verify(self.api, self.path, self.state, self.manifest)
+        self.assertEqual(result['status'], 'needs_attention')
+        self.assertEqual(result['verification_failure']['stage'], 'api_tokens')
+        self.assertTrue(result['verification_probes']['backend_readiness'])
+        self.assertTrue(result['verification_probes']['api_transactions'])
+        self.assertFalse(result['verification_probes']['api_tokens'])
+        self.assertNotIn(SECRET, json.dumps(result))
+
+    def test_verification_deadline_caps_every_expensive_probe(self):
+        self.healthy_verification_pair()
+        with patch.object(U.time, 'monotonic', return_value=100):
+            result = U.verify(self.api, self.path, self.state, self.manifest, deadline=103)
+        self.assertEqual(result['status'], 'verified')
+        self.assertGreaterEqual(len(self.api.run.call_args_list), 7)
+        self.assertTrue(all(0 < call.kwargs['timeout'] <= 3 for call in self.api.run.call_args_list))
+        self.assertTrue(result['verification_probes']['l2_chain'])
+
+    def test_wrong_chain_is_identified_and_expired_deadline_launches_no_probe(self):
+        self.healthy_verification_pair()
+        self.api.rpc_chain.side_effect = U.D.ConfigError('L2 RPC chain does not match dev manifest')
+        result = U.verify(self.api, self.path, self.state, self.manifest)
+        self.assertEqual(result['verification_failure']['kind'], 'identity_mismatch')
+        self.api.run.reset_mock()
+        with patch.object(U.time, 'monotonic', return_value=104):
+            result = U.verify(self.api, self.path, self.state, self.manifest, deadline=103)
+        self.assertEqual(result['verification_failure']['stage'], 'verification_deadline')
+        self.api.run.assert_not_called()
+
     def test_upgrade_context_uses_new_format_while_old_rollback_cannot_load_it(self):
         self.state['schema_writes_may_have_started'] = True
         self.state['phase'] = 'active'

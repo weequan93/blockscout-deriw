@@ -25,6 +25,16 @@ def resources():
         'vacuum': [], 'target_sessions': [], 'observer_role_oid': 10, 'runtime_holds_verified': True}
 
 
+def health(ready=True):
+    result = {'status': 'verified' if ready else 'needs_attention',
+              'services': {name: {'status': 'running', 'restart_count': 0} for name in V.U.PAIR},
+              'verification_probes': {'runtime_settings': True, 'automatic_migrators_absent': True,
+                                      'service_lifecycle': True, 'api_tokens': ready}}
+    if not ready:
+        result['verification_failure'] = {'stage': 'api_tokens', 'kind': 'ConfigError', 'reason': 'Probe unavailable; raw output suppressed'}
+    return result
+
+
 class VacuumTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -58,18 +68,20 @@ class VacuumTests(unittest.TestCase):
         patch.object(V.P, 'context', return_value=(self.manifest, self.upgrade)).start()
         self.cleanups = patch.object(V, 'cleanup').start()
 
-    def prepare(self):
-        return Path(V.prepare(self.api, ROOT, self.path, Path('/metrics'), Path('/empty'))['state'])
+    def prepare(self, profile=None):
+        return Path(V.prepare(self.api, ROOT, self.path, Path('/metrics'), Path('/empty'), profile=profile)['state'])
 
     def target(self, state):
         payload = state['inputs']['payload']
         return {'pid': 1234, 'backend_start': '2026-11-04 12:00:00+00', 'application_name': payload['application_name'],
             'query_md5': V.SQL_MD5, 'database_oid': 123, 'role_oid': 10,
             'settings': {'maintenance_work_mem': '512MB', 'vacuum_cost_limit': '200', 'vacuum_cost_delay': '2ms',
-                         'lock_timeout': '500ms', 'statement_timeout': '1h', 'client_connection_check_interval': '1s'}}
+                         'lock_timeout': '500ms',
+                         'statement_timeout': {3600: '1h', 14400: '4h'}[payload.get('duration_seconds', 3600)],
+                         'client_connection_check_interval': '1s'}}
 
-    def requested(self, mode=None):
-        path = self.prepare()
+    def requested(self, mode=None, profile=None):
+        path = self.prepare(profile)
         state = V.load(path)
         state.update(phase='vacuum_requested', target=self.target(state), requested_at_utc=datetime.now(timezone.utc).isoformat(), lease_sequence=1)
         V.R.update_state(path, state)
@@ -96,6 +108,65 @@ class VacuumTests(unittest.TestCase):
                 with self.assertRaises(V.U.UpgradeError):
                     self.prepare()
                 self.parent[key] = original
+
+    def test_explicit_four_hour_window_preserves_other_limits_and_reconciles_once(self):
+        path = self.requested('completed', profile='index-cleanup-v1')
+        state = V.load(path)
+        inputs = state['inputs']
+        self.assertEqual(V.LIMITS['duration_seconds'], 3600)
+        self.assertEqual(inputs['limits'], {**V.LIMITS, 'duration_seconds': 14400})
+        self.assertEqual(inputs['payload']['duration_seconds'], 14400)
+        self.assertEqual(state['target']['settings']['statement_timeout'], '4h')
+        V.validate_target(state['target'], inputs['payload'])
+        wrong_timeout = deepcopy(state['target'])
+        wrong_timeout['settings']['statement_timeout'] = '1h'
+        with self.assertRaisesRegex(V.U.UpgradeError, 'identity/settings'):
+            V.validate_target(wrong_timeout, inputs['payload'])
+        receipt = V.marker(path, 'BLOCKSCOUT_VACUUM_RESULT=')
+        receipt['elapsed_ms'] = 3600001
+        V.validate_result(receipt, state)
+        with self.assertRaisesRegex(V.U.UpgradeError, 'exceeds the window'):
+            V.validate_result({**receipt, 'elapsed_ms': 14400001}, state)
+        with patch.object(V.subprocess, 'Popen') as launch:
+            result = V.execute(self.api, ROOT, path, resume=True)
+            again = V.execute(self.api, ROOT, path, resume=True)
+        launch.assert_not_called()
+        self.assertEqual(result['profile'], 'index-cleanup-v1')
+        self.assertTrue(result['completion_verified'])
+        self.assertEqual(again['limits'], inputs['limits'])
+        self.assertFalse(result['normalization_gate_reopened'])
+
+    def test_one_hour_legacy_inputs_remain_valid_and_duration_mismatches_fail(self):
+        state = V.load(self.prepare())
+        inputs = state['inputs']
+        self.assertEqual(inputs['limits'], V.LIMITS)
+        self.assertEqual(V.public(None, state)['profile'], 'one-hour')
+        legacy = deepcopy(inputs)
+        legacy['payload'].pop('duration_seconds')
+        self.assertEqual(V.profile_limits(legacy), V.LIMITS)
+        V.validate_target(self.target(state), legacy['payload'])
+        for profile, limits, duration in ((None, V.LIMITS, 14400),
+                                          ('index-cleanup-v1', V.INDEX_CLEANUP_LIMITS, 3600),
+                                          ('index-cleanup-v1', V.LIMITS, 14400),
+                                          ('unknown', V.LIMITS, 3600)):
+            changed = {**inputs, 'profile': profile, 'limits': limits,
+                       'payload': {**inputs['payload'], 'duration_seconds': duration}}
+            with self.subTest(profile=profile, duration=duration), self.assertRaises(V.U.UpgradeError):
+                V.profile_limits(changed)
+        with self.assertRaisesRegex(V.U.UpgradeError, 'Unknown vacuum window profile'):
+            self.prepare('unknown')
+
+    def test_cli_cannot_override_profile_during_status_or_resume(self):
+        for mode in ('status', 'resume'):
+            with self.subTest(mode=mode), patch.object(V.sys, 'platform', 'linux'), \
+                 patch.object(V.os, 'geteuid', return_value=0), \
+                 patch.object(V.M, 'global_lock'), patch.object(V.B, 'build_lock'), \
+                 patch.object(V, 'load') as load, patch.object(V, 'execute') as execute, \
+                 patch.object(V.sys, 'argv', ['vacuum', '--' + mode, '--state', '/saved/state.json',
+                                              '--profile', 'index-cleanup-v1']):
+                self.assertEqual(V.main(), 1)
+                load.assert_not_called()
+                execute.assert_not_called()
 
     def test_result_reconciliation_never_relaunches_vacuum(self):
         path = self.requested('completed')
@@ -256,6 +327,8 @@ class VacuumTests(unittest.TestCase):
         self.assertEqual(saved['query_diagnostics'], data['query_diagnostics'])
         self.assertEqual(saved['transactions']['oldest_transaction_seconds'], 310)
         self.assertEqual(V.load(path)['phase'], 'finished')
+        stream = [json.loads(line) for line in V.U.private(path.parent / 'observations.jsonl').splitlines()]
+        self.assertEqual(stream[-1], saved)
 
     def test_error_details_preserve_safe_configuration_reason_and_hide_values(self):
         safe = V.error_report(V.D.ConfigError('Docker/Compose read unavailable; raw output suppressed'))
@@ -274,6 +347,83 @@ class VacuumTests(unittest.TestCase):
         self.assertEqual(report['system_errno'], 7)
         self.assertEqual(report['context_type'], 'OSError')
         self.assertNotIn('private-row-canary', json.dumps(report))
+
+    def test_one_failed_health_sample_recovers_with_the_same_deadline(self):
+        path = self.requested()
+        state = V.load(path)
+        with patch.object(V.U, 'verify', side_effect=[health(False), health(True)]) as verify:
+            result = V.health_verification(self.api, Path('/upgrade'), {}, self.manifest, path, state)
+        self.assertEqual(result['status'], 'verified')
+        self.assertEqual(verify.call_count, 2)
+        self.assertEqual(verify.call_args_list[0].kwargs['deadline'], verify.call_args_list[1].kwargs['deadline'])
+        saved = V.load(path)
+        self.assertEqual(saved['health_rechecks'], 1)
+        samples = [json.loads(line) for line in V.U.private(path.parent / 'health-observations.jsonl').splitlines()]
+        self.assertEqual([s['report']['status'] for s in samples], ['needs_attention', 'verified'])
+
+    def test_persistent_health_failure_stops_without_renewing_the_lease(self):
+        path = self.requested()
+        def context(api, root, upgrade_path, saved_path=None, saved_state=None, monitoring=False):
+            if monitoring:
+                V.health_verification(api, upgrade_path, {}, self.manifest, saved_path, saved_state, monitoring=True)
+            return self.manifest, {}
+        with patch.object(V, 'runtime_context', side_effect=context), patch.object(V, 'owned_client', return_value=True), \
+             patch.object(V.U, 'verify', side_effect=[health(False), health(False)]) as verify, \
+             patch.object(V, 'publish') as publish:
+            with self.assertRaisesRegex(V.HealthReviewError, 'api_tokens'):
+                V.execute(self.api, ROOT, path, resume=True)
+        self.assertEqual(verify.call_count, 2)
+        publish.assert_not_called()
+        saved = V.load(path)
+        self.assertEqual(saved['phase'], 'finished')
+        self.assertEqual(saved['latest_health']['report']['verification_failure']['stage'], 'api_tokens')
+
+    def test_runtime_restart_settings_and_chain_mismatch_do_not_retry(self):
+        path = self.requested()
+        reports = []
+        restarted = health(False)
+        restarted['services']['backend']['restart_count'] = 1
+        reports.append(restarted)
+        changed = health(False)
+        changed['verification_probes']['runtime_settings'] = False
+        reports.append(changed)
+        chain = health(False)
+        chain['verification_failure'] = {'stage': 'l2_chain', 'kind': 'identity_mismatch'}
+        reports.append(chain)
+        for report in reports:
+            with self.subTest(report=report), patch.object(V.U, 'verify', return_value=report) as verify:
+                with self.assertRaises(V.HealthReviewError):
+                    V.health_verification(self.api, Path('/upgrade'), {}, self.manifest, path, V.load(path))
+                self.assertEqual(verify.call_count, 1)
+
+    def test_recheck_cannot_start_after_budget_is_spent_or_accept_late_success(self):
+        path = self.requested()
+        for late_success in (False, True):
+            clock = {'now': 100.0}
+            def verify(*args, **kwargs):
+                clock['now'] += 30 if late_success else 23
+                return health(late_success)
+            with self.subTest(late_success=late_success), patch.object(V.time, 'monotonic', side_effect=lambda: clock['now']), \
+                 patch.object(V.U, 'verify', side_effect=verify) as checked:
+                with self.assertRaises(V.HealthReviewError):
+                    V.health_verification(self.api, Path('/upgrade'), {}, self.manifest, path, V.load(path))
+                self.assertEqual(checked.call_count, 1)
+
+    def test_completed_receipt_survives_a_failed_final_health_check(self):
+        path = self.requested('completed')
+        state = V.load(path)
+        result = V.finish(self.api, path, state, 'Health review required', V.marker(path, 'BLOCKSCOUT_VACUUM_RESULT='))
+        self.assertTrue(result['vacuum_sql_completed'])
+        self.assertFalse(result['completion_verified'])
+        with patch.object(V.subprocess, 'Popen') as launch:
+            V.execute(self.api, ROOT, path, resume=True)
+        launch.assert_not_called()
+
+    def test_legacy_health_policy_keeps_a_single_attempt(self):
+        with patch.object(V.U, 'verify', return_value=health(False)) as verify:
+            with self.assertRaises(V.HealthReviewError):
+                V.health_verification(self.api, Path('/upgrade'), {}, self.manifest, state={'inputs': {}})
+        self.assertEqual(verify.call_count, 1)
 
 
 if __name__ == '__main__':

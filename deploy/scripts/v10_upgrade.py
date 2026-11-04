@@ -382,11 +382,23 @@ IO.puts("BLOCKSCOUT_DEPLOY_CHECK=" <> Jason.encode!(%{connected: true, v10_queue
 '''
 
 
-def verify(api, path, state, manifest, wait=False):
+def verify(api, path, state, manifest, wait=False, deadline=None):
+    def run(command, timeout=30, **kwargs):
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            require(remaining > 0, 'Runtime verification deadline reached')
+            timeout = min(timeout, remaining)
+        return api.run(command, timeout=timeout, **kwargs)
     model = api.compose_model(V.LIVE_DIRECTORY, manifest, {}, [path.parent / 'forward.compose.json'], True)
     ready = False
     result = {}
+    current = {}
     for attempt in range(60 if wait else 1):
+        if deadline is not None and time.monotonic() >= deadline:
+            result = {'backend_readiness_ok': False, 'runtime_checks_completed': False,
+                      'verification_failure': {'stage': 'verification_deadline', 'kind': 'deadline_reached'},
+                      'verification_probes': {'verification_deadline': False}}
+            break
         current = rows(api, manifest, allow_missing=True)
         others(api, state, current)
         if not set(PAIR) <= current.keys():
@@ -406,32 +418,68 @@ def verify(api, path, state, manifest, wait=False):
                     and old['HostConfig'].get('PortBindings') == row['HostConfig'].get('PortBindings')
                     and set(old['NetworkSettings']['Networks']) == set(row['NetworkSettings']['Networks']),
                     'Paired service mounts/ports/networks changed')
+        stage = 'backend_readiness'
+        probe_results = {}
         try:
             port = api.env_map(current['backend']).get('PORT', '4000')
             require(re.fullmatch(r'[0-9]{1,5}', port) and 0 < int(port) < 65536, 'Unexpected readiness port')
-            readiness = api.run(['docker', 'exec', 'backend', 'curl', '-q', '--noproxy', '*', '-fsS', '--max-time', '5',
+            readiness = run(['docker', 'exec', 'backend', 'curl', '-q', '--noproxy', '*', '-fsS', '--max-time', '5',
                                  '--max-filesize', '4096', 'http://127.0.0.1:' + port + '/api/health/readiness'], timeout=10).strip() == 'OK'
             health = {'backend_readiness_ok': readiness}
-            runtime = C.marked_json(api, api.run(['docker', 'exec', 'backend', '/app/bin/blockscout', 'rpc', runtime_expression()], timeout=20))
-            nft = C.marked_json(api, api.run(['docker', 'exec', 'nft_media_handler', '/app/bin/blockscout', 'rpc', nft_expression()], timeout=20))
+            probe_results['backend_readiness'] = readiness
+            stage = 'backend_runtime'
+            runtime = C.marked_json(api, run(['docker', 'exec', 'backend', '/app/bin/blockscout', 'rpc', runtime_expression()], timeout=20))
+            probe_results.update(runtime_settings=runtime.get('settings_ok') is True,
+                                 automatic_migrators_absent=runtime.get('automatic_migrators_absent') is True,
+                                 market_price=runtime.get('market_price_ready') is True)
+            stage = 'nft_queue'
+            nft = C.marked_json(api, run(['docker', 'exec', 'nft_media_handler', '/app/bin/blockscout', 'rpc', nft_expression()], timeout=20))
+            probe_results['nft_queue'] = nft.get('v10_queue_protocol_ok') is True
             ready = all(health.values()) and runtime.get('settings_ok') is True and nft.get('v10_queue_protocol_ok') is True
             ready = ready and runtime.get('market_price_ready') is True
             ready = ready and all(current[n]['State']['Running'] and current[n]['RestartCount'] == 0 for n in PAIR)
+            probe_results['service_lifecycle'] = all(current[n]['State']['Running'] and current[n]['RestartCount'] == 0 for n in PAIR)
             if ready:
-                api.rpc_chain(manifest)
+                stage = 'l2_chain'
+                if deadline is None:
+                    api.rpc_chain(manifest)
+                else:
+                    api.rpc_chain(manifest, runner=run)
+                probe_results['l2_chain'] = True
                 for route in ('blocks', 'transactions', 'tokens'):
-                    body = api.run(['docker', 'exec', 'backend', 'curl', '-q', '--noproxy', '*', '-fsS', '--max-time', '5',
+                    stage = 'api_' + route
+                    body = run(['docker', 'exec', 'backend', 'curl', '-q', '--noproxy', '*', '-fsS', '--max-time', '5',
                                     '--max-filesize', '2097152', 'http://127.0.0.1:' + port + '/api/v2/' + route], timeout=10)
                     require(isinstance(json.loads(body).get('items'), list), 'Representative API result unavailable')
+                    probe_results[stage] = True
             result = {**health, **runtime, **nft}
-        except D.ConfigError:
+            ready = ready and all(probe_results.values())
+            if deadline is not None and time.monotonic() > deadline:
+                ready = False
+                probe_results['verification_deadline'] = False
+            failed = next((name for name, ok in probe_results.items() if not ok), None)
+            if failed:
+                result['verification_failure'] = {'stage': failed, 'kind': 'check_failed'}
+        except (D.ConfigError, ValueError, TypeError, AttributeError) as error:
             ready = False
             result = {'backend_readiness_ok': False, 'runtime_checks_completed': False}
+            probe_results[stage] = False
+            result['verification_failure'] = {'stage': stage, 'kind': type(error).__name__,
+                'reason': str(error) if isinstance(error, D.ConfigError) else 'Runtime probe returned an invalid response; raw values suppressed'}
+            if stage == 'l2_chain' and isinstance(error, D.ConfigError) and str(error) == 'L2 RPC chain does not match dev manifest':
+                result['verification_failure']['kind'] = 'identity_mismatch'
+        result['verification_probes'] = probe_results
         if ready or not wait:
             break
         if attempt % 5 == 0:
             print(json.dumps({'phase': 'waiting_for_v10_pair', 'attempt': attempt + 1}), flush=True)
-        time.sleep(2)
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(2, remaining))
+        else:
+            time.sleep(2)
     return {'status': 'verified' if ready else 'needs_attention', 'state': str(path), 'recorded_phase': state['phase'],
             'candidate_image': state['candidate_image'], 'schema_writes_may_have_started': state['schema_writes_may_have_started'],
             'deferred_custom_versions': sorted(R.VERSIONS), 'unrelated_containers_preserved': True,

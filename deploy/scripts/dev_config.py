@@ -466,9 +466,9 @@ def live_environment_differences(model,rows):
  return sorted(result)
 
 
-def rpc_chain(manifest):
+def rpc_chain(manifest,runner=None):
  request=json.dumps({'jsonrpc':'2.0','id':1,'method':'eth_chainId','params':[]})
- result=run(['docker','exec','backend','curl','-q','--noproxy','*','-fsS','--connect-timeout','2','--max-time','4',
+ result=(runner or run)(['docker','exec','backend','curl','-q','--noproxy','*','-fsS','--connect-timeout','2','--max-time','4',
   '--max-filesize','4096','-H','Content-Type: application/json','--data',request,manifest['http_rpc']],timeout=10)
  try:
   data=json.loads(result);number=int(data['result'],16)
