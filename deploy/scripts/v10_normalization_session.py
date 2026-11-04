@@ -296,6 +296,7 @@ def retention_plan(api, manifest):
 
 def public(path, state):
     return {'status': 'normalization_session_' + state['phase'], 'state': str(path), 'stop_reason': state.get('stop_reason'),
+            'preparation_complete': state.get('preparation_complete', 'resources_before' in state),
             'completed_batches': state['batches'], 'selected_rows_verified': state['rows'],
             'updated_rows_observed': state['updated_rows'], 'charged_chunk_wal_bytes': state['charged_wal_bytes'],
             'wal_measurements_complete': state['wal_measurements_complete'], 'next_before_block': state['cursor'],
@@ -352,23 +353,33 @@ def prepare(api, root, after_path, after_session=False):
     state = {'format': FORMAT, 'inputs': inputs, 'inputs_sha256': R.digest(R.encoded(inputs)), 'phase': 'prepared',
              'batches': 0, 'rows': 0, 'updated_rows': 0, 'charged_wal_bytes': 0, 'wal_measurements_complete': True,
              'cursor': cursor, 'pending': None, 'last': None, 'last_sha256': None, 'recent': [],
-             'checkpoint_hash': R.digest(R.encoded(inputs))}
+             'checkpoint_hash': R.digest(R.encoded(inputs)), 'preparation_complete': False}
     state['checkpoint_sha256'] = checkpoint_digest(state)
     R.write_new(path, R.encoded(state))
+    print(json.dumps({'phase': 'session_inputs_saved', 'state': str(path), 'database_writes': False}), flush=True)
     # A read-only preparation also validates permissions and the exact protocol.
-    with Client(api, path, inputs) as client:
-        state['client_name'] = client.name
-        P.require(observed(anchor, client.request('inspect', anchor)) == 'normalized', 'Anchor no longer normalized')
-        resources = client.request('resources')
-        report = resource_guard(resources)
-        sync_json(directory / 'resources-before.json', report)
-        sampled = client.request('sample', {'before_block': cursor})
-        P.require(sampled['selected_rows'] > 0 and sampled['selected_bytes'] <= 16 * 1024**2,
-                  'Next block is oversized or the non-null range is exhausted; review instead of skipping')
-    state = json.loads(U.private(path))
-    state['resources_before'] = resources
-    sync_json(path, state)
-    monitor(path, inputs)
+    try:
+        with Client(api, path, inputs) as client:
+            state['client_name'] = client.name
+            P.require(observed(anchor, client.request('inspect', anchor)) == 'normalized', 'Anchor no longer normalized')
+            resources = client.request('resources')
+            # Retain the evidence even when a resource guard rejects it. A
+            # stopped preparation still has an inspectable private state path.
+            report = resource_report(resources)
+            sync_json(directory / 'resources-before.json', report)
+            state['resources_before'] = resources
+            sync_json(path, state)
+            resource_guard(resources)
+            sampled = client.request('sample', {'before_block': cursor})
+            P.require(sampled['selected_rows'] > 0 and sampled['selected_bytes'] <= 16 * 1024**2,
+                      'Next block is oversized or the non-null range is exhausted; review instead of skipping')
+        state = json.loads(U.private(path))
+        monitor(path, inputs)
+        state['preparation_complete'] = True
+        sync_json(path, state)
+    except Exception as error:
+        error.state_path = path
+        raise
     return {**public(path, state), 'database_writes': False, 'resources': report,
             'next_sample': sampled, 'note': 'Prepared only. The reusable client is limited to another finite implementation pilot; full-table budgets and vacuum tuning remain unapproved by these measurements.'}
 
@@ -392,7 +403,8 @@ def execute(api, root, path, manifest):
         return public(path, state)
     inputs = state['inputs']
     P.require(B.clean_source(api, root) == (inputs['tool_source_commit'], '10.2.6'), 'Resume from the session creation commit')
-    P.require('resources_before' in state, 'Preparation was incomplete; retain it and prepare a new session')
+    P.require(state.get('preparation_complete', 'resources_before' in state) and 'resources_before' in state,
+              'Preparation was incomplete; retain it and prepare a new session')
     P.context(api, root, Path(inputs['upgrade_state']))
     health_at = time.monotonic()
     with Client(api, path, inputs) as client:
@@ -535,7 +547,8 @@ def main():
         print(json.dumps(result, indent=2))
         return 0
     except Exception as error:
-        print(json.dumps({'status': 'stopped', 'state': str(args.state) if args.state else None, 'raw_values_suppressed': True,
+        failed_path = getattr(error, 'state_path', args.state)
+        print(json.dumps({'status': 'stopped', 'state': str(failed_path) if failed_path else None, 'raw_values_suppressed': True,
                           'reason': str(error) if isinstance(error, U.UpgradeError) else 'Session check failed; retain its private journal/log',
                           'recovery': 'Use status to inspect the saved checkpoint, then resume from the creation commit. A live orphan client is left alone and exits after at most 60 seconds idle. Resume reconciles pending rows before any update; budgets are never reset.'}))
         return 1

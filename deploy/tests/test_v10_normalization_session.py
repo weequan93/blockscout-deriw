@@ -241,6 +241,33 @@ class SessionTests(unittest.TestCase):
         with self.assertRaises(J.U.UpgradeError):
             J.resource_guard(data)
 
+    def test_rejected_preparation_keeps_its_path_and_resource_evidence_but_cannot_execute(self):
+        after_path = self.base / 'previous-pilot.json'
+        J.R.write_new(after_path, b'previous verified state')
+        previous = {'phase': 'applied', 'writes_may_have_started': True, 'format': J.P.FORMAT,
+                    'block': 100, 'expected_rows': 1, 'candidate_image': 'sha256:' + 'a' * 64,
+                    'upgrade_state': '/private/upgrade/state.json', 'baseline': J.P.baseline(self.result([100]))}
+        upgrade = {'candidate_image': previous['candidate_image'], 'candidate_source_commit': 'a' * 40,
+                   'network': 'fixture', 'backend_environment': {},
+                   'migration_payload': {'database_identity': {}, 'heap_identity': 1},
+                   'applied_result': {'applied_versions': [1]}}
+        self.api.configuration = lambda *a: (self.manifest, {}, {})
+        self.raw_resources['transactions']['oldest_transaction_seconds'] = 301
+        with patch.object(J.P, 'load', return_value=previous), patch.object(J.P, 'status', return_value={'status': 'verified'}), \
+                patch.object(J.P, 'context', return_value=(self.manifest, upgrade)), \
+                patch.object(J.B, 'validate_state_directory'), contextlib.redirect_stdout(io.StringIO()) as output:
+            with self.assertRaises(J.U.UpgradeError) as raised:
+                J.prepare(self.api, ROOT, after_path)
+        path = raised.exception.state_path
+        self.assertIn(str(path), output.getvalue())
+        state = J.load(path, self.manifest)
+        report = json.loads(J.U.private(path.parent / 'resources-before.json'))
+        self.assertEqual(report['transactions']['oldest_transaction_seconds'], 301)
+        self.assertFalse(J.public(path, state)['preparation_complete'])
+        with self.assertRaisesRegex(J.U.UpgradeError, 'Preparation was incomplete'):
+            self.execute(path)
+        self.assertEqual(self.migrates, 0)
+
 
 if __name__ == '__main__':
     unittest.main()
