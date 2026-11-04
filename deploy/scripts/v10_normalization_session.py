@@ -23,6 +23,7 @@ import v10_upgrade as U
 ROOT = Path(__file__).resolve().parents[2]
 BASE = Path('/data/blockscout-dev-private/v10-normalization-sessions')
 FORMAT = 'blockscout-dev-v10-normalization-session-v1'
+PROFILE_FORMAT = 'blockscout-dev-v10-normalization-session-v2'
 LIMITS = dict(max_batches=25, max_rows=25000, wal_bytes=128 * 1024**2,
               next_wal_reserve_bytes=16 * 1024**2, space_bytes=512 * 1024**2,
               free_bytes=200 * 1024**3, start_seconds=600, health_seconds=30,
@@ -30,6 +31,22 @@ LIMITS = dict(max_batches=25, max_rows=25000, wal_bytes=128 * 1024**2,
               all_session_journal_bytes=256 * 1024**2,
               dead_rows=1000000, additional_dead_rows=100000,
               oldest_transaction_seconds=300, retained_raw_snapshots=2)
+# The legacy dictionary is deliberately unchanged: v1 journals freeze it.
+# This is one observation epoch, not permission for continuous normalization.
+OBSERVATION_LIMITS = {**LIMITS, 'max_batches': 250, 'max_rows': 250000,
+                      'wal_bytes': 4 * 1024**3, 'space_bytes': 2 * 1024**3,
+                      'start_seconds': 1800, 'additional_dead_rows': 300000,
+                      'transaction_wal_bytes': 128 * 1024**2,
+                      'session_request_limit': 2000, 'maintenance_max_rows': 250000}
+
+
+def profile_limits(inputs):
+    profile = inputs.get('profile')
+    P.require(profile in ('pilot-v1', 'observation-v1') if 'profile' in inputs else profile is None,
+              'Unknown session limit profile')
+    limits = OBSERVATION_LIMITS if profile == 'observation-v1' else LIMITS
+    P.require(inputs['limits'] == limits, 'Frozen session limits changed')
+    return limits
 
 
 def sync_json(path, value):
@@ -56,15 +73,21 @@ def journal_size(directory):
 
 
 def monitor(path, inputs, read_only=False):
+    limits = profile_limits(inputs)
     if not read_only:
-        P.monitor({'space_before': inputs['space_before']})
-    P.require(journal_size(path.parent) <= LIMITS['journal_bytes'], 'Session journal size cap reached')
-    P.require(journal_size(BASE) <= LIMITS['all_session_journal_bytes'], 'New session journals reached their aggregate cap; review retention')
+        free = P.free_bytes()
+        P.require(free >= limits['free_bytes'] and inputs['space_before'] - free <= limits['space_bytes'],
+                  'Session free-space/consumption limit reached')
+    P.require(journal_size(path.parent) <= limits['journal_bytes'], 'Session journal size cap reached')
+    P.require(journal_size(BASE) <= limits['all_session_journal_bytes'], 'New session journals reached their aggregate cap; review retention')
 
 
 def checkpoint_digest(state):
-    return R.digest(R.encoded({k: state[k] for k in ('batches', 'rows', 'updated_rows', 'charged_wal_bytes',
-        'wal_measurements_complete', 'cursor', 'last_sha256', 'checkpoint_hash')}))
+    keys = ('batches', 'rows', 'updated_rows', 'charged_wal_bytes',
+            'wal_measurements_complete', 'cursor', 'last_sha256', 'checkpoint_hash')
+    if state['format'] == PROFILE_FORMAT:
+        keys += ('timing_totals',)
+    return R.digest(R.encoded({k: state[k] for k in keys}))
 
 
 class Client:
@@ -99,7 +122,8 @@ class Client:
         try:
             self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=self.log, stderr=self.log)
             self.process.stdin.write(U.archive(self.inputs['backend_environment'],
-                                              {**self.inputs['payload'], 'session': True},
+                                              {**self.inputs['payload'], 'session': True,
+                                               'session_request_limit': profile_limits(self.inputs).get('session_request_limit', 200)},
                                               U.private(self.path.parent / 'migrate.exs')))
             self.process.stdin.close()
             started = time.monotonic()
@@ -136,7 +160,7 @@ class Client:
         while True:
             P.require(self.process.poll() is None, 'Session client stopped; inspect its private log')
             P.require(time.monotonic() - started < 60, 'Session command exceeded 60 seconds')
-            P.require(os.fstat(self.log.fileno()).st_size <= LIMITS['log_bytes'], 'Session log cap reached')
+            P.require(os.fstat(self.log.fileno()).st_size <= profile_limits(self.inputs)['log_bytes'], 'Session log cap reached')
             monitor(self.path, self.inputs, read_only=self.read_only)
             raw = self.transport(['docker', 'exec', self.name, 'sh', '-c',
                                 'if test -f /tmp/channel/response.json; then cat /tmp/channel/response.json; fi'], timeout=10)
@@ -216,22 +240,23 @@ def resource_report(data):
             'note': 'Catalog/statistics and bounded aggregates only. Dead rows are estimates. Ordinary vacuum makes space reusable; it generally does not return it to the filesystem. No vacuum, tuning, session termination or rewrite was performed.'}
 
 
-def resource_guard(data, baseline=None):
+def resource_guard(data, baseline=None, limits=None):
+    limits = LIMITS if limits is None else limits
     report = resource_report(data)
     P.require(report['autovacuum_effectively_enabled'], 'Autovacuum/track_counts is disabled')
-    P.require(0 <= data['table']['dead_rows'] <= LIMITS['dead_rows'], 'Estimated dead-row ceiling reached; review vacuum')
-    P.require(data['transactions']['oldest_transaction_seconds'] <= LIMITS['oldest_transaction_seconds'],
+    P.require(0 <= data['table']['dead_rows'] <= limits['dead_rows'], 'Estimated dead-row ceiling reached; review vacuum')
+    P.require(data['transactions']['oldest_transaction_seconds'] <= limits['oldest_transaction_seconds'],
               'An existing long transaction needs review (observed ' + str(data['transactions']['oldest_transaction_seconds'])
-              + ' seconds, limit ' + str(LIMITS['oldest_transaction_seconds']) + '); no session was terminated')
+              + ' seconds, limit ' + str(limits['oldest_transaction_seconds']) + '); no session was terminated')
     if baseline:
         P.require(data['table']['stats_reset'] == baseline['table']['stats_reset']
                   and data['wal']['stats_reset'] == baseline['wal']['stats_reset'], 'Statistics reset during session')
-        P.require(data['table']['dead_rows'] - baseline['table']['dead_rows'] <= LIMITS['additional_dead_rows'],
+        P.require(data['table']['dead_rows'] - baseline['table']['dead_rows'] <= limits['additional_dead_rows'],
                   'Dead-row growth ceiling reached; review vacuum')
         for key in ('total_bytes',):
-            P.require(data['table'][key] - baseline['table'][key] <= LIMITS['space_bytes'], 'Table/index growth ceiling reached')
+            P.require(data['table'][key] - baseline['table'][key] <= limits['space_bytes'], 'Table/index growth ceiling reached')
         for key in ('directory_bytes', 'retained_slot_bytes'):
-            P.require(data['wal'][key] - baseline['wal'][key] <= LIMITS['space_bytes'], 'Retained WAL growth ceiling reached')
+            P.require(data['wal'][key] - baseline['wal'][key] <= limits['space_bytes'], 'Retained WAL growth ceiling reached')
         report['changes_since_preparation'] = {
             'table': {k: data['table'][k] - baseline['table'][k] for k in
                       ('heap_bytes', 'index_bytes', 'total_bytes', 'dead_rows', 'updates', 'hot_updates', 'vacuum_count', 'autovacuum_count')
@@ -242,6 +267,16 @@ def resource_guard(data, baseline=None):
     return report
 
 
+def session_resources(state, data):
+    """Carry a fixed maintenance baseline across successor session journals."""
+    origin = state['inputs'].get('maintenance_origin')
+    maintenance = resource_guard(data, origin['resources'], OBSERVATION_LIMITS) if origin else None
+    report = resource_guard(data, state.get('resources_before'), profile_limits(state['inputs']))
+    if maintenance:
+        report['changes_since_maintenance_origin'] = maintenance['changes_since_preparation']
+    return report
+
+
 def load(path, manifest, check_resources=True):
     P.require(path.is_absolute() and path.resolve() == path and path.parent.parent == BASE and path.name == 'state.json'
               and re.fullmatch(r'session-[0-9TZ-]+-[a-f0-9]{8}', path.parent.name), 'Unexpected private session path')
@@ -249,16 +284,32 @@ def load(path, manifest, check_resources=True):
     state = json.loads(U.private(path))
     frozen = U.private(path.parent / 'inputs.json')
     inputs = json.loads(frozen)
-    P.require(state['format'] == FORMAT and inputs == state['inputs'] and R.digest(frozen) == state['inputs_sha256']
-              and inputs['limits'] == LIMITS and inputs['chain_id'] == manifest['chain_id']
+    limits = profile_limits(inputs)
+    P.require(state['format'] == (PROFILE_FORMAT if 'profile' in inputs else FORMAT)
+              and inputs == state['inputs'] and R.digest(frozen) == state['inputs_sha256']
+              and inputs['chain_id'] == manifest['chain_id']
               and inputs['environment'] == 'dev' and state['phase'] in ('prepared', 'running', 'write_requested', 'finished'),
               'Session identity, inputs or limits changed')
     P.require(state['checkpoint_sha256'] == checkpoint_digest(state), 'Committed aggregate checkpoint changed')
     P.require(R.digest(U.private(path.parent / 'migrate.exs')) == inputs['script_sha256'], 'Frozen session script changed')
-    P.require(type(state['batches']) is int and 0 <= state['batches'] <= LIMITS['max_batches']
-              and type(state['rows']) is int and 0 <= state['rows'] <= LIMITS['max_rows']
-              and type(state['charged_wal_bytes']) is int and 0 <= state['charged_wal_bytes'] <= LIMITS['wal_bytes']
+    P.require(type(state['batches']) is int and 0 <= state['batches'] <= limits['max_batches']
+              and type(state['rows']) is int and 0 <= state['rows'] <= limits['max_rows']
+              and type(state['charged_wal_bytes']) is int and 0 <= state['charged_wal_bytes'] <= limits['wal_bytes']
               and type(state['cursor']) is int and 0 <= state['cursor'] <= inputs['start_cursor'], 'Invalid session accounting')
+    origin = inputs.get('maintenance_origin')
+    P.require(inputs.get('profile') != 'observation-v1' or origin is not None, 'Missing maintenance baseline')
+    if origin is not None:
+        P.require('profile' in inputs and type(inputs['maintenance_rows_before']) is int
+                  and 0 <= inputs['maintenance_rows_before'] <= OBSERVATION_LIMITS['maintenance_max_rows']
+                  and inputs['maintenance_rows_before'] + state['rows'] <= OBSERVATION_LIMITS['maintenance_max_rows']
+                  and type(origin['space_before']) is int and inputs['space_before'] == origin['space_before']
+                  and isinstance(origin['resources'], dict), 'Maintenance baseline/accounting changed')
+    if state['format'] == PROFILE_FORMAT:
+        timing = state['timing_totals']
+        P.require(set(timing) == {'transaction_ms', 'transaction_measurements', 'host_attempt_ms', 'host_attempt_batches'}
+                  and all(type(v) is int and v >= 0 for v in timing.values())
+                  and timing['host_attempt_batches'] == state['batches']
+                  and timing['transaction_measurements'] <= state['batches'], 'Invalid aggregate timing measurements')
     if state['last']:
         last = state['last']
         P.require(P.block_rows(last['block_rows']) == last['expected_rows'] and last['block_rows'][-1]['block'] == state['cursor']
@@ -272,10 +323,13 @@ def load(path, manifest, check_resources=True):
         raw = U.private(path.parent / pending['slot'])
         P.require(R.digest(raw) == pending['sha256'], 'Pending raw snapshot changed')
         saved = json.loads(raw)
-        P.require(P.block_rows(saved['block_rows']) == saved['expected_rows'] <= LIMITS['max_rows'] - state['rows']
+        P.require(P.block_rows(saved['block_rows']) == saved['expected_rows'] <= limits['max_rows'] - state['rows']
                   and saved['block_rows'][0]['block'] < state['cursor']
                   and saved['blocks'] == [r['block'] for r in saved['block_rows']]
                   and compact(saved['baseline']) == saved['payload_baseline'], 'Pending target/hash accounting changed')
+        if origin:
+            P.require(saved['expected_rows'] + inputs['maintenance_rows_before'] + state['rows']
+                      <= OBSERVATION_LIMITS['maintenance_max_rows'], 'Pending rows exceed maintenance allowance')
         P.baseline({'snapshot': saved['baseline'], 'statuses': saved['baseline']['statuses']})
         P.check_block_rows({'format': P.BATCH_FORMAT, 'block_rows': saved['block_rows']}, saved['baseline'])
     P.require(state['phase'] != 'finished' or state['pending'] is None, 'A finished session cannot have pending writes')
@@ -311,11 +365,23 @@ def public(path, state):
             'completed_batches': state['batches'], 'selected_rows_verified': state['rows'],
             'updated_rows_observed': state['updated_rows'], 'charged_chunk_wal_bytes': state['charged_wal_bytes'],
             'wal_measurements_complete': state['wal_measurements_complete'], 'next_before_block': state['cursor'],
-            'pending_transaction': state['pending'] is not None, 'limits': LIMITS,
+            'pending_transaction': state['pending'] is not None, 'limits': profile_limits(state['inputs']),
+            'profile': state['inputs'].get('profile', 'pilot-v1'),
+            'maintenance_selected_rows': state['inputs'].get('maintenance_rows_before', 0) + state['rows'],
+            'vacuum_review_row_limit': OBSERVATION_LIMITS['maintenance_max_rows'] if state['inputs'].get('maintenance_origin') else None,
+            'timing_totals': state.get('timing_totals'), 'latest_attempt': state.get('latest_attempt'),
             'automatic_background_migrations_held': True, 'global_normalization_complete': False,
             'migration_completion_records_unchanged': True, 'historical_rpc_used': False,
             'vacuum_or_tuning_performed': False, 'sustained_full_table_run_enabled': False,
             'retention': 'Two rotating raw snapshots for this new session; the pending slot is retained until commit reconciliation. Earlier pilot journals are retained. Compact latest checkpoint and aggregate totals survive rotation; older per-row rollback snapshots are not retained.'}
+
+
+def finish(path, state, reason):
+    state.update(phase='finished', stop_reason=reason)
+    if state.get('latest_attempt'):
+        state['latest_attempt'].update(finished_at=datetime.now(timezone.utc).isoformat(), finishing_rows=state['rows'])
+    sync_json(path, state)
+    return public(path, state)
 
 
 def transaction_activity_sql(root):
@@ -331,6 +397,7 @@ def diagnose(api, root, path, manifest):
     """Read saved evidence and existing backend metadata, with no new client."""
     state = load(path, manifest, check_resources=False)
     inputs, saved = state['inputs'], state.get('resources_before') or {}
+    limits = profile_limits(inputs)
     current = P.free_bytes()
     used = max(0, inputs['space_before'] - current)
     report = {'status': 'normalization_session_diagnostics', 'state': str(path), 'read_only': True,
@@ -339,8 +406,8 @@ def diagnose(api, root, path, manifest):
               'verified_rows': state['rows'], 'pending_transaction': state['pending'] is not None,
               'saved_observed_at': saved.get('observed_at'), 'saved_transactions': saved.get('transactions'),
               'starting_data_free_bytes': inputs['space_before'], 'current_data_free_bytes': current,
-              'observed_net_consumption_bytes': used, 'current_free_space_floor_met': current >= LIMITS['free_bytes'],
-              'old_session_consumption_limit_exceeded': used > LIMITS['space_bytes'],
+              'observed_net_consumption_bytes': used, 'current_free_space_floor_met': current >= limits['free_bytes'],
+              'old_session_consumption_limit_exceeded': used > limits['space_bytes'],
               'write_limits_unchanged': True}
     # The filesystem evidence remains returnable even if the running backend
     # is unavailable or has changed. Never start an alternate application.
@@ -372,17 +439,38 @@ IO.puts("BLOCKSCOUT_DEPLOY_CHECK=" <> Jason.encode!(report))
     return report
 
 
-def prepare(api, root, after_path, after_session=False):
+def prepare(api, root, after_path, after_session=False, profile=None):
     manifest, _, _ = api.configuration(root, 'dev')
     source = B.clean_source(api, root)
     P.require(source[1] == '10.2.6', 'Source release changed')
+    P.require(profile in (None, 'pilot-v1', 'observation-v1'), 'Unknown session limit profile')
+    P.require(profile != 'observation-v1' or after_session,
+              'The observation profile requires a verified finished reusable session')
+    limits = OBSERVATION_LIMITS if profile == 'observation-v1' else LIMITS
+    origin, maintenance_rows = None, 0
     if after_session:
-        previous = load(after_path, manifest)
+        # A finished journal is proof, not an old write-budget lease. A new
+        # epoch must pass its own guards and preserve any maintenance baseline.
+        previous = load(after_path, manifest, check_resources=False)
         P.require(previous['phase'] == 'finished' and not active(api, after_path, previous),
                   'Continue only a finished session')
         ancestor = previous['inputs']
         upgrade_path, cursor = Path(ancestor['upgrade_state']), previous['cursor']
         anchor = target(previous['last']) if previous['last'] else ancestor['anchor']
+        if ancestor.get('maintenance_origin'):
+            origin = ancestor['maintenance_origin']
+            maintenance_rows = ancestor['maintenance_rows_before'] + previous['rows']
+            profile = profile or 'pilot-v1'
+        elif profile == 'observation-v1':
+            P.require(previous['rows'] > 0 and previous['wal_measurements_complete']
+                      and previous.get('preparation_complete', False), 'A verified measured predecessor is required')
+            origin = {'state': str(after_path), 'state_sha256': R.digest(U.private(after_path)),
+                      'space_before': ancestor['space_before'], 'resources': previous['resources_before']}
+        if origin:
+            P.require(previous.get('stop_reason') not in ('vacuum_review_required', 'next_complete_batch_requires_vacuum_review'),
+                      'Maintenance row allowance exhausted; measure and review vacuum before another epoch')
+            P.require(maintenance_rows < OBSERVATION_LIMITS['maintenance_max_rows'],
+                      'Maintenance row allowance exhausted; measure and review vacuum before another epoch')
     else:
         previous = P.load(api, after_path, manifest)
         cursor, upgrade_path = P.completed_cursor(previous), Path(previous['upgrade_state'])
@@ -399,26 +487,35 @@ def prepare(api, root, after_path, after_session=False):
     P.require(all(n.startswith(('deploy/', 'docs/upgrades/')) for n in changed), 'Application/config changed after the pinned image')
     B.validate_state_directory(api, BASE, root)
     BASE.mkdir(mode=0o700, parents=True, exist_ok=True)
-    P.require(journal_size(BASE) <= LIMITS['all_session_journal_bytes'] - LIMITS['journal_bytes'],
+    P.require(journal_size(BASE) <= limits['all_session_journal_bytes'] - limits['journal_bytes'],
               'Reserve another full session journal before preparing; review retention of new finished sessions')
     directory = BASE / ('session-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ-') + uuid.uuid4().hex[:8])
     directory.mkdir(mode=0o700)
     path = directory / 'state.json'
     script = (root / 'deploy/scripts/v10/normalization_pilot.exs').read_bytes()
-    inputs = {'environment': 'dev', 'chain_id': manifest['chain_id'], 'limits': LIMITS, 'tool_source_commit': source[0],
+    inputs = {'environment': 'dev', 'chain_id': manifest['chain_id'], 'limits': limits, 'tool_source_commit': source[0],
               'script_sha256': R.digest(script), 'upgrade_state': str(upgrade_path), 'start_cursor': cursor,
               'start_parent': str(after_path), 'start_parent_sha256': R.digest(U.private(after_path)), 'anchor': anchor,
               'candidate_image': upgrade['candidate_image'], 'network': upgrade['network'],
               'backend_environment': upgrade['backend_environment'], 'runtime_before': api.inspect_project(manifest),
               'created_epoch': time.time(), 'space_before': P.free_bytes(),
               'payload': {k: upgrade['migration_payload'][k] for k in ('database_identity', 'heap_identity')}}
+    if profile:
+        inputs['profile'] = profile
+    if origin:
+        inputs.update(maintenance_origin=origin, maintenance_rows_before=maintenance_rows,
+                      space_before=origin['space_before'])
     inputs['payload']['applied_versions'] = upgrade['applied_result']['applied_versions']
     R.write_new(directory / 'migrate.exs', script)
     R.write_new(directory / 'inputs.json', R.encoded(inputs))
-    state = {'format': FORMAT, 'inputs': inputs, 'inputs_sha256': R.digest(R.encoded(inputs)), 'phase': 'prepared',
+    state = {'format': PROFILE_FORMAT if profile else FORMAT,
+             'inputs': inputs, 'inputs_sha256': R.digest(R.encoded(inputs)), 'phase': 'prepared',
              'batches': 0, 'rows': 0, 'updated_rows': 0, 'charged_wal_bytes': 0, 'wal_measurements_complete': True,
              'cursor': cursor, 'pending': None, 'last': None, 'last_sha256': None, 'recent': [],
              'checkpoint_hash': R.digest(R.encoded(inputs)), 'preparation_complete': False}
+    if profile:
+        state['timing_totals'] = {'transaction_ms': 0, 'transaction_measurements': 0,
+                                  'host_attempt_ms': 0, 'host_attempt_batches': 0}
     state['checkpoint_sha256'] = checkpoint_digest(state)
     R.write_new(path, R.encoded(state))
     print(json.dumps({'phase': 'session_inputs_saved', 'state': str(path), 'database_writes': False}), flush=True)
@@ -434,7 +531,8 @@ def prepare(api, root, after_path, after_session=False):
             sync_json(directory / 'resources-before.json', report)
             state['resources_before'] = resources
             sync_json(path, state)
-            resource_guard(resources)
+            report = session_resources(state, resources)
+            sync_json(directory / 'resources-before.json', report)
             sampled = client.request('sample', {'before_block': cursor})
             P.require(sampled['selected_rows'] > 0 and sampled['selected_bytes'] <= 16 * 1024**2,
                       'Next block is oversized or the non-null range is exhausted; review instead of skipping')
@@ -446,65 +544,69 @@ def prepare(api, root, after_path, after_session=False):
         error.state_path = path
         raise
     return {**public(path, state), 'database_writes': False, 'resources': report,
-            'next_sample': sampled, 'note': 'Prepared only. The reusable client is limited to another finite implementation pilot; full-table budgets and vacuum tuning remain unapproved by these measurements.'}
+            'next_sample': sampled, 'note': 'Prepared only. This finite epoch preserves transaction limits and any inherited maintenance baseline. Vacuum must be measured and reviewed before continuous normalization.'}
 
 
 def limit_reason(state):
-    if state['batches'] >= LIMITS['max_batches']:
+    limits = profile_limits(state['inputs'])
+    if state['inputs'].get('maintenance_origin') and state['inputs']['maintenance_rows_before'] + state['rows'] >= OBSERVATION_LIMITS['maintenance_max_rows']:
+        return 'vacuum_review_required'
+    if state['batches'] >= limits['max_batches']:
         return 'batch_limit_reached'
-    if state['rows'] >= LIMITS['max_rows']:
+    if state['rows'] >= limits['max_rows']:
         return 'row_limit_reached'
-    if LIMITS['wal_bytes'] - state['charged_wal_bytes'] < LIMITS['next_wal_reserve_bytes']:
+    if limits['wal_bytes'] - state['charged_wal_bytes'] < limits['next_wal_reserve_bytes']:
         return 'next_batch_wal_reserve_reached'
-    if time.time() - state['inputs']['created_epoch'] >= LIMITS['start_seconds']:
+    if time.time() - state['inputs']['created_epoch'] >= limits['start_seconds']:
         return 'new_write_window_expired'
 
 
 def execute(api, root, path, manifest):
-    state = load(path, manifest)
+    state = load(path, manifest, check_resources=False)
     if active(api, path, state):
         return {**public(path, state), 'status': 'client_in_progress'}
     if state['phase'] == 'finished':
         return public(path, state)
     inputs = state['inputs']
+    limits = profile_limits(inputs)
+    monitor(path, inputs)
     P.require(B.clean_source(api, root) == (inputs['tool_source_commit'], '10.2.6'), 'Resume from the session creation commit')
     P.require(state.get('preparation_complete', 'resources_before' in state) and 'resources_before' in state,
               'Preparation was incomplete; retain it and prepare a new session')
     P.context(api, root, Path(inputs['upgrade_state']))
     health_at = time.monotonic()
+    state['latest_attempt'] = {'started_at': datetime.now(timezone.utc).isoformat(), 'starting_rows': state['rows']}
+    sync_json(path, state)
     with Client(api, path, inputs) as client:
         state['client_name'] = client.name
         anchor = target(state['last']) if state['last'] else inputs['anchor']
         P.require(observed(anchor, client.request('inspect', anchor)) == 'normalized', 'Latest checkpoint no longer verifies')
         while True:
+            batch_started = time.monotonic()
             pending = state['pending']
             if not pending:
                 reason = limit_reason(state)
                 if reason:
                     P.context(api, root, Path(inputs['upgrade_state']))
-                    sync_json(path.parent / 'resources-latest.json', resource_guard(client.request('resources'), state['resources_before']))
-                    state.update(phase='finished', stop_reason=reason)
-                    sync_json(path, state)
-                    return public(path, state)
+                    sync_json(path.parent / 'resources-latest.json', session_resources(state, client.request('resources')))
+                    return finish(path, state, reason)
                 monitor(path, inputs)
                 resources = client.request('resources')
-                report = resource_guard(resources, state['resources_before'])
+                report = session_resources(state, resources)
                 sync_json(path.parent / 'resources-latest.json', report)
                 sampled = client.request('sample', {'before_block': state['cursor']})
                 if sampled['selected_rows'] == 0:
                     reason = 'oversized_boundary_block' if sampled['excluded_boundary_block'] is not None else 'non_null_range_exhausted_needs_completion_review'
-                    state.update(phase='finished', stop_reason=reason)
-                    sync_json(path, state)
-                    return public(path, state)
+                    return finish(path, state, reason)
                 count = P.block_rows(sampled['block_rows'])
                 P.require(count == sampled['selected_rows'] and sampled['selected_bytes'] <= 16 * 1024**2,
                           'Sample exceeds transaction budget')
-                if count + state['rows'] > LIMITS['max_rows']:
-                    state.update(phase='finished', stop_reason='next_complete_batch_exceeds_remaining_rows')
-                    sync_json(path, state)
-                    return public(path, state)
+                if inputs.get('maintenance_origin') and count + state['rows'] + inputs['maintenance_rows_before'] > OBSERVATION_LIMITS['maintenance_max_rows']:
+                    return finish(path, state, 'next_complete_batch_requires_vacuum_review')
+                if count + state['rows'] > limits['max_rows']:
+                    return finish(path, state, 'next_complete_batch_exceeds_remaining_rows')
                 spec = {'blocks': [r['block'] for r in sampled['block_rows']], 'block_rows': sampled['block_rows'], 'expected_rows': count}
-                spec['baseline'] = P.baseline(client.request('inspect', {**spec, 'wal_limit_bytes': LIMITS['wal_bytes']}))
+                spec['baseline'] = P.baseline(client.request('inspect', {**spec, 'wal_limit_bytes': limits.get('transaction_wal_bytes', limits['wal_bytes'])}))
                 spec['payload_baseline'] = compact(spec['baseline'])
                 slot = 'raw-' + str(state['batches'] % 2) + '.json'
                 sync_json(path.parent / slot, spec)
@@ -513,27 +615,27 @@ def execute(api, root, path, manifest):
                 sync_json(path, state)
             saved = json.loads(U.private(path.parent / pending['slot']))
             spec = {**target(saved), 'baseline': saved['payload_baseline'],
-                    'wal_limit_bytes': LIMITS['wal_bytes'] - state['charged_wal_bytes']}
+                    'wal_limit_bytes': min(limits.get('transaction_wal_bytes', limits['wal_bytes']),
+                                           limits['wal_bytes'] - state['charged_wal_bytes'])}
             checked = client.request('inspect', spec)
             if observed(spec, checked) == 'original':
                 reason = limit_reason(state)
                 if reason:
                     # Reconciled unchanged original rows may be left for the
                     # next session. Keep their raw slot, without moving cursor.
-                    state.update(phase='finished', stop_reason=reason, abandoned=pending, pending=None)
-                    sync_json(path, state)
-                    return public(path, state)
-                if time.monotonic() - health_at >= LIMITS['health_seconds']:
+                    state.update(abandoned=pending, pending=None)
+                    return finish(path, state, reason)
+                if time.monotonic() - health_at >= limits['health_seconds']:
                     P.context(api, root, Path(inputs['upgrade_state']))
                     health_at = time.monotonic()
-                resource_guard(client.request('resources'), state['resources_before'])
+                session_resources(state, client.request('resources'))
                 monitor(path, inputs)
                 P.require(B.clean_source(api, root) == (inputs['tool_source_commit'], '10.2.6'), 'Tool source changed before a write')
                 api.ensure_stable(inputs['runtime_before'], api.inspect_project(manifest), 'Runtime changed before a write')
-                if time.monotonic() - health_at >= LIMITS['health_seconds']:
+                if time.monotonic() - health_at >= limits['health_seconds']:
                     P.context(api, root, Path(inputs['upgrade_state']))
                     health_at = time.monotonic()
-                spec['health_valid_until_unix_ms'] = int((time.time() + LIMITS['health_seconds'] - (time.monotonic() - health_at)) * 1000)
+                spec['health_valid_until_unix_ms'] = int((time.time() + limits['health_seconds'] - (time.monotonic() - health_at)) * 1000)
                 # This fsynced record and raw slot precede the command that can
                 # write. Failure after commit keeps this exact target pending.
                 state['phase'] = 'write_requested'
@@ -548,18 +650,21 @@ def execute(api, root, path, manifest):
                 pending['result'] = metrics
                 sync_json(path, state)
             api.ensure_stable(inputs['runtime_before'], api.inspect_project(manifest), 'Runtime changed during transaction')
-            if time.monotonic() - health_at >= LIMITS['health_seconds']:
+            if time.monotonic() - health_at >= limits['health_seconds']:
                 P.context(api, root, Path(inputs['upgrade_state']))
                 health_at = time.monotonic()
             monitor(path, inputs)
-            sync_json(path.parent / 'resources-latest.json', resource_guard(client.request('resources'), state['resources_before']))
+            sync_json(path.parent / 'resources-latest.json', session_resources(state, client.request('resources')))
             metrics = pending['result']
             if metrics is None and saved['baseline']['needs_normalization'] == 0:
                 metrics = {'updated_rows': 0, 'elapsed_ms': 0, 'cluster_wal_delta_bytes': 0}
-            charged = metrics['cluster_wal_delta_bytes'] if metrics else spec['wal_limit_bytes']
+            # A lost commit measurement consumes the entire remaining epoch
+            # allowance, even though a transaction has its own lower WAL cap.
+            charged = metrics['cluster_wal_delta_bytes'] if metrics else limits['wal_bytes'] - state['charged_wal_bytes']
             entry = {'sequence': state['batches'] + 1, 'rows': saved['expected_rows'], 'oldest_block': spec['blocks'][-1],
                      'snapshot_sha256': pending['sha256'], 'observed_wal_bytes': metrics['cluster_wal_delta_bytes'] if metrics else None,
-                     'charged_wal_bytes': charged, 'elapsed_ms': metrics['elapsed_ms'] if metrics else None}
+                     'charged_wal_bytes': charged, 'elapsed_ms': metrics['elapsed_ms'] if metrics else None,
+                     'host_attempt_ms': int((time.monotonic() - batch_started) * 1000)}
             state['last'] = {**target(spec), 'receipt': entry}
             state['last_sha256'] = R.digest(R.encoded(state['last']))
             state['checkpoint_hash'] = R.digest(R.encoded([state['checkpoint_hash'], entry]))
@@ -571,6 +676,12 @@ def execute(api, root, path, manifest):
             state['cursor'] = spec['blocks'][-1]
             state['pending'] = None
             state['recent'] = (state['recent'] + [entry])[-25:]
+            if state['format'] == PROFILE_FORMAT:
+                timing = state['timing_totals']
+                timing['transaction_ms'] += metrics['elapsed_ms'] if metrics else 0
+                timing['transaction_measurements'] += metrics is not None
+                timing['host_attempt_ms'] += entry['host_attempt_ms']
+                timing['host_attempt_batches'] += 1
             state['phase'] = 'running'
             state['checkpoint_sha256'] = checkpoint_digest(state)
             sync_json(path, state)
@@ -587,9 +698,12 @@ def main():
     start.add_argument('--after-state', type=Path)
     start.add_argument('--after-session', type=Path)
     parser.add_argument('--state', type=Path)
+    parser.add_argument('--profile', choices=('pilot-v1', 'observation-v1'))
     args = parser.parse_args()
     try:
         P.require(sys.platform.startswith('linux') and os.geteuid() == 0, 'Run on the Linux dev server as root')
+        P.require(args.profile is None or args.prepare or args.run,
+                  'Select a limit profile only when preparing a new session; saved budgets cannot be replaced')
         manifest, _, _ = D.configuration(ROOT, 'dev')
         with M.global_lock(not (args.status or args.retention_plan or args.diagnose)), B.build_lock(D, D.MANAGED_RELEASES, ROOT):
             if args.diagnose:
@@ -601,14 +715,15 @@ def main():
                 result = retention_plan(D, manifest)
             elif args.prepare or args.run:
                 P.require(args.state is None and (args.after_state or args.after_session), 'Provide a verified predecessor')
-                result = prepare(D, ROOT, args.after_state or args.after_session, after_session=args.after_session is not None)
+                result = prepare(D, ROOT, args.after_state or args.after_session,
+                                 after_session=args.after_session is not None, profile=args.profile)
                 args.state = Path(result['state'])
                 if args.run:
                     print(json.dumps(result, indent=2), flush=True)
                     result = execute(D, ROOT, args.state, manifest)
             else:
                 P.require(args.state is not None and args.after_state is None and args.after_session is None, 'Use only the saved session state')
-                state = load(args.state, manifest, check_resources=not args.status)
+                state = load(args.state, manifest, check_resources=False)
                 result = public(args.state, state) if args.status else execute(D, ROOT, args.state, manifest)
                 if args.status:
                     result['client_in_progress'] = active(D, args.state, state)

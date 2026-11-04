@@ -42,6 +42,7 @@ class SessionTests(unittest.TestCase):
                                         run=lambda *a, **k: '')
         self.normalized = {100}
         self.migrates = 0
+        self.migrate_limits = []
         self.lose_response = self.fail_before = self.drift = False
         self.raw_resources = resources()
         case = self
@@ -61,6 +62,7 @@ class SessionTests(unittest.TestCase):
                     return {'block_rows': [{'block': cursor - n, 'rows': 1} for n in (1, 2)],
                             'selected_rows': 2, 'selected_bytes': 648, 'excluded_boundary_block': cursor - 3}
                 if command == 'migrate':
+                    case.migrate_limits.append(payload['wal_limit_bytes'])
                     state = J.load(self.path, case.manifest)
                     case.assertEqual(state['phase'], 'write_requested')
                     case.assertIsNotNone(state['pending'])
@@ -95,11 +97,13 @@ class SessionTests(unittest.TestCase):
         inputs = {'environment': 'dev', 'chain_id': self.manifest['chain_id'], 'limits': deepcopy(J.LIMITS),
                   'script_sha256': J.R.digest(script), 'start_cursor': 100, 'tool_source_commit': 'a' * 40,
                   'upgrade_state': '/private/upgrade/state.json', 'runtime_before': {},
+                  'candidate_image': 'sha256:' + 'a' * 64,
                   'anchor': anchor, 'space_before': 888 * 1024**3, 'created_epoch': J.time.time()}
         state = {'format': J.FORMAT, 'inputs': inputs, 'inputs_sha256': J.R.digest(J.R.encoded(inputs)), 'phase': 'prepared',
                  'batches': 0, 'rows': 0, 'updated_rows': 0, 'charged_wal_bytes': 0, 'wal_measurements_complete': True,
                  'cursor': 100, 'pending': None, 'last': None, 'last_sha256': None, 'recent': [],
-                 'checkpoint_hash': J.R.digest(J.R.encoded(inputs)), 'resources_before': resources()}
+                 'checkpoint_hash': J.R.digest(J.R.encoded(inputs)), 'resources_before': resources(),
+                 'preparation_complete': True}
         state['checkpoint_sha256'] = J.checkpoint_digest(state)
         J.R.write_new(directory / 'migrate.exs', script)
         J.R.write_new(directory / 'inputs.json', J.R.encoded(inputs))
@@ -110,6 +114,133 @@ class SessionTests(unittest.TestCase):
     def execute(self, path):
         with contextlib.redirect_stdout(io.StringIO()):
             return J.execute(self.api, ROOT, path, self.manifest)
+
+    def continuation(self, path, profile='observation-v1'):
+        upgrade = {'candidate_image': 'sha256:' + 'a' * 64, 'candidate_source_commit': 'a' * 40,
+                   'network': 'fixture', 'backend_environment': {},
+                   'migration_payload': {'database_identity': {}, 'heap_identity': 1},
+                   'applied_result': {'applied_versions': [1]}}
+        self.api.configuration = lambda *a: (self.manifest, {}, {})
+        with patch.object(J.P, 'context', return_value=(self.manifest, upgrade)), \
+                patch.object(J.B, 'validate_state_directory'), contextlib.redirect_stdout(io.StringIO()):
+            prepared = J.prepare(self.api, ROOT, path, after_session=True, profile=profile)
+        return Path(prepared['state'])
+
+    def test_observation_profile_preserves_legacy_and_caps_each_transaction(self):
+        previous = self.prepare()
+        self.execute(previous)
+        old = J.U.private(previous)
+        with patch.dict(J.OBSERVATION_LIMITS, max_batches=5, max_rows=10, maintenance_max_rows=10):
+            path = self.continuation(previous)
+            self.assertEqual(J.load(path, self.manifest)['format'], J.PROFILE_FORMAT)
+            result = self.execute(path)
+            self.assertEqual(result['selected_rows_verified'], 10)
+            self.assertEqual(result['stop_reason'], 'vacuum_review_required')
+            self.assertEqual(result['timing_totals']['transaction_ms'], 50)
+            self.assertEqual(result['timing_totals']['transaction_measurements'], 5)
+            self.assertIn('finished_at', result['latest_attempt'])
+            self.assertEqual(J.U.private(previous), old)
+            self.assertTrue(all(n == 128 * 1024**2 for n in self.migrate_limits[-5:]))
+            self.assertFalse(result['sustained_full_table_run_enabled'])
+            with self.assertRaisesRegex(J.U.UpgradeError, 'vacuum'):
+                self.continuation(path)
+
+    def test_successor_inherits_storage_origin_and_row_allowance_even_with_pilot_profile(self):
+        previous = self.prepare()
+        self.execute(previous)
+        with patch.dict(J.OBSERVATION_LIMITS, max_batches=2, max_rows=20, maintenance_max_rows=10):
+            path = self.continuation(previous)
+            self.execute(path)
+            state = J.load(path, self.manifest)
+            self.assertEqual(state['rows'], 4)
+            next_path = self.continuation(path, profile='pilot-v1')
+            next_state = J.load(next_path, self.manifest)
+            self.assertEqual(next_state['inputs']['maintenance_rows_before'], 4)
+            self.assertEqual(next_state['inputs']['maintenance_origin'], state['inputs']['maintenance_origin'])
+            result = self.execute(next_path)
+            self.assertEqual(result['maintenance_selected_rows'], 10)
+            self.assertEqual(result['stop_reason'], 'vacuum_review_required')
+            with self.assertRaisesRegex(J.U.UpgradeError, 'vacuum'):
+                self.continuation(next_path, profile='pilot-v1')
+
+    def test_observation_lost_commit_charges_entire_epoch_allowance(self):
+        previous = self.prepare()
+        self.execute(previous)
+        path = self.continuation(previous)
+        self.lose_response = True
+        with self.assertRaises(J.U.UpgradeError):
+            self.execute(path)
+        written = self.migrates
+        result = self.execute(path)
+        self.assertEqual(self.migrates, written)
+        self.assertEqual(result['charged_chunk_wal_bytes'], J.OBSERVATION_LIMITS['wal_bytes'])
+        self.assertFalse(result['wal_measurements_complete'])
+        self.assertEqual(result['timing_totals']['transaction_measurements'], 0)
+        self.assertFalse(result['pending_transaction'])
+
+    def test_profiles_refuse_custom_limits_and_finished_observation_survives_space_drift(self):
+        previous = self.prepare()
+        self.execute(previous)
+        with patch.dict(J.OBSERVATION_LIMITS, max_batches=1):
+            path = self.continuation(previous)
+            self.execute(path)
+            written = self.migrates
+            with patch.object(J.P, 'free_bytes', return_value=880 * 1024**3):
+                result = self.execute(path)
+            self.assertEqual(result['completed_batches'], 1)
+            self.assertEqual(self.migrates, written)
+            with patch.dict(J.OBSERVATION_LIMITS, wal_bytes=8 * 1024**3), self.assertRaises(J.U.UpgradeError):
+                J.load(path, self.manifest, check_resources=False)
+
+    def test_observation_space_and_maintenance_origin_are_enforced_before_writes(self):
+        previous = self.prepare()
+        self.execute(previous)
+        path = self.continuation(previous)
+        written = self.migrates
+        inputs = J.load(path, self.manifest)['inputs']
+        with patch.object(J.P, 'free_bytes', return_value=inputs['space_before'] - 2 * 1024**3 - 1), \
+                self.assertRaisesRegex(J.U.UpgradeError, 'free-space/consumption'):
+            self.execute(path)
+        self.raw_resources['table']['total_bytes'] += 2 * 1024**3 + 1
+        with self.assertRaisesRegex(J.U.UpgradeError, 'growth'):
+            self.execute(path)
+        self.assertEqual(self.migrates, written)
+
+    def test_nearly_exhausted_maintenance_allowance_refuses_a_complete_block_batch(self):
+        previous = self.prepare()
+        self.execute(previous)
+        with patch.dict(J.OBSERVATION_LIMITS, maintenance_max_rows=3):
+            path = self.continuation(previous)
+            result = self.execute(path)
+            self.assertEqual(result['selected_rows_verified'], 2)
+            self.assertEqual(result['stop_reason'], 'next_complete_batch_requires_vacuum_review')
+            self.assertFalse(result['pending_transaction'])
+            with self.assertRaisesRegex(J.U.UpgradeError, 'vacuum'):
+                self.continuation(path, profile='pilot-v1')
+
+    def test_timing_totals_survive_recent_receipt_rotation(self):
+        previous = self.prepare()
+        self.execute(previous)
+        with patch.dict(J.OBSERVATION_LIMITS, max_batches=30, max_rows=60):
+            path = self.continuation(previous)
+            result = self.execute(path)
+            saved = J.load(path, self.manifest)
+            self.assertEqual(len(saved['recent']), 25)
+            self.assertEqual(result['timing_totals']['transaction_measurements'], 30)
+            self.assertEqual(result['timing_totals']['transaction_ms'], 300)
+            saved['timing_totals']['transaction_ms'] = 0
+            J.sync_json(path, saved)
+            with self.assertRaisesRegex(J.U.UpgradeError, 'checkpoint'):
+                J.load(path, self.manifest)
+
+    def test_observation_monitor_uses_frozen_profile_instead_of_legacy_space_budget(self):
+        previous = self.prepare()
+        self.execute(previous)
+        with patch.dict(J.OBSERVATION_LIMITS, max_batches=1):
+            path = self.continuation(previous)
+            with patch.object(J.P, 'free_bytes', return_value=888 * 1024**3 - 600 * 1024**2):
+                result = self.execute(path)
+            self.assertEqual(result['completed_batches'], 1)
 
     def test_rotated_snapshots_keep_pending_target_and_finish_cannot_reset_budgets(self):
         path = self.prepare()

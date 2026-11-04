@@ -587,7 +587,11 @@ if payload["session"] do
   # Bound requests as well as idle time. The host retains the durable budget.
   File.mkdir_p!("/tmp/channel")
   IO.puts("BLOCKSCOUT_SESSION_READY")
-  BlockscoutNormalizationSession.loop(payload, 200)
+  # Frozen legacy clients retain 200 requests. The reviewed observation profile
+  # needs enough commands for 250 small transactions, including read checks.
+  requests = Map.get(payload, "session_request_limit", 200)
+  true = requests in [200, 2000]
+  BlockscoutNormalizationSession.loop(payload, requests)
 else
   report = BlockscoutNormalizationCheck.run(payload)
   IO.puts("BLOCKSCOUT_DEPLOY_CHECK=" <> Jason.encode!(report))

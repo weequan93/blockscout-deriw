@@ -201,6 +201,41 @@ def check(image, network, token, environment, sql, pg, directory):
         finally:
             source_path.write_bytes(original_source)
 
+        # The real client accepts the versioned observation request allowance,
+        # preserves a v1 anchor and enforces the smaller per-transaction WAL cap.
+        sql("WITH seed AS MATERIALIZED (SELECT to_jsonb(t) AS row FROM internal_transactions t WHERE block_number=10 LIMIT 1), expanded AS MATERIALIZED (SELECT jsonb_populate_record(NULL::internal_transactions,seed.row||jsonb_build_object('block_number',50+g/100,'block_index',500000+g,'index',500000+g)) AS r FROM generate_series(0,1999) g CROSS JOIN seed) INSERT INTO internal_transactions SELECT (r).* FROM expanded")
+        sql('ANALYZE internal_transactions')
+        with patch.dict(J.OBSERVATION_LIMITS, max_batches=2, max_rows=2000):
+            observation = J.prepare(api, ROOT, path, after_session=True, profile='observation-v1')
+            observation_path = Path(observation['state'])
+            assert observation['limits']['session_request_limit'] == 2000
+            observed = J.execute(api, ROOT, observation_path, manifest)
+            assert observed['completed_batches'] == 2 and observed['selected_rows_verified'] == 2000
+            assert observed['updated_rows_observed'] == 1000
+            assert observed['next_before_block'] == 60 and observed['stop_reason'] == 'batch_limit_reached'
+            assert observed['timing_totals']['transaction_measurements'] == 2
+            assert observed['latest_attempt']['finishing_rows'] == 2000
+            assert len(list(observation_path.parent.glob('raw-*.json'))) == 2
+            assert J.load(path, manifest)['checkpoint_hash'] == checkpoint
+
+            successor = J.prepare(api, ROOT, observation_path, after_session=True, profile='observation-v1')
+            successor_path = Path(successor['state'])
+            successor_state = J.load(successor_path, manifest)
+            assert successor_state['inputs']['maintenance_rows_before'] == 2000
+            assert successor_state['inputs']['maintenance_origin'] == J.load(observation_path, manifest)['inputs']['maintenance_origin']
+            lose[0] = True
+            writes[0] = 0
+            with patch.object(J.Client, 'request', interrupted):
+                try:
+                    J.execute(api, ROOT, successor_path, manifest)
+                    raise AssertionError('observation lost response was not simulated')
+                except J.U.UpgradeError:
+                    pass
+                reconciled = J.execute(api, ROOT, successor_path, manifest)
+            assert writes[0] == 1 and reconciled['selected_rows_verified'] == 1000
+            assert reconciled['charged_chunk_wal_bytes'] == 4 * 1024**3
+            assert not reconciled['wal_measurements_complete'] and not reconciled['pending_transaction']
+
         assert sql("SELECT count(*) FROM migrations_status WHERE migration_name='empty_internal_transactions_data'").strip() == '0'
         assert sql("SELECT status FROM migrations_status WHERE migration_name='reindex_duplicated_internal_transactions'").strip() == 'completed'
     return {'status': 'passed', 'persistent_repo_protocol': True, 'rows_normalized_in_first_session': 5000,
@@ -212,6 +247,8 @@ def check(image, network, token, environment, sql, pg, directory):
             'transaction_activity_detail_limit_and_privacy_checked': True,
             'read_only_observation_after_space_drift_checked': True, 'writer_budget_still_enforced': True,
             'finished_resume_did_not_update_again': True, 'migration_completion_records_unchanged': True,
+            'observation_profile_real_client_checked': True, 'legacy_anchor_preserved': True,
+            'maintenance_baseline_inherited': True, 'lost_observation_commit_charged_entire_epoch': True,
             'full_table_run_enabled': False, 'host_runtime_health_stubbed': True, 'live_services_accessed': False}
 
 
