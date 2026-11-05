@@ -12,6 +12,9 @@ import v10_normalization_pilot as P
 import v10_upgrade as U
 
 PROFILE = 'reuse-v1'
+CAPACITY_PROFILE = 'capacity-v1'
+CAPACITY_FORMAT = 'blockscout-dev-v10-normalization-capacity-review-v1'
+CAPACITY_MIN_REUSE_ROWS = 200000
 FORMAT = 'blockscout-dev-v10-normalization-reuse-review-v1'
 TOTAL_SPACE_BYTES = 8 * 1024**3
 HOLD_PROBE = '''
@@ -97,23 +100,88 @@ def validate_review(review):
 
 def validate_inputs(inputs):
     review = inputs.get('reuse_review')
-    if inputs.get('profile') != PROFILE:
-        P.require(review is None, 'A vacuum reuse review requires the reuse profile')
+    capacity = inputs.get('capacity_review')
+    if not reviewed_profile(inputs):
+        P.require(review is None and capacity is None, 'A maintenance review requires its reviewed profile')
         return
     P.require(review is not None, 'The reuse profile requires a completed vacuum review')
     validate_review(review)
     P.require(inputs['execution_profile'] == inputs['payload'].get('execution_profile') == 'lean-v1'
-              and inputs['start_cursor'] == review['normalization_cursor']
-              and inputs['maintenance_rows_before'] == review['maintenance_selected_rows']
               and R.digest(R.encoded(inputs['maintenance_origin'])) == review['maintenance_origin_sha256']
               and inputs['space_before'] == inputs['maintenance_origin']['space_before']
               and inputs['candidate_image'] == review['candidate_image']
               and inputs['upgrade_state'] == review['upgrade_state']
               and R.digest(R.encoded(D.stable(inputs['runtime_before']))) == review['runtime_before_sha256']
-              and all(inputs['payload'][k] == v for k, v in review['database_anchor'].items())
-              and inputs['start_parent'] == review['normalization_state']
-              and inputs['start_parent_sha256'] == review['normalization_state_sha256'],
+              and all(inputs['payload'][k] == v for k, v in review['database_anchor'].items()),
               'Reuse review differs from the frozen normalization checkpoint or runtime')
+    if inputs['profile'] == PROFILE:
+        P.require(capacity is None and inputs['start_cursor'] == review['normalization_cursor']
+                  and inputs['maintenance_rows_before'] == review['maintenance_selected_rows']
+                  and inputs['start_parent'] == review['normalization_state']
+                  and inputs['start_parent_sha256'] == review['normalization_state_sha256'],
+                  'Reuse phase accounting changed')
+    else:
+        P.require(capacity is not None, 'The capacity profile requires a completed reuse review')
+        validate_capacity_review(capacity, review)
+        P.require(inputs['start_cursor'] == capacity['cursor']
+                  and inputs['maintenance_rows_before'] == capacity['maintenance_selected_rows']
+                  and inputs['start_parent'] == capacity['state']
+                  and inputs['start_parent_sha256'] == capacity['state_sha256'], 'Capacity phase accounting changed')
+
+
+def reviewed_profile(inputs):
+    return inputs.get('profile') in (PROFILE, CAPACITY_PROFILE)
+
+
+def validate_capacity_review(capacity, vacuum_review):
+    P.require(capacity['format'] == CAPACITY_FORMAT and capacity['rows'] >= CAPACITY_MIN_REUSE_ROWS
+              and capacity['rows'] == capacity['updated_rows'] and capacity['wal_measurements_complete'] is True
+              and re.fullmatch(r'[a-f0-9]{64}', capacity['state_sha256'])
+              and re.fullmatch(r'[a-f0-9]{64}', capacity['inputs_sha256'])
+              and capacity['maintenance_selected_rows'] == vacuum_review['maintenance_selected_rows'] + capacity['rows']
+              and capacity['vacuum_review_sha256'] == R.digest(R.encoded(vacuum_review)),
+              'Capacity review lacks a complete measured reuse phase')
+    before, after = capacity['resources_before'], capacity['resources_after']
+    P.require(before['table']['stats_reset'] == after['table']['stats_reset']
+              and before['wal']['stats_reset'] == after['wal']['stats_reset']
+              and before['table']['options'] == after['table']['options']
+              and before['table']['vacuum_count'] == after['table']['vacuum_count']
+              and before['table']['autovacuum_count'] == after['table']['autovacuum_count']
+              and after['table']['total_bytes'] - before['table']['total_bytes'] <= 2 * 1024**3
+              and after['reuse_rows_checkpointed'] == capacity['rows'],
+              'Reuse resource evidence changed or is incomplete')
+    return capacity
+
+
+def prepare_capacity_review(api, parent_path, previous, manifest):
+    import v10_normalization_session as J
+    import v10_vacuum as V
+    P.require(previous['inputs'].get('profile') == PROFILE and previous['phase'] == 'finished'
+              and previous['pending'] is None and previous['rows'] > 0
+              and previous['stop_reason'] in ('batch_limit_reached', 'row_limit_reached', 'reuse_review_required',
+                                               'next_complete_batch_requires_reuse_review'),
+              'Capacity measurement starts only from a successfully finished reuse session')
+    P.require(not (parent_path.parent / 'normalization-capacity.json').exists(),
+              'This reuse checkpoint already reserved a capacity session; inspect its saved state')
+    before = previous['resources_before']
+    after = json.loads(U.private(parent_path.parent / 'resources-latest.json'))
+    vacuum_review = previous['inputs']['reuse_review']
+    capacity = validate_capacity_review({
+        'format': CAPACITY_FORMAT, 'state': str(parent_path), 'state_sha256': R.digest(U.private(parent_path)),
+        'inputs_sha256': previous['inputs_sha256'], 'cursor': previous['cursor'],
+        'rows': previous['rows'], 'updated_rows': previous['updated_rows'],
+        'wal_measurements_complete': previous['wal_measurements_complete'],
+        'maintenance_selected_rows': previous['inputs']['maintenance_rows_before'] + previous['rows'],
+        'vacuum_review_sha256': R.digest(R.encoded(vacuum_review)),
+        'resources_before': before, 'resources_after': after}, vacuum_review)
+    for directory in J.BASE.iterdir():
+        other = J.load(directory / 'state.json', manifest, check_resources=False)
+        saved = other['inputs'].get('capacity_review')
+        P.require(not saved or saved['inputs_sha256'] != capacity['inputs_sha256'],
+                  'This reuse checkpoint already reserved a capacity session; inspect its saved state')
+    V.no_normalizer(api, manifest)
+    verify_holds(api)
+    return capacity
 
 
 def verify_holds(api):
@@ -184,20 +252,29 @@ def prepare_review(api, path, parent_path, previous, manifest):
 def reserve_review(review, session_path, inputs_sha256):
     # Keep the consumed grant beside its immutable vacuum journal, including
     # after a finished session is manually archived. Never replace a receipt.
-    vacuum_path = Path(review['vacuum_state'])
-    P.require(R.digest(U.private(vacuum_path)) == review['vacuum_state_sha256'],
-              'Vacuum checkpoint changed before reuse reservation')
-    reservation = vacuum_path.parent / 'normalization-reuse.json'
-    P.require(not reservation.exists(), 'This vacuum already reserved a reuse session')
+    reserve(Path(review['vacuum_state']), review['vacuum_state_sha256'], 'normalization-reuse.json',
+            session_path, {'format': FORMAT, 'vacuum_inputs_sha256': review['vacuum_inputs_sha256'],
+                           'state': str(session_path), 'inputs_sha256': inputs_sha256})
+
+
+def reserve_capacity(capacity, session_path, inputs_sha256):
+    reserve(Path(capacity['state']), capacity['state_sha256'], 'normalization-capacity.json', session_path,
+            {'format': CAPACITY_FORMAT, 'parent_inputs_sha256': capacity['inputs_sha256'],
+             'state': str(session_path), 'inputs_sha256': inputs_sha256})
+
+
+def reserve(parent_path, parent_sha256, name, session_path, record):
+    P.require(R.digest(U.private(parent_path)) == parent_sha256, 'Maintenance checkpoint changed before reservation')
+    reservation = parent_path.parent / name
+    P.require(not reservation.exists(), 'This checkpoint already reserved a maintenance session')
     for directory in (session_path.parent, session_path.parent.parent):
         fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
         try:
             os.fsync(fd)
         finally:
             os.close(fd)
-    R.write_new(reservation, R.encoded({'format': FORMAT, 'vacuum_inputs_sha256': review['vacuum_inputs_sha256'],
-                                      'state': str(session_path), 'inputs_sha256': inputs_sha256}))
-    fd = os.open(vacuum_path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    R.write_new(reservation, R.encoded(record))
+    fd = os.open(parent_path.parent, os.O_RDONLY | os.O_DIRECTORY)
     try:
         os.fsync(fd)
     finally:
@@ -212,5 +289,12 @@ def public(inputs):
             'cleanup': review['cleanup'], 'maintenance_rows_before_reuse': review['maintenance_selected_rows'],
             'original_data_free_bytes': inputs['space_before'],
             'post_vacuum_data_free_bytes': review['resources_after']['data_free_bytes'],
-            'cumulative_space_limit_bytes': TOTAL_SPACE_BYTES,
-            'scope': 'One finite reuse measurement; another successor requires review. No sustained run or migration completion.'}
+            'cumulative_space_limit_bytes': inputs['limits']['cumulative_space_bytes'],
+            'scope': 'One finite measurement; another successor requires review. No sustained run or migration completion.'}
+
+
+def capacity_public(inputs):
+    capacity = inputs.get('capacity_review')
+    if capacity is None:
+        return None
+    return {key: capacity[key] for key in ('state', 'cursor', 'rows', 'maintenance_selected_rows')}

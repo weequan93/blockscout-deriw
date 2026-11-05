@@ -634,7 +634,7 @@ if payload["session"] do
   # Frozen legacy clients retain 200 requests. The reviewed observation profile
   # needs enough commands for 250 small transactions, including read checks.
   requests = Map.get(payload, "session_request_limit", 200)
-  true = requests in [200, 2000]
+  true = requests in [200, 2000, 6000]
   BlockscoutNormalizationSession.loop(payload, requests)
 else
   report = BlockscoutNormalizationCheck.run(payload)

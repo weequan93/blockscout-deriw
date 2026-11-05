@@ -356,7 +356,9 @@ def prepare(api, root, after_path, metrics_path, empty_path, profile=None):
     manifest, _, _ = api.configuration(root, 'dev')
     previous = J.load(after_path, manifest, check_resources=False)
     P.require(previous['phase'] == 'finished' and previous['pending'] is None and previous['rows'] > 0
-              and previous['stop_reason'] in ('vacuum_review_required', 'next_complete_batch_requires_vacuum_review'),
+              and (previous['stop_reason'] in ('vacuum_review_required', 'next_complete_batch_requires_vacuum_review')
+                   or (previous['inputs'].get('profile') == J.Q.CAPACITY_PROFILE
+                       and previous['stop_reason'] in ('capacity_review_required', 'next_complete_batch_requires_capacity_review'))),
               'Vacuum qualification starts from a finished normalization review checkpoint')
     no_normalizer(api, manifest)
     ancestor = previous['inputs']

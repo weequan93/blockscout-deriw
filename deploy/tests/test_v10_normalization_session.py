@@ -20,7 +20,8 @@ def resources():
     return {'settings': [['autovacuum', 'on', None], ['track_counts', 'on', None],
                          ['autovacuum_vacuum_threshold', '50', None], ['autovacuum_vacuum_scale_factor', '0.2', None]],
             'table': {'options': [], 'estimated_rows': 1776221184, 'dead_rows': 25000,
-                      'total_bytes': 1598640365568, 'stats_reset': 'fixture'},
+                      'total_bytes': 1598640365568, 'stats_reset': 'fixture',
+                      'vacuum_count': 0, 'autovacuum_count': 0},
             'wal': {'directory_bytes': 1024**3, 'retained_slot_bytes': 0, 'stats_reset': 'fixture'},
             'transactions': {'oldest_transaction_seconds': 1}}
 
@@ -240,6 +241,105 @@ class SessionTests(unittest.TestCase):
         runtime['backend']['RestartCount'] = 1
         with self.assertRaises(J.U.UpgradeError):
             J.Q.validate_inputs(inputs)
+
+    def prepare_capacity(self):
+        _, reuse = self.prepare_reuse()
+        self.execute(reuse)
+        patch.object(J.Q, 'CAPACITY_MIN_REUSE_ROWS', 6).start()
+        patch.dict(J.CAPACITY_LIMITS, max_batches=4, max_rows=8).start()
+        return reuse, self.continuation(reuse, profile=J.Q.CAPACITY_PROFILE)
+
+    def test_capacity_preserves_the_completed_reuse_and_original_accounting(self):
+        reuse, path = self.prepare_capacity()
+        before = J.U.private(reuse)
+        parent = J.load(reuse, self.manifest, check_resources=False)
+        state = J.load(path, self.manifest)
+        self.assertEqual(state['inputs']['maintenance_rows_before'], 10)
+        self.assertEqual(state['inputs']['maintenance_origin'], parent['inputs']['maintenance_origin'])
+        self.assertEqual(state['inputs']['space_before'], parent['inputs']['space_before'])
+        self.assertEqual(J.profile_limits(state['inputs'])['session_request_limit'], 6000)
+        self.assertEqual(state['inputs']['reuse_review'], parent['inputs']['reuse_review'])
+        result = self.execute(path)
+        self.assertEqual(result['selected_rows_verified'], 8)
+        self.assertEqual(result['maintenance_selected_rows'], 18)
+        self.assertEqual(result['stop_reason'], 'capacity_review_required')
+        self.assertEqual(J.U.private(reuse), before)
+        reservation = json.loads(J.U.private(reuse.parent / 'normalization-capacity.json'))
+        self.assertEqual(reservation['state'], str(path))
+        with self.assertRaisesRegex(J.U.UpgradeError, 'already reserved'):
+            self.continuation(reuse, profile=J.Q.CAPACITY_PROFILE)
+        for profile in (None, 'pilot-v1', 'observation-v1', J.Q.CAPACITY_PROFILE):
+            with self.assertRaises(J.U.UpgradeError):
+                self.continuation(path, profile=profile)
+
+    def test_capacity_growth_allowance_is_frozen_and_checks_both_original_baselines(self):
+        _, path = self.prepare_capacity()
+        state = J.load(path, self.manifest)
+        inputs = state['inputs']
+        post_free = inputs['reuse_review']['resources_after']['data_free_bytes']
+        with patch.object(J.P, 'free_bytes', return_value=post_free - 3 * 1024**3):
+            J.monitor(path, inputs)
+        with patch.object(J.P, 'free_bytes', return_value=post_free - 4 * 1024**3 - 1):
+            with self.assertRaisesRegex(J.U.UpgradeError, 'Post-vacuum'):
+                self.execute(path)
+        with patch.object(J.P, 'free_bytes', return_value=inputs['space_before'] - 10 * 1024**3 - 1):
+            with self.assertRaisesRegex(J.U.UpgradeError, 'consumption'):
+                self.execute(path)
+        raw = deepcopy(self.raw_resources)
+        raw['table']['dead_rows'] = 1250000
+        J.session_resources(state, raw)
+        raw['table']['total_bytes'] += 4 * 1024**3 + 1
+        with self.assertRaisesRegex(J.U.UpgradeError, 'growth'):
+            J.session_resources(state, raw)
+        self.assertIsNone(J.load(path, self.manifest)['pending'])
+
+    def test_capacity_lost_reply_reconciles_without_repeating_updates(self):
+        _, path = self.prepare_capacity()
+        starting = self.migrates
+        self.lose_response = True
+        with self.assertRaises(J.U.UpgradeError):
+            self.execute(path)
+        self.requests.clear()
+        result = self.execute(path)
+        self.assertEqual(self.migrates, starting + 1)
+        self.assertNotIn('migrate', self.requests)
+        self.assertEqual(result['charged_chunk_wal_bytes'], 8 * 1024**3)
+        self.assertFalse(result['wal_measurements_complete'])
+        self.assertFalse(result['pending_transaction'])
+
+    def test_capacity_requires_complete_reuse_measurements_and_cannot_rebase(self):
+        _, path = self.prepare_capacity()
+        original = J.load(path, self.manifest)['inputs']
+        mutations = [lambda x: x['capacity_review'].update(wal_measurements_complete=False),
+                     lambda x: x['capacity_review'].update(rows=5),
+                     lambda x: x['capacity_review']['resources_after']['wal'].update(stats_reset='changed'),
+                     lambda x: x.update(maintenance_rows_before=0),
+                     lambda x: x['capacity_review'].update(vacuum_review_sha256='0' * 64)]
+        for mutate in mutations:
+            data = deepcopy(original)
+            mutate(data)
+            with self.assertRaises(J.U.UpgradeError):
+                J.Q.validate_inputs(data)
+        data = deepcopy(original)
+        data['limits']['session_request_limit'] = 6001
+        with self.assertRaises(J.U.UpgradeError):
+            J.profile_limits(data)
+
+    def test_capacity_window_expiring_during_prechecks_does_not_start_an_update(self):
+        _, path = self.prepare_capacity()
+        state = J.load(path, self.manifest)
+        offset = [0]
+        before_writes = self.migrates
+        def inspection(*args):
+            offset[0] = J.CAPACITY_LIMITS['start_seconds'] + 1
+            return {}
+        self.api.inspect_project = inspection
+        with patch.object(J.time, 'time', side_effect=lambda: state['inputs']['created_epoch'] + offset[0]):
+            result = self.execute(path)
+        self.assertEqual(result['stop_reason'], 'new_write_window_expired')
+        self.assertEqual(result['selected_rows_verified'], 0)
+        self.assertFalse(result['pending_transaction'])
+        self.assertEqual(self.migrates, before_writes)
 
     def test_lean_batches_reduce_requests_without_changing_limits_or_recovery_slots(self):
         previous = self.prepare()
