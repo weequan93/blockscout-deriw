@@ -303,6 +303,8 @@ def public(path, state):
             'target': state.get('target'),
             'vacuum_sql_completed': state.get('vacuum_sql_completed', False),
             'completion_verified': state.get('completion_verified', False),
+            'finalization_pending': state.get('finalization_pending', False),
+            'finalization_error': state.get('finalization_error'), 'cleanup_error': state.get('cleanup_error'),
             'observations': state.get('observations', 0), 'latest': state.get('latest'),
             'transaction_guard_scope': state['inputs'].get('transaction_guard_scope', 'all_other_clients'),
             'vacuum_query_started_at': state.get('vacuum_query_started_at'),
@@ -372,6 +374,7 @@ def prepare(api, root, after_path, metrics_path, empty_path, profile=None):
               and (previous['stop_reason'] in ('vacuum_review_required', 'next_complete_batch_requires_vacuum_review')
                    or (J.Q.capacity_profile(previous['inputs'])
                        and previous['stop_reason'] in ('capacity_review_required', 'next_complete_batch_requires_capacity_review'))
+                   or (previous['inputs'].get('profile') == J.Q.CYCLE_PROFILE and J.Q.measured_cycle_parent(previous))
                    or measured_capacity_expiry),
               'Vacuum qualification starts from a finished normalization review checkpoint')
     no_normalizer(api, manifest)
@@ -524,6 +527,9 @@ def finish(api, path, state, reason, result=None):
     if result is not None:
         validate_result(result, state)
         state['vacuum_sql_completed'] = result['mode'] == 'completed'
+    state.pop('finalization_pending', None)
+    state.pop('finalization_error', None)
+    state.pop('cleanup_error', None)
     state.update(phase='finished', stop_reason=reason, result=result, finished_at_utc=datetime.now(timezone.utc).isoformat())
     R.update_state(path, state)
     return public(path, state)
@@ -624,6 +630,7 @@ def execute(api, root, path, resume=False):
         after = record_observation(path, state, after)
         after = check_resources(after, {**inputs, 'target': state.get('target'),
                                        'vacuum_query_started_at': state.get('vacuum_query_started_at')}, baseline)
+        state['latest']['data_free_bytes'] = after['data_free_bytes']
         api.ensure_stable(inputs['runtime_before'], api.inspect_project(manifest), 'Runtime changed after vacuum')
         P.require(not after['target_sessions'], 'Maintenance socket remains active after cleanup')
         R.update_state(path.parent / 'resources-after.json', after)
@@ -631,7 +638,22 @@ def execute(api, root, path, resume=False):
         return finish(api, path, state, 'vacuum_completed_needs_review' if state['completion_verified'] else result['reason'], result)
     except BaseException as error:
         reason = str(error) if isinstance(error, U.UpgradeError) else 'Vacuum monitoring interrupted; inspect its private journal'
-        finish(api, path, state, reason, marker(path, 'BLOCKSCOUT_VACUUM_RESULT='))
+        result = marker(path, 'BLOCKSCOUT_VACUUM_RESULT=')
+        if result and result.get('mode') == 'completed':
+            validate_result(result, state)
+            # A receipt cannot replace final checks. Retain a retryable phase
+            # and its failure before cleanup, which can itself fail or time out.
+            state.pop('cleanup_error', None)
+            state.update(phase='vacuum_requested', vacuum_sql_completed=True, completion_verified=False, result=result,
+                         stop_reason=reason, finalization_pending=True, finalization_error=error_report(error))
+            R.update_state(path, state)
+            try:
+                cleanup(api, path, inputs)
+            except BaseException as cleanup_error:
+                state['cleanup_error'] = error_report(cleanup_error)
+                R.update_state(path, state)
+        else:
+            finish(api, path, state, reason, result)
         raise
     finally:
         if process:

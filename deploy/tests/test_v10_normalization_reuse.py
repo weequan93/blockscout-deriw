@@ -161,6 +161,46 @@ class ReviewTests(unittest.TestCase):
             Q.reserve_review(proof, Path('/private/another/state.json'), 'd' * 64)
         self.assertEqual(J.U.private(reservation), saved)
 
+    def test_legacy_final_free_sample_skew_accepts_only_one_block_within_frozen_budgets(self):
+        state, base, api = self.vacuum()
+        state['latest'] = deepcopy(state['latest'])
+        free = state['latest']['data_free_bytes']
+        state['inputs'].update(space_before=free + 1024**3)
+        state['inputs']['limits'].update(free_bytes=200 * 1024**3, space_bytes=4 * 1024**3)
+        with patch.object(J, 'BASE', base), patch.object(V, 'load', return_value=state), \
+             patch.object(V, 'no_normalizer'), patch.object(V, 'owned_client', return_value=False), \
+             patch.object(Q, 'verify_holds'):
+            state['latest']['data_free_bytes'] = free + 4096
+            Q.prepare_review(api, self.path, self.parent_path, self.previous, {'chain_id': '1'})
+            state['latest']['data_free_bytes'] = free + 4097
+            with self.assertRaisesRegex(J.U.UpgradeError, '4 KiB'):
+                Q.prepare_review(api, self.path, self.parent_path, self.previous, {'chain_id': '1'})
+            state['latest']['data_free_bytes'] = free + 4096
+            state['inputs']['limits']['free_bytes'] = free + 1
+            with self.assertRaisesRegex(J.U.UpgradeError, 'frozen budget'):
+                Q.prepare_review(api, self.path, self.parent_path, self.previous, {'chain_id': '1'})
+
+    def test_cycle_reserves_parent_and_vacuum_without_overwriting_either_grant(self):
+        self.vacuum()
+        proof = {**self.review, 'vacuum_state': str(self.path),
+                 'vacuum_state_sha256': J.R.digest(J.U.private(self.path))}
+        cycle = {'state': str(self.parent_path), 'state_sha256': J.R.digest(J.U.private(self.parent_path)),
+                 'inputs_sha256': 'd' * 64}
+        # Use separate source directories, as on the server.
+        parent = self.directory / 'parent'
+        parent.mkdir(mode=0o700)
+        J.R.write_new(parent / 'state.json', J.U.private(self.parent_path))
+        cycle['state'] = str(parent / 'state.json')
+        session = self.directory / 'sessions' / 'child'
+        session.mkdir(mode=0o700)
+        Q.reserve_cycle(cycle, proof, session / 'state.json', 'e' * 64)
+        parent_grant = J.U.private(parent / 'normalization-cycle.json')
+        vacuum_grant = J.U.private(self.directory / 'normalization-reuse.json')
+        with self.assertRaises(J.U.UpgradeError):
+            Q.reserve_cycle(cycle, proof, session / 'other.json', 'f' * 64)
+        self.assertEqual(J.U.private(parent / 'normalization-cycle.json'), parent_grant)
+        self.assertEqual(J.U.private(self.directory / 'normalization-reuse.json'), vacuum_grant)
+
     def test_resume_cannot_select_a_new_vacuum_or_profile(self):
         for flags in (['--after-vacuum', '/other'], ['--profile', Q.PROFILE]):
             with patch.object(J.sys, 'platform', 'linux'), patch.object(J.os, 'geteuid', return_value=0), \

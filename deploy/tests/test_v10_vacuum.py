@@ -614,6 +614,58 @@ class VacuumTests(unittest.TestCase):
             V.execute(self.api, ROOT, path, resume=True)
         launch.assert_not_called()
 
+    def test_completed_cleanup_failure_is_durable_and_can_verify_without_relaunch(self):
+        path = self.requested('completed', profile=V.FAST_PROFILE)
+        parent_bytes = V.U.private(self.path)
+        self.cleanups.side_effect = V.D.ConfigError('Docker cleanup unavailable; raw output suppressed')
+        with patch.object(V.subprocess, 'Popen') as launch:
+            with self.assertRaises(V.D.ConfigError):
+                V.execute(self.api, ROOT, path, resume=True)
+            saved = V.load(path)
+            self.assertEqual(saved['phase'], 'vacuum_requested')
+            self.assertTrue(saved['finalization_pending'])
+            self.assertTrue(saved['vacuum_sql_completed'])
+            self.assertFalse(saved.get('completion_verified'))
+            self.assertEqual(saved['result']['mode'], 'completed')
+            self.assertIn('Docker cleanup', V.public(path, saved)['finalization_error']['reason'])
+            self.assertIsNotNone(V.public(path, saved)['cleanup_error'])
+            self.cleanups.side_effect = None
+            result = V.execute(self.api, ROOT, path, resume=True)
+            self.assertTrue(result['completion_verified'])
+            self.assertFalse(result['finalization_pending'])
+            self.assertIsNone(result['finalization_error'])
+            self.assertIsNone(result['cleanup_error'])
+            launch.assert_not_called()
+        self.assertEqual(V.U.private(self.path), parent_bytes)
+
+    def test_final_free_space_matches_the_saved_after_report(self):
+        path = self.requested('completed')
+        # disk_guard, record_observation and check_resources sample separately.
+        remaining = [888 * 1024**3]
+        def free():
+            remaining[0] -= 4096
+            return remaining[0]
+        with patch.object(V.P, 'free_bytes', side_effect=free), \
+             patch.object(V.subprocess, 'Popen'):
+            V.execute(self.api, ROOT, path, resume=True)
+        state = V.load(path)
+        after = json.loads(V.U.private(path.parent / 'resources-after.json'))
+        self.assertEqual(state['latest']['data_free_bytes'], after['data_free_bytes'])
+
+    def test_fully_measured_cycle_can_request_cleanup_but_failed_or_small_cycles_cannot(self):
+        self.parent['inputs']['profile'] = V.J.Q.CYCLE_PROFILE
+        self.parent.update(rows=250000, updated_rows=250000, wal_measurements_complete=True,
+                           stop_reason='cycle_review_required')
+        path = self.prepare(V.FAST_PROFILE)
+        self.assertEqual(V.load(path)['inputs']['maintenance_selected_rows'], 325422)
+        for update in ({'wal_measurements_complete': False}, {'rows': 100, 'updated_rows': 100},
+                       {'updated_rows': None}, {'stop_reason': 'Runtime health failure'}):
+            original = deepcopy(self.parent)
+            self.parent.update(update)
+            with self.assertRaisesRegex(V.U.UpgradeError, 'finished normalization review'):
+                self.prepare(V.FAST_PROFILE)
+            self.parent = original
+
     def test_legacy_health_policy_keeps_a_single_attempt(self):
         with patch.object(V.U, 'verify', return_value=health(False)) as verify:
             with self.assertRaises(V.HealthReviewError):

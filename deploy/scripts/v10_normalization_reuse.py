@@ -14,6 +14,8 @@ import v10_upgrade as U
 PROFILE = 'reuse-v1'
 CAPACITY_PROFILE = 'capacity-v1'
 BOUNDARY_PROFILE = 'capacity-boundary-v1'
+CYCLE_PROFILE = 'cycle-v1'
+CYCLE_FORMAT = 'blockscout-dev-v10-normalization-cycle-review-v1'
 BOUNDARY_FORMAT = 'blockscout-dev-v10-normalization-boundary-continuation-v1'
 PHASE_FIELDS = ('batches', 'rows', 'updated_rows', 'charged_wal_bytes', 'wal_measurements_complete',
                 'cursor', 'last', 'last_sha256', 'recent', 'checkpoint_hash', 'timing_totals')
@@ -21,6 +23,11 @@ CAPACITY_FORMAT = 'blockscout-dev-v10-normalization-capacity-review-v1'
 CAPACITY_MIN_REUSE_ROWS = 200000
 FORMAT = 'blockscout-dev-v10-normalization-reuse-review-v1'
 TOTAL_SPACE_BYTES = 8 * 1024**3
+CYCLE_MIN_ROWS = 200000
+CYCLE_STOPS = ('capacity_review_required', 'next_complete_batch_requires_capacity_review',
+               'cycle_review_required', 'next_complete_batch_requires_cycle_review',
+               'batch_limit_reached', 'row_limit_reached', 'next_batch_wal_reserve_reached',
+               'new_write_window_expired')
 HOLD_PROBE = '''
 held = fn parent, child ->
   Enum.any?(Supervisor.which_children(parent), fn
@@ -106,12 +113,13 @@ def validate_inputs(inputs):
     review = inputs.get('reuse_review')
     capacity = inputs.get('capacity_review')
     boundary = inputs.get('boundary_review')
+    cycle = inputs.get('cycle_review')
     if not reviewed_profile(inputs):
-        P.require(review is None and capacity is None and boundary is None, 'A maintenance review requires its reviewed profile')
+        P.require(review is None and capacity is None and boundary is None and cycle is None, 'A maintenance review requires its reviewed profile')
         return
     P.require(review is not None, 'The reuse profile requires a completed vacuum review')
     validate_review(review)
-    P.require(inputs['payload'].get('single_block_rows') == (10000 if inputs['profile'] == BOUNDARY_PROFILE else None),
+    P.require(inputs['payload'].get('single_block_rows') == (10000 if inputs['profile'] in (BOUNDARY_PROFILE, CYCLE_PROFILE) else None),
               'Frozen single-block exception changed')
     P.require(inputs['execution_profile'] == inputs['payload'].get('execution_profile') == 'lean-v1'
               and R.digest(R.encoded(inputs['maintenance_origin'])) == review['maintenance_origin_sha256']
@@ -121,6 +129,16 @@ def validate_inputs(inputs):
               and R.digest(R.encoded(D.stable(inputs['runtime_before']))) == review['runtime_before_sha256']
               and all(inputs['payload'][k] == v for k, v in review['database_anchor'].items()),
               'Reuse review differs from the frozen normalization checkpoint or runtime')
+    if inputs['profile'] == CYCLE_PROFILE:
+        P.require(capacity is None and boundary is None and cycle is not None, 'Cycle requires its measured predecessor review')
+        validate_cycle_review(cycle, review)
+        P.require(inputs['start_parent'] == cycle['state']
+                  and inputs['start_parent_sha256'] == cycle['state_sha256']
+                  and inputs['start_cursor'] == cycle['cursor']
+                  and inputs['maintenance_rows_before'] == cycle['maintenance_selected_rows'],
+                  'Cycle changed the predecessor checkpoint or cumulative accounting')
+        return
+    P.require(cycle is None, 'A cycle review requires the cycle profile')
     if inputs['profile'] == PROFILE:
         P.require(capacity is None and boundary is None and inputs['start_cursor'] == review['normalization_cursor']
                   and inputs['maintenance_rows_before'] == review['maintenance_selected_rows']
@@ -147,11 +165,58 @@ def validate_inputs(inputs):
 
 
 def reviewed_profile(inputs):
-    return inputs.get('profile') in (PROFILE, CAPACITY_PROFILE, BOUNDARY_PROFILE)
+    return inputs.get('profile') in (PROFILE, CAPACITY_PROFILE, BOUNDARY_PROFILE, CYCLE_PROFILE)
 
 
 def capacity_profile(inputs):
     return inputs.get('profile') in (CAPACITY_PROFILE, BOUNDARY_PROFILE)
+
+
+def measured_cycle_parent(previous):
+    return (previous['inputs'].get('profile') in (CAPACITY_PROFILE, BOUNDARY_PROFILE, CYCLE_PROFILE)
+            and previous['phase'] == 'finished' and previous['pending'] is None
+            and previous.get('stop_reason') in CYCLE_STOPS
+            and type(previous['rows']) is int and previous['rows'] >= CYCLE_MIN_ROWS
+            and previous.get('updated_rows') == previous['rows']
+            and previous.get('wal_measurements_complete') is True)
+
+
+def validate_cycle_review(cycle, vacuum_review):
+    P.require(cycle['format'] == CYCLE_FORMAT
+              and cycle['profile'] in (CAPACITY_PROFILE, BOUNDARY_PROFILE, CYCLE_PROFILE)
+              and cycle['stop_reason'] in CYCLE_STOPS
+              and cycle['rows'] >= CYCLE_MIN_ROWS and cycle['rows'] == cycle['updated_rows']
+              and cycle['wal_measurements_complete'] is True
+              and type(cycle['charged_wal_bytes']) is int and cycle['charged_wal_bytes'] >= 0
+              and all(re.fullmatch(r'[a-f0-9]{64}', cycle[k]) for k in
+                      ('state_sha256', 'inputs_sha256', 'resources_after_sha256', 'vacuum_review_sha256'))
+              and cycle['state'] == vacuum_review['normalization_state']
+              and cycle['state_sha256'] == vacuum_review['normalization_state_sha256']
+              and cycle['cursor'] == vacuum_review['normalization_cursor']
+              and cycle['maintenance_selected_rows'] == vacuum_review['maintenance_selected_rows']
+              and cycle['vacuum_review_sha256'] == R.digest(R.encoded(vacuum_review)),
+              'Cycle review lacks its measured predecessor and newly qualified vacuum')
+    return cycle
+
+
+def prepare_cycle_review(api, vacuum_path, parent_path, previous, manifest):
+    P.require(measured_cycle_parent(previous),
+              'Cycle requires a finished, fully measured capacity/cycle checkpoint with at least 200000 updates')
+    P.require(not (parent_path.parent / 'normalization-cycle.json').exists(),
+              'This checkpoint already reserved a cycle; inspect its saved state')
+    review = prepare_review(api, vacuum_path, parent_path, previous, manifest)
+    raw = U.private(parent_path.parent / 'resources-latest.json')
+    saved = json.loads(raw)
+    P.require(saved['reuse_rows_checkpointed'] == previous['rows'], 'Predecessor final resource accounting changed')
+    cycle = validate_cycle_review({
+        'format': CYCLE_FORMAT, 'state': str(parent_path),
+        'state_sha256': R.digest(U.private(parent_path)), 'inputs_sha256': previous['inputs_sha256'],
+        'profile': previous['inputs']['profile'], 'stop_reason': previous['stop_reason'],
+        'cursor': previous['cursor'], 'rows': previous['rows'], 'updated_rows': previous['updated_rows'],
+        'charged_wal_bytes': previous['charged_wal_bytes'], 'wal_measurements_complete': True,
+        'maintenance_selected_rows': previous['inputs']['maintenance_rows_before'] + previous['rows'],
+        'resources_after_sha256': R.digest(raw), 'vacuum_review_sha256': R.digest(R.encoded(review))}, review)
+    return review, cycle
 
 
 def prepare_boundary_review(api, path, previous, manifest):
@@ -271,8 +336,19 @@ def prepare_review(api, path, parent_path, previous, manifest):
     before = json.loads(U.private(path.parent / 'resources-before.json'))
     after = json.loads(U.private(path.parent / 'resources-after.json'))
     P.require(R.digest(R.encoded(before)) == state['resources_before_sha256']
-              and all(state['latest'][key] == after[key] for key in ('observed_at', 'table', 'wal', 'data_free_bytes')),
+              and all(state['latest'][key] == after[key] for key in ('observed_at', 'table', 'wal')),
               'Saved vacuum resource evidence changed')
+    # Older finalization observed free space again in check_resources(), after
+    # saving latest. The qualified live journal differs by one 4 KiB block.
+    # Keep that narrow compatibility bound and both frozen storage guards;
+    # do not rewrite the completed journal or accept drift in database values.
+    saved_free, final_free = state['latest']['data_free_bytes'], after['data_free_bytes']
+    if saved_free != final_free:
+        P.require(type(saved_free) is int and type(final_free) is int
+                  and abs(saved_free - final_free) <= 4096
+                  and min(saved_free, final_free) >= inputs['limits']['free_bytes']
+                  and inputs['space_before'] - min(saved_free, final_free) <= inputs['limits']['space_bytes'],
+                  'Saved vacuum free-space samples differ beyond one 4 KiB block or its frozen budget')
     result = V.marker(path, 'BLOCKSCOUT_VACUUM_RESULT=')
     P.require(isinstance(result, dict), 'Reuse requires the saved successful SQL completion receipt')
     V.validate_result(result, state)
@@ -318,6 +394,13 @@ def reserve_capacity(capacity, session_path, inputs_sha256):
     reserve(Path(capacity['state']), capacity['state_sha256'], 'normalization-capacity.json', session_path,
             {'format': CAPACITY_FORMAT, 'parent_inputs_sha256': capacity['inputs_sha256'],
              'state': str(session_path), 'inputs_sha256': inputs_sha256})
+
+
+def reserve_cycle(cycle, review, session_path, inputs_sha256):
+    reserve(Path(cycle['state']), cycle['state_sha256'], 'normalization-cycle.json', session_path,
+            {'format': CYCLE_FORMAT, 'parent_inputs_sha256': cycle['inputs_sha256'],
+             'state': str(session_path), 'inputs_sha256': inputs_sha256})
+    reserve_review(review, session_path, inputs_sha256)
 
 
 def reserve_boundary(boundary, session_path, inputs_sha256):

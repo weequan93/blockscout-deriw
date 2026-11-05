@@ -20,8 +20,8 @@ import v10_normalization_session as J
 import v10_vacuum as V
 
 
-def check(image, network, token, environment, sql, pg, directory, capacity=False, boundary=False):
-    capacity = capacity or boundary
+def check(image, network, token, environment, sql, pg, directory, capacity=False, boundary=False, cycle=False):
+    capacity = capacity or boundary or cycle
     sql("WITH seed AS MATERIALIZED (SELECT to_jsonb(t) AS row FROM internal_transactions t WHERE block_number=10 LIMIT 1), expanded AS MATERIALIZED (SELECT jsonb_populate_record(NULL::internal_transactions,seed.row||jsonb_build_object('block_number',100+g/100,'block_index',10000+g,'index',10000+g)) AS r FROM generate_series(0,2999) g CROSS JOIN seed) INSERT INTO internal_transactions SELECT (r).* FROM expanded")
     sql("INSERT INTO internal_transactions SELECT (jsonb_populate_record(NULL::internal_transactions,to_jsonb(t)||jsonb_build_object('block_number',200,'block_index',50000,'index',50000))).* FROM internal_transactions t WHERE block_number=10")
     sql('ANALYZE internal_transactions')
@@ -74,6 +74,8 @@ def check(image, network, token, environment, sql, pg, directory, capacity=False
          patch.dict(J.REUSE_LIMITS, max_batches=1, max_rows=1000), \
          patch.dict(J.CAPACITY_LIMITS, max_batches=10 if boundary else 2, max_rows=6000 if boundary else 2000), \
          patch.dict(J.BOUNDARY_LIMITS, {**J.CAPACITY_LIMITS, 'single_block_rows': 10000}, clear=True), \
+         patch.dict(J.CYCLE_LIMITS, max_batches=3, max_rows=5000), \
+         patch.object(J.Q, 'CYCLE_MIN_ROWS', 1000), \
          patch.object(J.Q, 'CAPACITY_MIN_REUSE_ROWS', 1000), contextlib.redirect_stdout(io.StringIO()):
         pilot = J.P.prepare(api, ROOT, directory / 'upgrade.json', 200, 1)
         pilot_path = Path(pilot['state'])
@@ -199,6 +201,10 @@ def check(image, network, token, environment, sql, pg, directory, capacity=False
                     {**window['inputs']['payload'], 'single_block_rows': 10000, 'anchor': J.target(checkpoint['last'])},
                     window['target'], verify_anchor=True, runtime=runtime)
                 assert observed['runtime_holds_verified'] and 'anchor' not in observed
+            elif cycle:
+                final = J.execute(api, ROOT, phase_path, manifest)
+                assert final['selected_rows_verified'] == 2000
+                assert final['stop_reason'] == 'capacity_review_required' and final['wal_measurements_complete']
             else:
                 with patch.object(J.Client, 'request', lose_commit_reply):
                     try:
@@ -209,13 +215,15 @@ def check(image, network, token, environment, sql, pg, directory, capacity=False
                     pending = J.load(phase_path, manifest)
                     assert pending['cursor'] == 100 and pending['pending'] is not None
                     final = J.execute(api, ROOT, phase_path, manifest)
-            assert writes[0] == 1
-            if not boundary:
+            if not cycle:
+                assert writes[0] == 1
+            if not boundary and not cycle:
                 assert final['selected_rows_verified'] == 1000
                 assert final['maintenance_selected_rows'] == 3000 and final['next_before_block'] == 90
-            assert final['charged_chunk_wal_bytes'] == 8 * 1024**3
-            assert final['stop_reason'] == 'next_batch_wal_reserve_reached'
-            assert not final['pending_transaction'] and not final['wal_measurements_complete']
+            if not cycle:
+                assert final['charged_chunk_wal_bytes'] == 8 * 1024**3
+                assert final['stop_reason'] == 'next_batch_wal_reserve_reached'
+                assert not final['pending_transaction'] and not final['wal_measurements_complete']
             assert J.U.private(reuse_path) == reuse_bytes
             assert J.U.private(reuse_path.parent / 'normalization-capacity.json') == capacity_reservation
             for parent in (reuse_path, phase_path):
@@ -224,12 +232,54 @@ def check(image, network, token, environment, sql, pg, directory, capacity=False
                     raise AssertionError('capacity grant or review boundary was bypassed')
                 except J.U.UpgradeError:
                     pass
+            if cycle:
+                capacity_bytes = J.U.private(phase_path)
+                sql("INSERT INTO internal_transactions SELECT (jsonb_populate_record(NULL::internal_transactions,to_jsonb(t)||jsonb_build_object('block_number',79,'block_index',500000+g,'index',500000+g))).* FROM (SELECT * FROM internal_transactions WHERE block_number=10 LIMIT 1) t CROSS JOIN generate_series(0,3500) g")
+                sql("INSERT INTO internal_transactions SELECT (jsonb_populate_record(NULL::internal_transactions,to_jsonb(t)||jsonb_build_object('block_number',78,'block_index',600000,'index',600000))).* FROM internal_transactions t WHERE block_number=10 LIMIT 1")
+                sql('ANALYZE internal_transactions')
+                cleanup = V.prepare(api, ROOT, phase_path, Path('/metrics'), Path('/empty'), profile=V.FAST_PROFILE)
+                cleanup_path = Path(cleanup['state'])
+                with patch.object(V.time, 'sleep', side_effect=lambda seconds: real_sleep(min(seconds, 0.1))):
+                    assert V.execute(api, ROOT, cleanup_path)['completion_verified']
+                prepared = J.prepare(api, ROOT, phase_path, after_session=True, profile=J.Q.CYCLE_PROFILE,
+                                     after_vacuum=cleanup_path)
+                cycle_path = Path(prepared['state'])
+                cycle_state = J.load(cycle_path, manifest)
+                assert cycle_state['inputs']['space_before'] == J.load(phase_path, manifest)['inputs']['space_before']
+                assert cycle_state['inputs']['cycle_review']['charged_wal_bytes'] == final['charged_chunk_wal_bytes']
+                parent_grant = J.U.private(phase_path.parent / 'normalization-cycle.json')
+                cleanup_grant = J.U.private(cleanup_path.parent / 'normalization-reuse.json')
+                try:
+                    J.prepare(api, ROOT, phase_path, after_session=True, profile=J.Q.CYCLE_PROFILE, after_vacuum=cleanup_path)
+                    raise AssertionError('cycle sources were spent twice')
+                except J.U.UpgradeError as error:
+                    assert 'already reserved' in str(error)
+                writes[0] = 0
+                with patch.object(J.Client, 'request', lose_commit_reply):
+                    try:
+                        J.execute(api, ROOT, cycle_path, manifest)
+                        raise AssertionError('cycle lost commit reply was not injected')
+                    except J.U.UpgradeError:
+                        pass
+                pending = J.load(cycle_path, manifest)
+                assert pending['pending'] is not None and pending['cursor'] == 80
+                recovered = J.execute(api, ROOT, cycle_path, manifest)
+                assert writes[0] == 1 and recovered['selected_rows_verified'] == 3501
+                assert recovered['next_before_block'] == 79 and not recovered['pending_transaction']
+                assert recovered['charged_chunk_wal_bytes'] == 32 * 1024**3
+                assert not recovered['wal_measurements_complete']
+                assert sql('SELECT count(*) FROM internal_transactions WHERE block_number=79 AND trace_address IS NOT NULL').strip() == '0'
+                assert sql('SELECT count(*) FROM internal_transactions WHERE block_number=78 AND trace_address IS NOT NULL').strip() == '1'
+                assert J.U.private(phase_path) == capacity_bytes
+                assert J.U.private(phase_path.parent / 'normalization-cycle.json') == parent_grant
+                assert J.U.private(cleanup_path.parent / 'normalization-reuse.json') == cleanup_grant
     return {'status': 'passed', 'actual_pg15_vacuum_and_main_table_cleanup_verified': True,
             'actual_lean_reuse_transaction_verified': True, 'durable_single_use_grant_checked': True,
             'lost_commit_reconciled_without_second_update': True, 'original_baseline_and_rows_preserved': True,
             'post_vacuum_deltas_recorded': True, 'sustained_run_enabled': False,
             'capacity_profile_checked': capacity,
             'large_single_block_continuation_checked': boundary,
+            'cycle_after_second_qualified_vacuum_checked': cycle,
             'host_runtime_health_stubbed': True, 'live_services_accessed': False}
 
 

@@ -138,7 +138,7 @@ class SessionTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             return J.execute(self.api, ROOT, path, self.manifest)
 
-    def continuation(self, path, profile='observation-v1', execution_profile=None):
+    def continuation(self, path, profile='observation-v1', execution_profile=None, after_vacuum=None):
         upgrade = {'candidate_image': 'sha256:' + 'a' * 64, 'candidate_source_commit': 'a' * 40,
                    'network': 'fixture', 'backend_environment': {},
                    'migration_payload': {'database_identity': {}, 'heap_identity': 1},
@@ -146,7 +146,8 @@ class SessionTests(unittest.TestCase):
         self.api.configuration = lambda *a: (self.manifest, {}, {})
         with patch.object(J.P, 'context', return_value=(self.manifest, upgrade)), \
                 patch.object(J.B, 'validate_state_directory'), contextlib.redirect_stdout(io.StringIO()):
-            prepared = J.prepare(self.api, ROOT, path, after_session=True, profile=profile, execution_profile=execution_profile)
+            prepared = J.prepare(self.api, ROOT, path, after_session=True, profile=profile,
+                                 execution_profile=execution_profile, after_vacuum=after_vacuum)
         return Path(prepared['state'])
 
     def prepare_reuse(self):
@@ -359,6 +360,132 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(result['selected_rows_verified'], 2)
         patch.dict(J.BOUNDARY_LIMITS, {**J.CAPACITY_LIMITS, 'single_block_rows': 10000}, clear=True).start()
         return capacity, self.continuation(capacity, profile=J.Q.BOUNDARY_PROFILE)
+
+    def cycle_after(self, parent, max_rows=8, max_batches=4):
+        from test_v10_normalization_reuse import review
+        old = J.load(parent, self.manifest, check_resources=False)
+        patch.object(J.Q, 'CYCLE_MIN_ROWS', 8).start()
+        patch.dict(J.CYCLE_LIMITS, max_rows=max_rows, max_batches=max_batches).start()
+        proof = review(parent, old, free=879 * 1024**3)
+        proof.update(vacuum_state='/private/new-vacuum/state.json', vacuum_inputs_sha256='c' * 64)
+        patch.object(J.Q, 'prepare_review', return_value=proof).start()
+        patch.object(J.P, 'free_bytes', return_value=proof['resources_after']['data_free_bytes']).start()
+        self.raw_resources = deepcopy(proof['resources_after'])
+        return self.continuation(parent, profile=J.Q.CYCLE_PROFILE, after_vacuum=Path(proof['vacuum_state']))
+
+    def prepare_cycle(self, **kwargs):
+        _, parent = self.prepare_capacity()
+        self.execute(parent)
+        return parent, self.cycle_after(parent, **kwargs)
+
+    def test_cycle_requires_new_cleanup_and_retains_the_original_origin_and_parent_charges(self):
+        parent, path = self.prepare_cycle()
+        previous = J.load(parent, self.manifest, check_resources=False)
+        parent_bytes = J.U.private(parent)
+        state = J.load(path, self.manifest)
+        self.assertEqual(state['inputs']['space_before'], 888 * 1024**3)
+        self.assertEqual(state['inputs']['maintenance_origin'], previous['inputs']['maintenance_origin'])
+        self.assertEqual(state['inputs']['maintenance_rows_before'], 18)
+        self.assertEqual(state['inputs']['cycle_review']['charged_wal_bytes'], previous['charged_wal_bytes'])
+        self.assertEqual(state['inputs']['cycle_review']['rows'], 8)
+        self.assertEqual(state['cursor'], previous['cursor'])
+        self.assertEqual(state['rows'], 0)
+        result = self.execute(path)
+        self.assertEqual(result['stop_reason'], 'cycle_review_required')
+        self.assertEqual(result['maintenance_selected_rows'], 26)
+        self.assertEqual(J.U.private(parent), parent_bytes)
+        self.assertTrue(J.U.private(parent.parent / 'normalization-cycle.json'))
+        with self.assertRaisesRegex(J.U.UpgradeError, 'already reserved a cycle'):
+            self.cycle_after(parent)
+        for profile in (None, 'pilot-v1', J.Q.PROFILE, J.Q.CAPACITY_PROFILE, J.Q.CYCLE_PROFILE):
+            with self.assertRaises(J.U.UpgradeError):
+                self.continuation(path, profile=profile)
+
+    def test_cycle_can_continue_only_with_another_review_and_same_cumulative_budget(self):
+        _, first = self.prepare_cycle()
+        self.execute(first)
+        before = J.U.private(first)
+        next_path = self.cycle_after(first)
+        next_state = J.load(next_path, self.manifest)
+        self.assertEqual(next_state['inputs']['maintenance_rows_before'], 26)
+        self.assertEqual(next_state['inputs']['limits']['cumulative_space_bytes'], 20 * 1024**3)
+        self.assertEqual(next_state['inputs']['space_before'], 888 * 1024**3)
+        self.assertEqual(J.U.private(first), before)
+
+    def test_cycle_checks_phase_original_growth_dead_rows_and_immutable_limits(self):
+        _, path = self.prepare_cycle()
+        state = J.load(path, self.manifest)
+        inputs = state['inputs']
+        for free in (inputs['reuse_review']['resources_after']['data_free_bytes'] - 8 * 1024**3 - 1,
+                     inputs['space_before'] - 20 * 1024**3 - 1, 200 * 1024**3 - 1):
+            with patch.object(J.P, 'free_bytes', return_value=free):
+                with self.assertRaises(J.U.UpgradeError):
+                    J.storage_guard(inputs)
+        raw = deepcopy(self.raw_resources)
+        raw['table']['dead_rows'] = 5500001
+        with self.assertRaisesRegex(J.U.UpgradeError, 'Dead-row growth'):
+            J.session_resources(state, raw)
+        raw['table']['dead_rows'] = 6000001
+        with self.assertRaisesRegex(J.U.UpgradeError, 'dead-row ceiling'):
+            J.session_resources(state, raw)
+        for mutate in (lambda x: x.update(maintenance_rows_before=0),
+                       lambda x: x['cycle_review'].update(wal_measurements_complete=False),
+                       lambda x: x['cycle_review'].update(state_sha256='0' * 64)):
+            changed = deepcopy(inputs)
+            mutate(changed)
+            with self.assertRaises(J.U.UpgradeError):
+                J.Q.validate_inputs(changed)
+        changed = deepcopy(inputs)
+        changed['limits']['cumulative_space_bytes'] += 1
+        with self.assertRaises(J.U.UpgradeError):
+            J.profile_limits(changed)
+
+    def test_cycle_large_block_lost_reply_does_not_update_twice_or_skip_remaining_blocks(self):
+        _, path = self.prepare_cycle(max_rows=6000)
+        before = J.load(path, self.manifest)
+        self.block_sizes[before['cursor'] - 1] = 3501
+        writes = self.migrates
+        self.lose_response = True
+        with self.assertRaises(J.U.UpgradeError):
+            self.execute(path)
+        self.requests.clear()
+        result = self.execute(path)
+        self.assertEqual(self.migrates, writes + 1)
+        self.assertNotIn('migrate', self.requests)
+        self.assertEqual(result['selected_rows_verified'], 3501)
+        self.assertEqual(result['next_before_block'], before['cursor'] - 1)
+        self.assertEqual(result['charged_chunk_wal_bytes'], 32 * 1024**3)
+        self.assertFalse(result['wal_measurements_complete'])
+        self.assertFalse(result['pending_transaction'])
+
+    def test_cycle_expiry_leaves_the_cursor_at_the_boundary(self):
+        _, path = self.prepare_cycle(max_rows=20000)
+        state = J.load(path, self.manifest)
+        writes = self.migrates
+        with patch.object(J.time, 'time', return_value=state['inputs']['created_epoch'] + 14401):
+            result = self.execute(path)
+        self.assertEqual(result['stop_reason'], 'new_write_window_expired')
+        self.assertEqual(result['selected_rows_verified'], 0)
+        self.assertEqual(self.migrates, writes)
+        self.assertEqual(result['next_before_block'], state['cursor'])
+
+    def test_cycle_does_not_skip_a_block_above_10000_rows(self):
+        _, path = self.prepare_cycle(max_rows=20000)
+        state = J.load(path, self.manifest)
+        self.block_sizes[state['cursor'] - 1] = 10001
+        writes = self.migrates
+        result = self.execute(path)
+        self.assertEqual(result['stop_reason'], 'oversized_boundary_block')
+        self.assertEqual(result['selected_rows_verified'], 0)
+        self.assertEqual(result['next_before_block'], state['cursor'])
+        self.assertEqual(self.migrates, writes)
+
+    def test_cycle_accepts_a_measured_boundary_continuation_after_new_vacuum(self):
+        _, parent = self.prepare_boundary()
+        self.execute(parent)
+        state = J.load(parent, self.manifest)
+        path = self.cycle_after(parent)
+        self.assertEqual(J.load(path, self.manifest)['cursor'], state['cursor'])
 
     def test_boundary_carries_consumed_phase_budget_and_updates_the_large_block_whole(self):
         parent, path = self.prepare_boundary()
