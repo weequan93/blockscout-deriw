@@ -37,13 +37,19 @@ defmodule BlockscoutNormalizationDiagnostics do
   # These queries are compiled to SQL, never executed. A matching SQL template
   # suggests a source query; it does not prove which process called that query.
   defp source_queries do
+    {:ok, address} = Explorer.Chain.Hash.Address.cast("0x0000000000000000000000000000000000000000")
+
     candidates = [
       {"blocks_consensus_count",
        from(b in Explorer.Chain.Block, select: count(b.hash), where: b.consensus == true)},
       {"transactions_exact_count", from(t in Explorer.Chain.Transaction, select: count(t.hash))},
       {"addresses_exact_count", from(a in Explorer.Chain.Address, select: count())},
       {"transactions_gas_usage_sum",
-       from(t0 in Explorer.Chain.Transaction, select: fragment("SUM(t0.gas_used)"))}
+       from(t0 in Explorer.Chain.Transaction, select: fragment("SUM(t0.gas_used)"))},
+      {"address_incoming_transaction_count",
+       from(t in Explorer.Chain.Transaction, where: t.to_address_hash == ^address, select: count(t.hash))},
+      {"address_incoming_gas_usage_sum",
+       from(t in Explorer.Chain.Transaction, where: t.to_address_hash == ^address, select: sum(t.gas_used))}
     ]
 
     pairs =

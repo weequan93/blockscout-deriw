@@ -28,6 +28,25 @@ import Ecto.Query, only: [from: 2]
 {sql,_args} = Ecto.Adapters.SQL.to_sql(:all,Explorer.Repo,from(b in Explorer.Chain.Block,select: count(b.hash),where: b.consensus == true))
 Explorer.Repo.query!("SELECT set_config('test.diagnostic_query',$1,false)",[sql],log: false)
 ''' + expression
+    activity = json.dumps(J.transaction_activity_sql(ROOT).replace('FROM pg_stat_activity', 'FROM (' + fake + ') fake_activity'))
+    source += '''
+{:ok,address} = Explorer.Chain.Hash.Address.cast("0x0000000000000000000000000000000000000000")
+for {name,fingerprint,query} <- [
+  {"address_incoming_transaction_count","c20613d0cd3c602cb2d0fb54f1a6ce40",
+    from(t in Explorer.Chain.Transaction,where: t.to_address_hash == ^address,select: count(t.hash))},
+  {"address_incoming_gas_usage_sum","a8d05ab5528ad22428f780c11546ac64",
+    from(t in Explorer.Chain.Transaction,where: t.to_address_hash == ^address,select: sum(t.gas_used))}
+] do
+  {template,_args} = Ecto.Adapters.SQL.to_sql(:all,Explorer.Repo,query)
+  true = Base.encode16(:crypto.hash(:md5,template),case: :lower) == fingerprint
+  Explorer.Repo.query!("SELECT set_config('test.diagnostic_query',$1,false)",[template],log: false)
+  report = BlockscoutNormalizationDiagnostics.run(''' + activity + ''')
+  true = length(report.query_diagnostics) == 20
+  true = Enum.all?(report.query_diagnostics,fn row ->
+    row["source_query_matches"] == [name] and row["query_md5"] == fingerprint
+  end)
+end
+'''
     name = 'normalization-diagnosis-' + uuid.uuid4().hex[:16]
     command = U.client_command(image, network, name, token)
     command[2:2] = ['--label', G.LABEL + '=' + token]
@@ -53,6 +72,7 @@ Explorer.Repo.query!("SELECT set_config('test.diagnostic_query',$1,false)",[sql]
         assert sql('SELECT to_jsonb(s) FROM migrations_status s ORDER BY migration_name') == before
         return {'status': 'passed', 'real_pg15_metadata_queries': True,
                 'compiled_source_sql_template_match': True, 'early_60_second_transactions_observed': True,
+                'both_live_address_query_fingerprints_matched': True,
                 'twenty_detail_limit_enforced': True, 'connection_mapped_to_service': True,
                 'sql_addresses_parameters_suppressed': True, 'migration_records_unchanged': True,
                 'fixture_activity_rows_injected': True, 'application_supervisors_started': False,

@@ -1035,6 +1035,29 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(report['saved_transactions']['oldest_transaction_seconds'], 323)
         self.assertNotIn('private connection secret', json.dumps(report))
 
+    def test_cycle_diagnosis_uses_cumulative_and_post_vacuum_caps_like_the_write_guard(self):
+        _, path = self.prepare_cycle()
+        state = J.load(path, self.manifest)
+        before = J.U.private(path)
+        for free, cumulative_bad, phase_bad in ((876, False, False), (870, False, True), (867, True, True)):
+            with self.subTest(free_gib=free), patch.object(J.P, 'free_bytes', return_value=free * 1024**3), \
+                 patch.object(J, 'Client', side_effect=AssertionError('diagnosis started a client')):
+                report = J.diagnose(self.api, ROOT, path, self.manifest)
+                self.assertEqual(report['cumulative_consumption_limit_bytes'], 20 * 1024**3)
+                self.assertEqual(report['post_vacuum_consumption_limit_bytes'], 8 * 1024**3)
+                self.assertEqual(report['observed_net_consumption_bytes'], (888-free) * 1024**3)
+                self.assertEqual(report['post_vacuum_consumption_bytes'], (879-free) * 1024**3)
+                self.assertEqual(report['cumulative_consumption_limit_exceeded'], cumulative_bad)
+                self.assertEqual(report['post_vacuum_consumption_limit_exceeded'], phase_bad)
+                self.assertEqual(report['old_session_consumption_limit_exceeded'], cumulative_bad or phase_bad)
+                self.assertFalse(report['database_writes'])
+                if cumulative_bad or phase_bad:
+                    with self.assertRaises(J.U.UpgradeError):
+                        J.storage_guard(state['inputs'])
+                else:
+                    J.storage_guard(state['inputs'])
+        self.assertEqual(J.U.private(path), before)
+
     def test_query_diagnosis_maps_services_and_suppresses_addresses_and_unknown_fields(self):
         runtime = {
             'backend': {'NetworkSettings': {'Networks': {'fixture': {'IPAddress': '172.30.0.2'}}}},

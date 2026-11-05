@@ -572,6 +572,9 @@ def diagnose(api, root, path, manifest):
     limits = profile_limits(inputs)
     current = P.free_bytes()
     used = max(0, inputs['space_before'] - current)
+    cumulative_limit = limits.get('cumulative_space_bytes', limits['space_bytes'])
+    post_vacuum = (inputs.get('reuse_review') or {}).get('resources_after')
+    phase_used = max(0, post_vacuum['data_free_bytes'] - current) if post_vacuum else None
     report = {'status': 'normalization_session_diagnostics', 'state': str(path), 'read_only': True,
               'raw_values_suppressed': True, 'new_client_started': False, 'database_writes': False,
               'phase': state['phase'], 'preparation_complete': state.get('preparation_complete', 'resources_before' in state),
@@ -579,7 +582,13 @@ def diagnose(api, root, path, manifest):
               'saved_observed_at': saved.get('observed_at'), 'saved_transactions': saved.get('transactions'),
               'starting_data_free_bytes': inputs['space_before'], 'current_data_free_bytes': current,
               'observed_net_consumption_bytes': used, 'current_free_space_floor_met': current >= limits['free_bytes'],
-              'old_session_consumption_limit_exceeded': used > limits['space_bytes'],
+              'cumulative_consumption_limit_bytes': cumulative_limit,
+              'cumulative_consumption_limit_exceeded': used > cumulative_limit,
+              'post_vacuum_consumption_bytes': phase_used,
+              'post_vacuum_consumption_limit_bytes': limits['space_bytes'] if post_vacuum else None,
+              'post_vacuum_consumption_limit_exceeded': phase_used > limits['space_bytes'] if post_vacuum else None,
+              'old_session_consumption_limit_exceeded': used > cumulative_limit
+                  or (phase_used is not None and phase_used > limits['space_bytes']),
               'write_limits_unchanged': True}
     # The filesystem evidence remains returnable even if the running backend
     # is unavailable or has changed. Never start an alternate application.
