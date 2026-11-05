@@ -139,6 +139,108 @@ class SessionTests(unittest.TestCase):
             prepared = J.prepare(self.api, ROOT, path, after_session=True, profile=profile, execution_profile=execution_profile)
         return Path(prepared['state'])
 
+    def prepare_reuse(self):
+        from test_v10_normalization_reuse import review
+        patch.dict(J.OBSERVATION_LIMITS, maintenance_max_rows=4, max_batches=2, max_rows=10).start()
+        patch.dict(J.REUSE_LIMITS, max_batches=3, max_rows=6).start()
+        previous = self.prepare()
+        self.execute(previous)
+        parent = self.continuation(previous)
+        self.assertEqual(self.execute(parent)['stop_reason'], 'vacuum_review_required')
+        state = J.load(parent, self.manifest)
+        proof = review(parent, state)
+        patch.object(J.Q, 'prepare_review', return_value=proof).start()
+        patch.object(J.Q, 'reserve_review').start()
+        self.holds = patch.object(J.Q, 'verify_holds').start()
+        patch.object(J.P, 'free_bytes', return_value=proof['resources_after']['data_free_bytes']).start()
+        self.raw_resources = deepcopy(proof['resources_after'])
+        upgrade = {'candidate_image': state['inputs']['candidate_image'], 'candidate_source_commit': 'a' * 40,
+                   'network': 'fixture', 'backend_environment': {},
+                   'migration_payload': {'database_identity': {}, 'heap_identity': 1},
+                   'applied_result': {'applied_versions': [1]}}
+        with patch.object(J.P, 'context', return_value=(self.manifest, upgrade)), \
+             patch.object(J.B, 'validate_state_directory'), contextlib.redirect_stdout(io.StringIO()):
+            result = J.prepare(self.api, ROOT, parent, after_session=True, profile=J.Q.PROFILE,
+                               after_vacuum=Path('/private/vacuum/state.json'))
+        return parent, Path(result['state'])
+
+    def test_reuse_retains_cumulative_origin_and_grants_one_finite_phase(self):
+        parent, path = self.prepare_reuse()
+        old = J.load(parent, self.manifest, check_resources=False)
+        before = J.U.private(parent)
+        inputs = J.load(path, self.manifest)['inputs']
+        self.assertEqual(inputs['maintenance_origin'], old['inputs']['maintenance_origin'])
+        self.assertEqual(inputs['space_before'], old['inputs']['space_before'])
+        self.assertEqual(inputs['maintenance_rows_before'], 4)
+        result = self.execute(path)
+        self.assertEqual(result['selected_rows_verified'], 6)
+        self.assertEqual(result['maintenance_selected_rows'], 10)
+        self.assertEqual(result['stop_reason'], 'reuse_review_required')
+        self.assertEqual(result['execution_profile'], 'lean-v1')
+        self.assertFalse(result['sustained_full_table_run_enabled'])
+        self.assertEqual(J.U.private(parent), before)
+        self.holds.assert_called()
+        for profile in ('pilot-v1', 'observation-v1', J.Q.PROFILE):
+            with self.assertRaises(J.U.UpgradeError):
+                self.continuation(path, profile=profile)
+
+    def test_reuse_enforces_both_storage_baselines_and_reports_their_deltas(self):
+        _, path = self.prepare_reuse()
+        state = J.load(path, self.manifest)
+        inputs = state['inputs']
+        self.assertEqual(J.public(path, state)['reuse_review']['cumulative_space_limit_bytes'], 8 * 1024**3)
+        after_free = inputs['reuse_review']['resources_after']['data_free_bytes']
+        with patch.object(J.P, 'free_bytes', return_value=after_free - J.REUSE_LIMITS['space_bytes'] - 1):
+            with self.assertRaisesRegex(J.U.UpgradeError, 'Post-vacuum'):
+                self.execute(path)
+        with patch.object(J.P, 'free_bytes', return_value=inputs['space_before'] - J.Q.TOTAL_SPACE_BYTES - 1):
+            with self.assertRaisesRegex(J.U.UpgradeError, 'consumption'):
+                self.execute(path)
+        self.assertEqual(J.load(path, self.manifest)['rows'], 0)
+        self.raw_resources['table']['total_bytes'] += J.REUSE_LIMITS['space_bytes'] + 1
+        with self.assertRaisesRegex(J.U.UpgradeError, 'growth'):
+            self.execute(path)
+        self.assertIsNone(J.load(path, self.manifest)['pending'])
+
+    def test_reuse_lost_commit_reconciles_once_and_never_resets_wal(self):
+        _, path = self.prepare_reuse()
+        count = self.migrates
+        self.lose_response = True
+        with self.assertRaises(J.U.UpgradeError):
+            self.execute(path)
+        self.requests.clear()
+        result = self.execute(path)
+        self.assertEqual(self.migrates, count + 1)
+        self.assertEqual(self.requests[:2], ['inspect', 'inspect'])
+        self.assertNotIn('migrate', self.requests)
+        self.assertFalse(result['wal_measurements_complete'])
+        self.assertEqual(result['charged_chunk_wal_bytes'], J.REUSE_LIMITS['wal_bytes'])
+        self.assertFalse(result['pending_transaction'])
+
+    def test_reuse_inputs_cannot_rebase_the_phase_or_drop_the_review(self):
+        _, path = self.prepare_reuse()
+        inputs = J.load(path, self.manifest)['inputs']
+        for mutate in (lambda x: x.pop('reuse_review'), lambda x: x.update(maintenance_rows_before=0),
+                       lambda x: x.update(space_before=883 * 1024**3),
+                       lambda x: x['reuse_review'].update(completion_verified=False)):
+            changed = deepcopy(inputs)
+            mutate(changed)
+            with self.assertRaises(J.U.UpgradeError):
+                J.Q.validate_inputs(changed)
+
+    def test_reuse_runtime_anchor_ignores_health_logs_and_detects_restarts(self):
+        _, path = self.prepare_reuse()
+        inputs = J.load(path, self.manifest)['inputs']
+        runtime = {'backend': {'Id': 'a' * 64, 'Image': inputs['candidate_image'],
+                              'State': {'StartedAt': 'fixed', 'Health': {'Log': ['old']}}, 'RestartCount': 0}}
+        inputs['runtime_before'] = runtime
+        inputs['reuse_review']['runtime_before_sha256'] = J.R.digest(J.R.encoded(J.D.stable(runtime)))
+        runtime['backend']['State']['Health']['Log'] = ['new']
+        J.Q.validate_inputs(inputs)
+        runtime['backend']['RestartCount'] = 1
+        with self.assertRaises(J.U.UpgradeError):
+            J.Q.validate_inputs(inputs)
+
     def test_lean_batches_reduce_requests_without_changing_limits_or_recovery_slots(self):
         previous = self.prepare()
         self.requests.clear()

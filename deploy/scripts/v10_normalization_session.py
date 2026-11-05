@@ -19,6 +19,7 @@ import deploy_check as C
 import dev_config as D
 import release as R
 import v10_normalization_pilot as P
+import v10_normalization_reuse as Q
 import v10_upgrade as U
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -41,15 +42,36 @@ OBSERVATION_LIMITS = {**LIMITS, 'max_batches': 250, 'max_rows': 250000,
                       'start_seconds': 1800, 'additional_dead_rows': 300000,
                       'transaction_wal_bytes': 128 * 1024**2,
                       'session_request_limit': 2000, 'maintenance_max_rows': 250000}
+REUSE_LIMITS = {**OBSERVATION_LIMITS, 'cumulative_space_bytes': Q.TOTAL_SPACE_BYTES}
 
 
 def profile_limits(inputs):
     profile = inputs.get('profile')
-    P.require(profile in ('pilot-v1', 'observation-v1') if 'profile' in inputs else profile is None,
+    P.require(profile in ('pilot-v1', 'observation-v1', Q.PROFILE) if 'profile' in inputs else profile is None,
               'Unknown session limit profile')
-    limits = OBSERVATION_LIMITS if profile == 'observation-v1' else LIMITS
+    limits = REUSE_LIMITS if profile == Q.PROFILE else OBSERVATION_LIMITS if profile == 'observation-v1' else LIMITS
     P.require(inputs['limits'] == limits, 'Frozen session limits changed')
     return limits
+
+
+def maintenance_row_limit(inputs):
+    if inputs.get('profile') == Q.PROFILE:
+        return inputs['reuse_review']['maintenance_selected_rows'] + profile_limits(inputs)['max_rows']
+    return OBSERVATION_LIMITS['maintenance_max_rows']
+
+
+def session_context(api, root, inputs):
+    if inputs.get('profile') == Q.PROFILE:
+        started = time.monotonic()
+        deadline = started + profile_limits(inputs)['health_seconds']
+        Q.verify_holds(api)
+        P.context(api, root, Path(inputs['upgrade_state']),
+                  verifier=lambda api, path, upgrade, manifest: U.verify(api, path, upgrade, manifest, deadline=deadline))
+        P.require(time.monotonic() < deadline,
+                  'Reuse runtime/hold verification exceeded the health evidence window')
+        return started
+    P.context(api, root, Path(inputs['upgrade_state']))
+    return time.monotonic()
 
 
 def lean_execution(inputs):
@@ -83,12 +105,21 @@ def journal_size(directory):
     return total
 
 
+def storage_guard(inputs):
+    limits = profile_limits(inputs)
+    free = P.free_bytes()
+    P.require(free >= limits['free_bytes']
+              and inputs['space_before'] - free <= limits.get('cumulative_space_bytes', limits['space_bytes']),
+              'Session free-space/consumption limit reached')
+    if inputs.get('profile') == Q.PROFILE:
+        P.require(inputs['reuse_review']['resources_after']['data_free_bytes'] - free <= limits['space_bytes'],
+                  'Post-vacuum reuse consumption limit reached')
+
+
 def monitor(path, inputs, read_only=False):
     limits = profile_limits(inputs)
     if not read_only:
-        free = P.free_bytes()
-        P.require(free >= limits['free_bytes'] and inputs['space_before'] - free <= limits['space_bytes'],
-                  'Session free-space/consumption limit reached')
+        storage_guard(inputs)
     P.require(journal_size(path.parent) <= limits['journal_bytes'], 'Session journal size cap reached')
     P.require(journal_size(BASE) <= limits['all_session_journal_bytes'], 'New session journals reached their aggregate cap; review retention')
 
@@ -284,10 +315,19 @@ def resource_guard(data, baseline=None, limits=None):
 def session_resources(state, data):
     """Carry a fixed maintenance baseline across successor session journals."""
     origin = state['inputs'].get('maintenance_origin')
-    maintenance = resource_guard(data, origin['resources'], OBSERVATION_LIMITS) if origin else None
+    inputs = state['inputs']
+    maintenance_limits = {**OBSERVATION_LIMITS, 'space_bytes': Q.TOTAL_SPACE_BYTES} if inputs.get('profile') == Q.PROFILE else OBSERVATION_LIMITS
+    maintenance = resource_guard(data, origin['resources'], maintenance_limits) if origin else None
     report = resource_guard(data, state.get('resources_before'), profile_limits(state['inputs']))
     if maintenance:
         report['changes_since_maintenance_origin'] = maintenance['changes_since_preparation']
+    if inputs.get('profile') == Q.PROFILE:
+        after = inputs['reuse_review']['resources_after']
+        reuse = resource_guard(data, after, profile_limits(inputs))
+        report['changes_since_post_vacuum'] = reuse['changes_since_preparation']
+        report['filesystem'] = {'current_free_bytes': P.free_bytes(), 'original_free_bytes': inputs['space_before'],
+                                'post_vacuum_free_bytes': after['data_free_bytes']}
+        report['reuse_rows_checkpointed'] = state['rows']
     return report
 
 
@@ -300,6 +340,7 @@ def load(path, manifest, check_resources=True):
     inputs = json.loads(frozen)
     limits = profile_limits(inputs)
     lean_execution(inputs)
+    Q.validate_inputs(inputs)
     reserve = inputs.get('health_start_reserve_seconds', HEALTH_START_RESERVE_SECONDS)
     P.require(type(reserve) is int and reserve == HEALTH_START_RESERVE_SECONDS,
               'Frozen health-start reserve changed')
@@ -315,11 +356,11 @@ def load(path, manifest, check_resources=True):
               and type(state['charged_wal_bytes']) is int and 0 <= state['charged_wal_bytes'] <= limits['wal_bytes']
               and type(state['cursor']) is int and 0 <= state['cursor'] <= inputs['start_cursor'], 'Invalid session accounting')
     origin = inputs.get('maintenance_origin')
-    P.require(inputs.get('profile') != 'observation-v1' or origin is not None, 'Missing maintenance baseline')
+    P.require(inputs.get('profile') not in ('observation-v1', Q.PROFILE) or origin is not None, 'Missing maintenance baseline')
     if origin is not None:
         P.require('profile' in inputs and type(inputs['maintenance_rows_before']) is int
-                  and 0 <= inputs['maintenance_rows_before'] <= OBSERVATION_LIMITS['maintenance_max_rows']
-                  and inputs['maintenance_rows_before'] + state['rows'] <= OBSERVATION_LIMITS['maintenance_max_rows']
+                  and 0 <= inputs['maintenance_rows_before'] <= maintenance_row_limit(inputs)
+                  and inputs['maintenance_rows_before'] + state['rows'] <= maintenance_row_limit(inputs)
                   and type(origin['space_before']) is int and inputs['space_before'] == origin['space_before']
                   and isinstance(origin['resources'], dict), 'Maintenance baseline/accounting changed')
     if state['format'] == PROFILE_FORMAT:
@@ -347,7 +388,7 @@ def load(path, manifest, check_resources=True):
                   and compact(saved['baseline']) == saved['payload_baseline'], 'Pending target/hash accounting changed')
         if origin:
             P.require(saved['expected_rows'] + inputs['maintenance_rows_before'] + state['rows']
-                      <= OBSERVATION_LIMITS['maintenance_max_rows'], 'Pending rows exceed maintenance allowance')
+                      <= maintenance_row_limit(inputs), 'Pending rows exceed maintenance allowance')
         P.baseline({'snapshot': saved['baseline'], 'statuses': saved['baseline']['statuses']})
         P.check_block_rows({'format': P.BATCH_FORMAT, 'block_rows': saved['block_rows']}, saved['baseline'])
     P.require(state['phase'] != 'finished' or state['pending'] is None, 'A finished session cannot have pending writes')
@@ -389,7 +430,8 @@ def public(path, state):
             'health_start_reserve_seconds': state['inputs'].get('health_start_reserve_seconds', 0),
             'closure': state.get('closure'),
             'maintenance_selected_rows': state['inputs'].get('maintenance_rows_before', 0) + state['rows'],
-            'vacuum_review_row_limit': OBSERVATION_LIMITS['maintenance_max_rows'] if state['inputs'].get('maintenance_origin') else None,
+            'vacuum_review_row_limit': maintenance_row_limit(state['inputs']) if state['inputs'].get('maintenance_origin') else None,
+            'reuse_review': Q.public(state['inputs']),
             'timing_totals': state.get('timing_totals'), 'latest_attempt': state.get('latest_attempt'),
             'automatic_background_migrations_held': True, 'global_normalization_complete': False,
             'migration_completion_records_unchanged': True, 'historical_rpc_used': False,
@@ -525,16 +567,20 @@ def diagnose(api, root, path, manifest):
     return report
 
 
-def prepare(api, root, after_path, after_session=False, profile=None, execution_profile=None):
+def prepare(api, root, after_path, after_session=False, profile=None, execution_profile=None, after_vacuum=None):
     manifest, _, _ = api.configuration(root, 'dev')
     source = B.clean_source(api, root)
     P.require(source[1] == '10.2.6', 'Source release changed')
-    P.require(profile in (None, 'pilot-v1', 'observation-v1'), 'Unknown session limit profile')
+    P.require(profile in (None, 'pilot-v1', 'observation-v1', Q.PROFILE), 'Unknown session limit profile')
     P.require(execution_profile in (None, LEAN_EXECUTION_PROFILE), 'Unknown session execution profile')
     P.require(profile != 'observation-v1' or after_session,
               'The observation profile requires a verified finished reusable session')
-    limits = OBSERVATION_LIMITS if profile == 'observation-v1' else LIMITS
-    origin, maintenance_rows = None, 0
+    P.require((profile == Q.PROFILE) == (after_vacuum is not None)
+              and (profile != Q.PROFILE or after_session), 'The reuse profile requires --after-session and --after-vacuum')
+    if profile == Q.PROFILE:
+        execution_profile = execution_profile or LEAN_EXECUTION_PROFILE
+    limits = REUSE_LIMITS if profile == Q.PROFILE else OBSERVATION_LIMITS if profile == 'observation-v1' else LIMITS
+    origin, maintenance_rows, reuse_review = None, 0, None
     if after_session:
         # A finished journal is proof, not an old write-budget lease. A new
         # epoch must pass its own guards and preserve any maintenance baseline.
@@ -542,6 +588,7 @@ def prepare(api, root, after_path, after_session=False, profile=None, execution_
         P.require(previous['phase'] == 'finished' and not active(api, after_path, previous),
                   'Continue only a finished session')
         ancestor = previous['inputs']
+        P.require(ancestor.get('profile') != Q.PROFILE, 'The finite reuse session requires review before any successor')
         upgrade_path, cursor = Path(ancestor['upgrade_state']), previous['cursor']
         anchor = target(previous['last']) if previous['last'] else ancestor['anchor']
         if ancestor.get('maintenance_origin'):
@@ -554,10 +601,17 @@ def prepare(api, root, after_path, after_session=False, profile=None, execution_
             origin = {'state': str(after_path), 'state_sha256': R.digest(U.private(after_path)),
                       'space_before': ancestor['space_before'], 'resources': previous['resources_before']}
         if origin:
-            P.require(previous.get('stop_reason') not in ('vacuum_review_required', 'next_complete_batch_requires_vacuum_review'),
+            if profile == Q.PROFILE:
+                P.require(previous['pending'] is None and previous['rows'] > 0 and previous['wal_measurements_complete']
+                          and previous.get('stop_reason') in ('vacuum_review_required', 'next_complete_batch_requires_vacuum_review'),
+                          'Reuse starts only from the measured vacuum-review checkpoint')
+                reuse_review = Q.prepare_review(api, after_vacuum, after_path, previous, manifest)
+            else:
+                P.require(previous.get('stop_reason') not in ('vacuum_review_required', 'next_complete_batch_requires_vacuum_review'),
                       'Maintenance row allowance exhausted; measure and review vacuum before another epoch')
-            P.require(maintenance_rows < OBSERVATION_LIMITS['maintenance_max_rows'],
+                P.require(maintenance_rows < OBSERVATION_LIMITS['maintenance_max_rows'],
                       'Maintenance row allowance exhausted; measure and review vacuum before another epoch')
+        P.require(profile != Q.PROFILE or reuse_review is not None, 'Reuse requires the preserved maintenance baseline')
     else:
         previous = P.load(api, after_path, manifest)
         cursor, upgrade_path = P.completed_cursor(previous), Path(previous['upgrade_state'])
@@ -577,7 +631,6 @@ def prepare(api, root, after_path, after_session=False, profile=None, execution_
     P.require(journal_size(BASE) <= limits['all_session_journal_bytes'] - limits['journal_bytes'],
               'Reserve another full session journal before preparing; review retention of new finished sessions')
     directory = BASE / ('session-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ-') + uuid.uuid4().hex[:8])
-    directory.mkdir(mode=0o700)
     path = directory / 'state.json'
     script = (root / 'deploy/scripts/v10/normalization_pilot.exs').read_bytes()
     inputs = {'environment': 'dev', 'chain_id': manifest['chain_id'], 'limits': limits, 'tool_source_commit': source[0],
@@ -596,7 +649,13 @@ def prepare(api, root, after_path, after_session=False, profile=None, execution_
     if origin:
         inputs.update(maintenance_origin=origin, maintenance_rows_before=maintenance_rows,
                       space_before=origin['space_before'])
+    if reuse_review is not None:
+        inputs['reuse_review'] = reuse_review
     inputs['payload']['applied_versions'] = upgrade['applied_result']['applied_versions']
+    Q.validate_inputs(inputs)
+    if reuse_review is not None:
+        storage_guard(inputs)
+    directory.mkdir(mode=0o700)
     R.write_new(directory / 'migrate.exs', script)
     R.write_new(directory / 'inputs.json', R.encoded(inputs))
     state = {'format': PROFILE_FORMAT if profile else FORMAT,
@@ -609,6 +668,12 @@ def prepare(api, root, after_path, after_session=False, profile=None, execution_
                                   'host_attempt_ms': 0, 'host_attempt_batches': 0}
     state['checkpoint_sha256'] = checkpoint_digest(state)
     R.write_new(path, R.encoded(state))
+    if reuse_review is not None:
+        try:
+            Q.reserve_review(reuse_review, path, state['inputs_sha256'])
+        except Exception as error:
+            error.state_path = path
+            raise
     print(json.dumps({'phase': 'session_inputs_saved', 'state': str(path), 'database_writes': False}), flush=True)
     # A read-only preparation also validates permissions and the exact protocol.
     try:
@@ -640,8 +705,8 @@ def prepare(api, root, after_path, after_session=False, profile=None, execution_
 
 def limit_reason(state):
     limits = profile_limits(state['inputs'])
-    if state['inputs'].get('maintenance_origin') and state['inputs']['maintenance_rows_before'] + state['rows'] >= OBSERVATION_LIMITS['maintenance_max_rows']:
-        return 'vacuum_review_required'
+    if state['inputs'].get('maintenance_origin') and state['inputs']['maintenance_rows_before'] + state['rows'] >= maintenance_row_limit(state['inputs']):
+        return 'reuse_review_required' if state['inputs'].get('profile') == Q.PROFILE else 'vacuum_review_required'
     if state['batches'] >= limits['max_batches']:
         return 'batch_limit_reached'
     if state['rows'] >= limits['max_rows']:
@@ -667,8 +732,7 @@ def execute(api, root, path, manifest):
     P.require(B.clean_source(api, root) == (inputs['tool_source_commit'], '10.2.6'), 'Resume from the session creation commit')
     P.require(state.get('preparation_complete', 'resources_before' in state) and 'resources_before' in state,
               'Preparation was incomplete; retain it and prepare a new session')
-    P.context(api, root, Path(inputs['upgrade_state']))
-    health_at = time.monotonic()
+    health_at = session_context(api, root, inputs)
     state['latest_attempt'] = {'started_at': datetime.now(timezone.utc).isoformat(), 'starting_rows': state['rows']}
     sync_json(path, state)
     with Client(api, path, inputs) as client:
@@ -682,7 +746,7 @@ def execute(api, root, path, manifest):
             if not pending:
                 reason = limit_reason(state)
                 if reason:
-                    P.context(api, root, Path(inputs['upgrade_state']))
+                    session_context(api, root, inputs)
                     sync_json(path.parent / 'resources-latest.json', session_resources(state, client.request('resources')))
                     return finish(path, state, reason)
                 monitor(path, inputs)
@@ -702,8 +766,8 @@ def execute(api, root, path, manifest):
                 count = P.block_rows(sampled['block_rows'])
                 P.require(count == sampled['selected_rows'] and sampled['selected_bytes'] <= 16 * 1024**2,
                           'Sample exceeds transaction budget')
-                if inputs.get('maintenance_origin') and count + state['rows'] + inputs['maintenance_rows_before'] > OBSERVATION_LIMITS['maintenance_max_rows']:
-                    return finish(path, state, 'next_complete_batch_requires_vacuum_review')
+                if inputs.get('maintenance_origin') and count + state['rows'] + inputs['maintenance_rows_before'] > maintenance_row_limit(inputs):
+                    return finish(path, state, 'next_complete_batch_requires_reuse_review' if inputs.get('profile') == Q.PROFILE else 'next_complete_batch_requires_vacuum_review')
                 if count + state['rows'] > limits['max_rows']:
                     return finish(path, state, 'next_complete_batch_exceeds_remaining_rows')
                 spec = {'blocks': [r['block'] for r in sampled['block_rows']], 'block_rows': sampled['block_rows'], 'expected_rows': count}
@@ -733,15 +797,13 @@ def execute(api, root, path, manifest):
                     state.update(abandoned=pending, pending=None)
                     return finish(path, state, reason)
                 if time.monotonic() - health_at >= refresh_after:
-                    P.context(api, root, Path(inputs['upgrade_state']))
-                    health_at = time.monotonic()
+                    health_at = session_context(api, root, inputs)
                 session_resources(state, client.request('resources'))
                 monitor(path, inputs)
                 P.require(B.clean_source(api, root) == (inputs['tool_source_commit'], '10.2.6'), 'Tool source changed before a write')
                 api.ensure_stable(inputs['runtime_before'], api.inspect_project(manifest), 'Runtime changed before a write')
                 if time.monotonic() - health_at >= refresh_after:
-                    P.context(api, root, Path(inputs['upgrade_state']))
-                    health_at = time.monotonic()
+                    health_at = session_context(api, root, inputs)
                 spec['health_valid_until_unix_ms'] = int((time.time() + limits['health_seconds'] - (time.monotonic() - health_at)) * 1000)
                 # This fsynced record and raw slot precede the command that can
                 # write. Failure after commit keeps this exact target pending.
@@ -758,8 +820,7 @@ def execute(api, root, path, manifest):
                 sync_json(path, state)
             api.ensure_stable(inputs['runtime_before'], api.inspect_project(manifest), 'Runtime changed during transaction')
             if time.monotonic() - health_at >= refresh_after:
-                P.context(api, root, Path(inputs['upgrade_state']))
-                health_at = time.monotonic()
+                health_at = session_context(api, root, inputs)
             monitor(path, inputs)
             sync_json(path.parent / 'resources-latest.json', session_resources(state, client.request('resources')))
             metrics = pending['result']
@@ -805,7 +866,8 @@ def main():
     start.add_argument('--after-state', type=Path)
     start.add_argument('--after-session', type=Path)
     parser.add_argument('--state', type=Path)
-    parser.add_argument('--profile', choices=('pilot-v1', 'observation-v1'))
+    parser.add_argument('--after-vacuum', type=Path)
+    parser.add_argument('--profile', choices=('pilot-v1', 'observation-v1', Q.PROFILE))
     parser.add_argument('--execution-profile', choices=(LEAN_EXECUTION_PROFILE,))
     args = parser.parse_args()
     try:
@@ -814,6 +876,8 @@ def main():
                   'Select a limit profile only when preparing a new session; saved budgets cannot be replaced')
         P.require(args.execution_profile is None or args.prepare or args.run,
                   'Select an execution profile only when preparing a new session')
+        P.require(args.after_vacuum is None or args.prepare or args.run,
+                  'Select a vacuum proof only when preparing a new reuse session')
         manifest, _, _ = D.configuration(ROOT, 'dev')
         with M.global_lock(not (args.status or args.retention_plan or args.diagnose)), B.build_lock(D, D.MANAGED_RELEASES, ROOT):
             if args.diagnose:
@@ -831,7 +895,7 @@ def main():
                 P.require(args.state is None and (args.after_state or args.after_session), 'Provide a verified predecessor')
                 result = prepare(D, ROOT, args.after_state or args.after_session,
                                  after_session=args.after_session is not None, profile=args.profile,
-                                 execution_profile=args.execution_profile)
+                                 execution_profile=args.execution_profile, after_vacuum=args.after_vacuum)
                 args.state = Path(result['state'])
                 if args.run:
                     print(json.dumps(result, indent=2), flush=True)
