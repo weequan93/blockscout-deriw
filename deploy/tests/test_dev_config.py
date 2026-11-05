@@ -110,8 +110,33 @@ class ConfigTests(unittest.TestCase):
   with patch.object(T,'run',side_effect=[ids,json.dumps(values)]):
    with self.assertRaises(T.ConfigError):T.inspect_project(self.manifest)
  def test_rpc_wrong_chain_refused(self):
-  with patch.object(T,'run',return_value='{"result":"0xb46"}'):
-   with self.assertRaises(T.ConfigError):T.rpc_chain(self.manifest)
+  with patch.object(T,'run',return_value='{"result":"0xb46"}\nBLOCKSCOUT_RPC_META=200|0.001\nBLOCKSCOUT_RPC_EXIT=0\n'):
+   with self.assertRaises(T.RpcChainError) as error:T.rpc_chain(self.manifest)
+  self.assertEqual(error.exception.kind,'identity_mismatch')
+  self.assertFalse(error.exception.report['chain_id_matches'])
+ def test_rpc_failures_keep_safe_transport_metadata_and_hide_url_and_bodies(self):
+  manifest={**self.manifest,'http_rpc':'http://fixture.invalid/'+SECRET}
+  for raw,kind in [
+   ('\nBLOCKSCOUT_RPC_META=503|0.001\nBLOCKSCOUT_RPC_EXIT=22\n','http_error'),
+   ('\nBLOCKSCOUT_RPC_META=000|4.001\nBLOCKSCOUT_RPC_EXIT=28\n','timeout'),
+   ('\nBLOCKSCOUT_RPC_META=000|0.001\nBLOCKSCOUT_RPC_EXIT=7\n','connection_error'),
+   (SECRET+'\nBLOCKSCOUT_RPC_META=200|0.001\nBLOCKSCOUT_RPC_EXIT=0\n','invalid_rpc_response'),
+   (SECRET,'invalid_probe')]:
+   with self.subTest(kind=kind),patch.object(T,'run',return_value=raw) as run:
+    with self.assertRaises(T.RpcChainError) as error:T.rpc_chain(manifest)
+    self.assertEqual(error.exception.kind,kind)
+    public=str(error.exception)+json.dumps(error.exception.report)
+    self.assertNotIn(SECRET,public)
+    self.assertNotIn(manifest['http_rpc'],' '.join(run.call_args.args[0]))
+    self.assertEqual(run.call_args.kwargs['input_text'],manifest['http_rpc']+'\n')
+ def test_rpc_success_uses_injected_deadline_runner_and_json_rpc_errors_are_redacted(self):
+  raw=json.dumps({'result':hex(int(self.manifest['chain_id']))})+'\nBLOCKSCOUT_RPC_META=200|0.001\nBLOCKSCOUT_RPC_EXIT=0\n'
+  with patch.object(T,'run',side_effect=AssertionError('default runner used')):
+   self.assertEqual(T.rpc_chain(self.manifest,runner=lambda *a,**k:raw),int(self.manifest['chain_id']))
+  raw=json.dumps({'error':{'code':-32603,'message':SECRET}})+'\nBLOCKSCOUT_RPC_META=200|0.001\nBLOCKSCOUT_RPC_EXIT=0\n'
+  with patch.object(T,'run',return_value=raw),self.assertRaises(T.RpcChainError) as error:T.rpc_chain(self.manifest)
+  self.assertEqual(error.exception.report['rpc_error_code'],-32603)
+  self.assertNotIn(SECRET,str(error.exception)+json.dumps(error.exception.report))
  def test_secret_collection_stops_on_restart_before_write(self):
   after=deepcopy(self.rows);after['backend']['RestartCount']=1
   output=self.parent/'private'/'private.json';text=io.StringIO()

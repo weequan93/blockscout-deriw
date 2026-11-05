@@ -420,20 +420,26 @@ def verify(api, path, state, manifest, wait=False, deadline=None):
                     'Paired service mounts/ports/networks changed')
         stage = 'backend_readiness'
         probe_results = {}
+        checked_values = {'backend_readiness_ok': False}
         try:
             port = api.env_map(current['backend']).get('PORT', '4000')
             require(re.fullmatch(r'[0-9]{1,5}', port) and 0 < int(port) < 65536, 'Unexpected readiness port')
             readiness = run(['docker', 'exec', 'backend', 'curl', '-q', '--noproxy', '*', '-fsS', '--max-time', '5',
                                  '--max-filesize', '4096', 'http://127.0.0.1:' + port + '/api/health/readiness'], timeout=10).strip() == 'OK'
             health = {'backend_readiness_ok': readiness}
+            checked_values.update(health)
             probe_results['backend_readiness'] = readiness
             stage = 'backend_runtime'
             runtime = C.marked_json(api, run(['docker', 'exec', 'backend', '/app/bin/blockscout', 'rpc', runtime_expression()], timeout=20))
+            require(isinstance(runtime, dict), 'Backend runtime probe returned an invalid object; raw values suppressed')
+            checked_values.update(runtime)
             probe_results.update(runtime_settings=runtime.get('settings_ok') is True,
                                  automatic_migrators_absent=runtime.get('automatic_migrators_absent') is True,
                                  market_price=runtime.get('market_price_ready') is True)
             stage = 'nft_queue'
             nft = C.marked_json(api, run(['docker', 'exec', 'nft_media_handler', '/app/bin/blockscout', 'rpc', nft_expression()], timeout=20))
+            require(isinstance(nft, dict), 'NFT runtime probe returned an invalid object; raw values suppressed')
+            checked_values.update(nft)
             probe_results['nft_queue'] = nft.get('v10_queue_protocol_ok') is True
             ready = all(health.values()) and runtime.get('settings_ok') is True and nft.get('v10_queue_protocol_ok') is True
             ready = ready and runtime.get('market_price_ready') is True
@@ -462,11 +468,15 @@ def verify(api, path, state, manifest, wait=False, deadline=None):
                 result['verification_failure'] = {'stage': failed, 'kind': 'check_failed'}
         except (D.ConfigError, ValueError, TypeError, AttributeError) as error:
             ready = False
-            result = {'backend_readiness_ok': False, 'runtime_checks_completed': False}
+            # Preserve completed local checks if a later dependency/API probe
+            # fails. Overall verification still fails with the same stop policy.
+            result = {**checked_values, 'runtime_checks_completed': False}
             probe_results[stage] = False
             result['verification_failure'] = {'stage': stage, 'kind': type(error).__name__,
                 'reason': str(error) if isinstance(error, D.ConfigError) else 'Runtime probe returned an invalid response; raw values suppressed'}
-            if stage == 'l2_chain' and isinstance(error, D.ConfigError) and str(error) == 'L2 RPC chain does not match dev manifest':
+            if isinstance(error, D.RpcChainError):
+                result['verification_failure'].update(kind=error.kind, rpc_probe=error.report)
+            elif stage == 'l2_chain' and isinstance(error, D.ConfigError) and str(error) == 'L2 RPC chain does not match dev manifest':
                 result['verification_failure']['kind'] = 'identity_mismatch'
         result['verification_probes'] = probe_results
         if ready or not wait:

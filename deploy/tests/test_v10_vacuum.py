@@ -482,6 +482,16 @@ class VacuumTests(unittest.TestCase):
         samples = [json.loads(line) for line in V.U.private(path.parent / 'health-observations.jsonl').splitlines()]
         self.assertEqual([s['report']['status'] for s in samples], ['needs_attention', 'verified'])
 
+    def test_new_policy_spaces_one_retry_but_preserves_legacy_policy_and_deadline(self):
+        for policy, pause in (('bounded-v1', 0.25), ('bounded-v2', 2)):
+            with self.subTest(policy=policy), patch.object(V.time, 'sleep') as sleep, \
+                 patch.object(V.U, 'verify', side_effect=[health(False), health(True)]) as verify:
+                result = V.health_verification(self.api, Path('/upgrade'), {}, self.manifest,
+                    state={'inputs': {'health_recheck_policy': policy}})
+            self.assertEqual(result['status'], 'verified')
+            sleep.assert_called_once_with(pause)
+            self.assertEqual(verify.call_args_list[0].kwargs['deadline'], verify.call_args_list[1].kwargs['deadline'])
+
     def test_persistent_health_failure_stops_without_renewing_the_lease(self):
         path = self.requested()
         def context(api, root, upgrade_path, saved_path=None, saved_state=None, monitoring=False):

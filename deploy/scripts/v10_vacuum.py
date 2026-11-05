@@ -30,7 +30,8 @@ ROOT = Path(__file__).resolve().parents[2]
 BASE = Path('/data/blockscout-dev-private/v10-vacuum')
 FORMAT = 'blockscout-dev-v10-vacuum-window-v1'
 TRANSACTION_GUARD_SCOPE = 'pre_vacuum_clients'
-HEALTH_RECHECK_POLICY = 'bounded-v1'
+HEALTH_RECHECK_POLICY = 'bounded-v2'
+LEGACY_HEALTH_RECHECK_POLICY = 'bounded-v1'
 HEALTH_RETRY_MIN_SECONDS = 8
 SQL = 'VACUUM (VERBOSE, INDEX_CLEANUP ON, TRUNCATE OFF, PARALLEL 0) public.internal_transactions'
 SQL_MD5 = hashlib.md5(SQL.encode()).hexdigest()
@@ -74,7 +75,7 @@ def health_verification(api, upgrade_path, upgrade, manifest, path=None, state=N
     # Leave one second for the final identity observation and lease publication.
     deadline = time.monotonic() + max(0, budget - 1)
     policy = state['inputs'].get('health_recheck_policy') if state else HEALTH_RECHECK_POLICY
-    attempts = 2 if policy == HEALTH_RECHECK_POLICY else 1
+    attempts = 2 if policy in (LEGACY_HEALTH_RECHECK_POLICY, HEALTH_RECHECK_POLICY) else 1
     samples = []
     for attempt in range(1, attempts + 1):
         if path and state:
@@ -109,7 +110,7 @@ def health_verification(api, upgrade_path, upgrade, manifest, path=None, state=N
             break
         # No lease is renewed from a failed sample. The independent watchdog
         # remains active throughout this one short recheck.
-        time.sleep(0.25)
+        time.sleep(2 if policy == HEALTH_RECHECK_POLICY else 0.25)
     raise HealthReviewError(samples)
 
 
@@ -196,7 +197,8 @@ def load(path):
               and inputs['payload'].get('transaction_guard_scope') == scope
               and inputs['payload'].get('oldest_transaction_seconds') == inputs['limits']['oldest_transaction_seconds'],
               'Frozen vacuum transaction guard changed')
-    P.require(inputs.get('health_recheck_policy') in (None, HEALTH_RECHECK_POLICY), 'Frozen vacuum health policy changed')
+    P.require(inputs.get('health_recheck_policy') in (None, LEGACY_HEALTH_RECHECK_POLICY, HEALTH_RECHECK_POLICY),
+              'Frozen vacuum health policy changed')
     if state.get('vacuum_query_started_at'):
         proof = U.private(path.parent / 'vacuum-start.json')
         P.require(R.digest(proof) == state['vacuum_start_sha256']

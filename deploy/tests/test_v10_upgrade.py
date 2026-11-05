@@ -298,8 +298,9 @@ class UpgradeTests(unittest.TestCase):
             self.current[name]['Image'] = IMAGE
             self.current[name]['Config']['Labels'].update({U.STATE_LABEL: str(self.path), U.ROLE_LABEL: name})
         def run(command, **kwargs):
-            if command[-1] == self.manifest['http_rpc']:
-                return json.dumps({'result': hex(int(self.manifest['chain_id']))})
+            if command == ['docker', 'exec', '-i', 'backend', 'sh', '-c', U.D.RPC_CHAIN_SCRIPT]:
+                self.assertEqual(kwargs['input_text'], self.manifest['http_rpc'] + '\n')
+                return json.dumps({'result': hex(int(self.manifest['chain_id']))}) + '\nBLOCKSCOUT_RPC_META=200|0.001\nBLOCKSCOUT_RPC_EXIT=0\n'
             if '/api/health/readiness' in command[-1]:
                 return 'OK'
             if command[:4] == ['docker', 'exec', 'backend', '/app/bin/blockscout']:
@@ -320,9 +321,62 @@ class UpgradeTests(unittest.TestCase):
         result = U.verify(self.api, self.path, self.state, self.manifest)
         self.assertEqual(result['status'], 'needs_attention')
         self.assertEqual(result['verification_failure']['stage'], 'api_tokens')
+        self.assertTrue(result['backend_readiness_ok'])
         self.assertTrue(result['verification_probes']['backend_readiness'])
         self.assertTrue(result['verification_probes']['api_transactions'])
         self.assertFalse(result['verification_probes']['api_tokens'])
+        self.assertNotIn(SECRET, json.dumps(result))
+
+    def test_chain_transport_failure_preserves_completed_local_readiness_checks(self):
+        self.healthy_verification_pair()
+        self.api.rpc_chain.side_effect = U.D.ConfigError('Docker/Compose read failed or exceeded limit; raw output suppressed')
+        result = U.verify(self.api, self.path, self.state, self.manifest)
+        self.assertEqual(result['status'], 'needs_attention')
+        self.assertEqual(result['verification_failure']['stage'], 'l2_chain')
+        self.assertTrue(result['backend_readiness_ok'])
+        self.assertTrue(result['settings_ok'])
+        self.assertTrue(result['v10_queue_protocol_ok'])
+        self.assertFalse(result['verification_probes']['l2_chain'])
+        self.assertFalse(result['runtime_checks_completed'])
+
+    def test_chain_http_failure_records_redacted_diagnostic_details(self):
+        self.healthy_verification_pair()
+        self.api.rpc_chain.side_effect = U.D.RpcChainError('L2 RPC transport check failed; raw output suppressed',
+            'http_error', {'curl_exit': 22, 'http_status': 503, 'elapsed_seconds': 0.1, 'chain_id_matches': None})
+        result = U.verify(self.api, self.path, self.state, self.manifest)
+        failure = result['verification_failure']
+        self.assertEqual(failure['stage'], 'l2_chain')
+        self.assertEqual(failure['kind'], 'http_error')
+        self.assertEqual(failure['rpc_probe']['http_status'], 503)
+        self.assertTrue(result['backend_readiness_ok'])
+        self.assertEqual(result['status'], 'needs_attention')
+
+    def test_failed_local_readiness_is_still_reported_false(self):
+        self.healthy_verification_pair()
+        original = self.api.run.side_effect
+        def run(command, **kwargs):
+            if '/api/health/readiness' in command[-1]:
+                raise U.D.ConfigError('Docker/Compose read failed or exceeded limit; raw output suppressed')
+            return original(command, **kwargs)
+        self.api.run.side_effect = run
+        result = U.verify(self.api, self.path, self.state, self.manifest)
+        self.assertEqual(result['status'], 'needs_attention')
+        self.assertFalse(result['backend_readiness_ok'])
+        self.assertFalse(result['verification_probes']['backend_readiness'])
+        self.assertEqual(result['verification_failure']['stage'], 'backend_readiness')
+
+    def test_invalid_runtime_object_cannot_replace_successful_readiness_or_leak_values(self):
+        self.healthy_verification_pair()
+        original = self.api.run.side_effect
+        def run(command, **kwargs):
+            if command[:4] == ['docker', 'exec', 'backend', '/app/bin/blockscout']:
+                return U.C.MARKER + json.dumps([SECRET])
+            return original(command, **kwargs)
+        self.api.run.side_effect = run
+        result = U.verify(self.api, self.path, self.state, self.manifest)
+        self.assertEqual(result['status'], 'needs_attention')
+        self.assertTrue(result['backend_readiness_ok'])
+        self.assertEqual(result['verification_failure']['stage'], 'backend_runtime')
         self.assertNotIn(SECRET, json.dumps(result))
 
     def test_verification_deadline_caps_every_expensive_probe(self):

@@ -16,6 +16,15 @@ ROOT=Path(__file__).resolve().parents[2]
 ENV_KEY=re.compile(r'[A-Z][A-Z0-9_]{0,159}')
 IDENT=re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,159}')
 MANAGED_RELEASES=Path('/data/blockscout-dev-private/releases')
+RPC_CHAIN_SCRIPT=r'''set -eu
+IFS= read -r rpc_url
+rpc_exit=0
+curl -q --noproxy '*' -fsS --connect-timeout 2 --max-time 4 --max-filesize 4096 \
+ -H 'Content-Type: application/json' \
+ --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' \
+ --write-out '\nBLOCKSCOUT_RPC_META=%{http_code}|%{time_total}' "$rpc_url" 2>/dev/null || rpc_exit=$?
+printf '\nBLOCKSCOUT_RPC_EXIT=%s\n' "$rpc_exit"
+'''
 
 
 def load_tool(name):
@@ -32,6 +41,12 @@ def release_model(model,context):
 
 
 class ConfigError(Exception):pass
+
+
+class RpcChainError(ConfigError):
+ def __init__(self,message,kind,report):
+  super().__init__(message)
+  self.kind,self.report=kind,report
 
 
 class StabilityError(ConfigError):
@@ -467,13 +482,45 @@ def live_environment_differences(model,rows):
 
 
 def rpc_chain(manifest,runner=None):
- request=json.dumps({'jsonrpc':'2.0','id':1,'method':'eth_chainId','params':[]})
- result=(runner or run)(['docker','exec','backend','curl','-q','--noproxy','*','-fsS','--connect-timeout','2','--max-time','4',
-  '--max-filesize','4096','-H','Content-Type: application/json','--data',request,manifest['http_rpc']],timeout=10)
+ # Keep endpoint URLs and response/error bodies out of public error messages.
+ # The shell always publishes curl's exit/status/timing, including HTTP errors.
+ # URL data crosses stdin rather than the host Docker command line.
  try:
-  data=json.loads(result);number=int(data['result'],16)
- except (ValueError,KeyError,TypeError):raise ConfigError('L2 RPC chain identity check failed; raw response suppressed') from None
- require(str(number)==manifest['chain_id'],'L2 RPC chain does not match dev manifest')
+  raw=(runner or run)(['docker','exec','-i','backend','sh','-c',RPC_CHAIN_SCRIPT],
+   input_text=manifest['http_rpc']+'\n',timeout=10)
+ except ConfigError as error:
+  if str(error)=='Runtime verification deadline reached':raise
+  raise RpcChainError('L2 RPC probe execution unavailable; raw output suppressed','probe_exec_error',
+   {'transport_metadata_present':False}) from None
+ try:
+  response,exit_marker,exit_text=raw.rpartition('\nBLOCKSCOUT_RPC_EXIT=')
+  body,meta_marker,meta=response.rpartition('\nBLOCKSCOUT_RPC_META=')
+  if not exit_marker or not meta_marker or not re.fullmatch(r'[0-9]{1,3}\n?',exit_text):raise ValueError
+  match=re.fullmatch(r'([0-9]{3})\|([0-9]+(?:\.[0-9]+)?)',meta)
+  if not match:raise ValueError
+  curl_exit,http_status=int(exit_text),int(match[1])
+  if not 0<=curl_exit<=255:raise ValueError
+  report={'transport_metadata_present':True,'curl_exit':curl_exit,'http_status':http_status,
+   'elapsed_seconds':round(float(match[2]),6)}
+ except (ValueError,TypeError,AttributeError,OverflowError):
+  raise RpcChainError('L2 RPC probe evidence invalid; raw output suppressed','invalid_probe',
+   {'transport_metadata_present':False}) from None
+ data,number=None,None
+ try:data=json.loads(body)
+ except (ValueError,TypeError):pass
+ if isinstance(data,dict):
+  value=data.get('result')
+  if isinstance(value,str) and re.fullmatch(r'0x[0-9a-fA-F]{1,64}',value):number=int(value,16)
+  error=data.get('error')
+  if isinstance(error,dict) and type(error.get('code')) is int:report['rpc_error_code']=error['code']
+ report['chain_id_matches']=str(number)==manifest['chain_id'] if number is not None else None
+ if curl_exit or http_status!=200:
+  kind='http_error' if http_status>=400 else {6:'dns_error',7:'connection_error',28:'timeout',35:'tls_error',60:'tls_error',63:'response_size_limit'}.get(curl_exit,'transport_error')
+  raise RpcChainError(f'L2 RPC transport check failed (HTTP {http_status}, curl {curl_exit}); raw output suppressed',kind,report)
+ if number is None:
+  raise RpcChainError('L2 RPC chain identity check failed; raw response suppressed','invalid_rpc_response',report)
+ if not report['chain_id_matches']:
+  raise RpcChainError('L2 RPC chain does not match dev manifest','identity_mismatch',report)
  return number
 
 
