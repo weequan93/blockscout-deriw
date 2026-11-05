@@ -362,17 +362,49 @@ class VacuumTests(unittest.TestCase):
         cases = [(['transactions', 'oldest_transaction_seconds'], 301),
                  (['transactions', 'prepared_transactions'], 1), (['transactions', 'slots_with_xmin'], 1),
                  (['vacuum'], [{'pid': 999}]),
+                 (['table', 'dead_rows'], -1),
+                 (['table', 'total_bytes'], 10001 + V.LIMITS['space_bytes']),
+                 (['table', 'stats_reset'], 'changed'),
+                 (['wal', 'directory_bytes'], 1001 + V.LIMITS['space_bytes']),
+                 (['wal', 'retained_slot_bytes'], 1 + V.LIMITS['space_bytes']),
                  (['wal', 'bytes_since_stats_reset'], str(1000 + V.LIMITS['cluster_wal_bytes'] + 1)),
                  (['io', 'heap_blocks_read'], 101 + V.LIMITS['relation_read_bytes'] // 8192)]
         for keys, value in cases:
             with self.subTest(keys=keys):
                 data = resources()
+                data['table']['dead_rows'] = 1045156
                 current = data
                 for key in keys[:-1]:
                     current = current[key]
                 current[keys[-1]] = value
                 with self.assertRaises(V.U.UpgradeError):
                     V.check_resources(data, inputs, baseline)
+
+    def test_cleanup_accepts_high_dead_rows_while_normalization_keeps_its_ceiling(self):
+        inputs = V.load(self.prepare(V.FAST_PROFILE))['inputs']
+        before = deepcopy(V.J.OBSERVATION_LIMITS)
+        for count in (1045156, 2000001):
+            data = resources()
+            data['table']['dead_rows'] = count
+            self.assertEqual(V.check_resources(data, inputs, resources())['table']['dead_rows'], count)
+            with self.assertRaisesRegex(V.U.UpgradeError, 'dead-row ceiling'):
+                V.J.resource_guard(data, limits=V.J.OBSERVATION_LIMITS)
+        self.assertEqual(V.J.OBSERVATION_LIMITS, before)
+        data['table']['dead_rows'] = V.J.CAPACITY_LIMITS['dead_rows'] + 1
+        with self.assertRaisesRegex(V.U.UpgradeError, 'dead-row ceiling'):
+            V.J.resource_guard(data, limits=V.J.CAPACITY_LIMITS)
+
+    def test_cleanup_still_requires_autovacuum_visibility_and_filesystem_headroom(self):
+        inputs = V.load(self.prepare(V.FAST_PROFILE))['inputs']
+        for setting in ('autovacuum', 'track_counts'):
+            data = resources()
+            data['table']['dead_rows'] = 1045156
+            data['settings'] = [[name, 'off' if name == setting else value, unit]
+                                for name, value, unit in data['settings']]
+            with self.assertRaisesRegex(V.ResourceReviewError, 'disabled'):
+                V.check_resources(data, inputs)
+        with self.assertRaisesRegex(V.U.UpgradeError, 'filesystem'):
+            V.check_resources(resources(), inputs, free=inputs['limits']['free_bytes'] - 1)
 
     def test_role_pid_start_and_application_must_match_owned_socket(self):
         state = V.load(self.prepare())

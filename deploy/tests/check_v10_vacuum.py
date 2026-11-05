@@ -91,11 +91,20 @@ def check(image, network, token, environment, sql, pg, directory):
             process.stdin.flush()
             process.stdin.close()
             process.wait(timeout=5)
+    real_observe = V.observe
+    def observed_with_reviewed_backlog(*args, **kwargs):
+        data = real_observe(*args, **kwargs)
+        # Exercise admission above the writer ceiling without manufacturing a
+        # million fixture updates. SQL, identity and all other samples are real.
+        if data['table']['vacuum_count'] == 0:
+            data['table']['dead_rows'] = 1045156
+        return data
     with patch.object(V, 'BASE', base / 'vacuum'), patch.object(V.P, 'BASE', base / 'pilot'), \
          patch.object(V.B, 'clean_source', return_value=('a' * 40, '10.2.6')), \
          patch.object(V.P, 'context', return_value=(manifest, upgrade)), \
          patch.object(V.P, 'free_bytes', return_value=888 * 1024**3), \
-         patch.object(V.P.N, 'collect', return_value={'blockers': [], 'selected_block': 20, 'sample_rows': 2}):
+         patch.object(V.P.N, 'collect', return_value={'blockers': [], 'selected_block': 20, 'sample_rows': 2}), \
+         patch.object(V, 'observe', side_effect=observed_with_reviewed_backlog):
         pilot = V.P.prepare(api, ROOT, directory / 'upgrade.json', 20, 2)
         pilot_path = Path(pilot['state'])
         V.P.apply(api, ROOT, pilot_path, manifest)
@@ -139,6 +148,7 @@ def check(image, network, token, environment, sql, pg, directory):
             prepared = V.prepare(api, fixture_root, parent_path, Path('/metrics'), Path('/empty'), profile=V.FAST_PROFILE)
             path = Path(prepared['state'])
             assert not prepared['database_writes']
+            assert prepared['resources']['table']['dead_rows'] == 1045156
             assert prepared['resources']['transactions']['oldest_transaction_seconds'] < 300
             frozen = V.load(path)['inputs']
             assert frozen['limits'] == {**V.LIMITS, 'duration_seconds': 14400}
@@ -254,6 +264,7 @@ def check(image, network, token, environment, sql, pg, directory):
             foreign.stdin.close()
             foreign.wait(timeout=5)
     return {'status': 'passed', 'ordinary_vacuum_completed': True, 'vacuum_counter_advanced': True,
+        'synthetic_dead_row_estimate_above_writer_ceiling_admitted': True,
         'verbose_result_retained': True, 'connection_local_settings_verified': True, 'four_hour_profile_timeout_verified': True,
         'fast_profile_socket_cost_limit_400_verified': True, 'global_cost_limit_unchanged': True,
         'other_profile_limits_unchanged': True, 'normalization_anchor_unchanged': True,

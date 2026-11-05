@@ -250,7 +250,16 @@ def check_resources(data, inputs, baseline=None, free=None):
             reviewed = {**data, 'transactions': {**data['transactions'],
                 'oldest_transaction_seconds': data['transactions']['oldest_pre_vacuum_transaction_seconds']}}
     try:
-        J.resource_guard(reviewed, limits={**J.OBSERVATION_LIMITS, 'oldest_transaction_seconds': limits['oldest_transaction_seconds']})
+        # Dead rows are the cleanup workload, not admission for another write.
+        # Keep this path independent of normalization's absolute dead-row cap.
+        report = J.resource_report(reviewed)
+        P.require(report['autovacuum_effectively_enabled'], 'Autovacuum/track_counts is disabled')
+        dead = reviewed['table']['dead_rows']
+        P.require(type(dead) is int and dead >= 0, 'Invalid estimated dead-row observation')
+        age = reviewed['transactions']['oldest_transaction_seconds']
+        P.require(age <= limits['oldest_transaction_seconds'],
+                  'An existing long transaction needs review (observed ' + str(age)
+                  + ' seconds, limit ' + str(limits['oldest_transaction_seconds']) + '); no session was terminated')
     except U.UpgradeError as error:
         raise ResourceReviewError(str(error), data) from None
     P.require(data['transactions']['prepared_transactions'] == data['transactions']['slots_with_xmin'] == 0,
