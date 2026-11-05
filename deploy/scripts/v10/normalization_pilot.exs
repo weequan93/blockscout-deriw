@@ -11,7 +11,11 @@ defmodule BlockscoutNormalizationCheck do
     batch? = is_list(payload["blocks"])
     blocks = if batch?, do: payload["blocks"], else: [block]
     expected_rows = payload["expected_rows"]
-    true = is_integer(expected_rows) and expected_rows in 1..1000
+    single_rows = payload["single_block_rows"] || 1000
+    true = single_rows in [1000, 10000]
+    true = single_rows == 1000 or payload["session"] == true or mode == "inspect"
+    row_limit = if length(blocks) == 1, do: single_rows, else: 1000
+    true = is_integer(expected_rows) and expected_rows in 1..row_limit
 
     true =
       length(blocks) in 1..1000 and
@@ -21,7 +25,7 @@ defmodule BlockscoutNormalizationCheck do
 
     if batch? do
       true = Enum.map(payload["block_rows"], & &1["block"]) == blocks
-      true = Enum.all?(payload["block_rows"], &(is_integer(&1["rows"]) and &1["rows"] in 1..1000))
+      true = Enum.all?(payload["block_rows"], &(is_integer(&1["rows"]) and &1["rows"] in 1..row_limit))
       true = Enum.sum(Enum.map(payload["block_rows"], & &1["rows"])) == expected_rows
     end
 
@@ -56,7 +60,7 @@ defmodule BlockscoutNormalizationCheck do
         ")::text), " <>
         needs <>
         ~S|, pg_column_size(it) FROM public.internal_transactions it LEFT JOIN public.transaction_errors te ON te.id=it.error_id WHERE | <>
-        target <> " LIMIT 1001"
+        target <> " LIMIT " <> Integer.to_string(row_limit + 1)
 
     status_names =
       ~w(empty_internal_transactions_data reindex_duplicated_internal_transactions heavy_indexes_create_internal_transactions_block_number_transaction_index_index_index heavy_indexes_create_internal_transactions_not_null_constraints heavy_indexes_create_internal_transactions_pkey)
@@ -396,17 +400,9 @@ defmodule BlockscoutNormalizationSession do
             bound = payload["before_block"]
             true = is_integer(bound) and bound >= 0
 
-            sql =
-              ~S|SELECT block_number,pg_column_size(it) FROM public.internal_transactions it WHERE block_number<$1 ORDER BY block_number DESC,transaction_index DESC,"index" DESC LIMIT 1001|
-
-            [[[%{"Plan" => root}]]] = q.("EXPLAIN (FORMAT JSON) " <> sql, [bound])
-
             walk = fn recur, node ->
               [node | Enum.flat_map(node["Plans"] || [], &recur.(recur, &1))]
             end
-
-            nodes = walk.(walk, root)
-            [scan] = Enum.filter(nodes, &(&1["Relation Name"] == "internal_transactions"))
 
             indexes =
               q.(
@@ -415,19 +411,23 @@ defmodule BlockscoutNormalizationSession do
               )
               |> List.flatten()
 
-            true =
-              root["Node Type"] == "Limit" and
+            fetch = fn limit ->
+              sql =
+                ~S|SELECT block_number,pg_column_size(it) FROM public.internal_transactions it WHERE block_number<$1 ORDER BY block_number DESC,transaction_index DESC,"index" DESC LIMIT | <>
+                  Integer.to_string(limit)
+              [[[%{"Plan" => root}]]] = q.("EXPLAIN (FORMAT JSON) " <> sql, [bound])
+              nodes = walk.(walk, root)
+              [scan] = Enum.filter(nodes, &(&1["Relation Name"] == "internal_transactions"))
+              true = root["Node Type"] == "Limit" and
                 scan["Node Type"] in ["Index Scan", "Index Only Scan"] and
                 scan["Index Name"] in indexes and
                 String.contains?(scan["Index Cond"] || "", "block_number")
+              false = Enum.any?(nodes,
+                &(&1["Node Type"] in ["Sort", "Incremental Sort", "Seq Scan", "Bitmap Heap Scan"]))
+              q.(sql, [bound])
+            end
 
-            false =
-              Enum.any?(
-                nodes,
-                &(&1["Node Type"] in ["Sort", "Incremental Sort", "Seq Scan", "Bitmap Heap Scan"])
-              )
-
-            records = q.(sql, [bound])
+            records = fetch.(1001)
 
             true =
               Enum.all?(records, fn [height, size] ->
@@ -437,6 +437,20 @@ defmodule BlockscoutNormalizationSession do
 
             boundary = if length(records) == 1001, do: hd(List.last(records)), else: nil
             selected = if boundary, do: Enum.reject(records, &(hd(&1) == boundary)), else: records
+
+            {selected, boundary, exhausted} =
+              if selected == [] and not is_nil(boundary) and payload["single_block_rows"] == 10000 do
+                expanded = fetch.(10001)
+                head = Enum.take_while(expanded, &(hd(&1) == boundary))
+                if length(head) <= 10000 do
+                  tail = Enum.drop(expanded, length(head))
+                  {head, if(tail == [], do: nil, else: hd(hd(tail))), tail == []}
+                else
+                  {[], boundary, false}
+                end
+              else
+                {selected, boundary, length(records) < 1001}
+              end
 
             groups =
               selected
@@ -448,7 +462,7 @@ defmodule BlockscoutNormalizationSession do
               selected_rows: length(selected),
               selected_bytes: Enum.reduce(selected, 0, fn [_, size], sum -> sum + size end),
               excluded_boundary_block: boundary,
-              older_non_null_range_exhausted: length(records) < 1001
+              older_non_null_range_exhausted: exhausted
             }
           else
             [[table]] =
@@ -554,6 +568,7 @@ defmodule BlockscoutNormalizationSession do
 
       try do
         payload = Map.merge(base, received["payload"])
+        true = payload["single_block_rows"] == base["single_block_rows"]
 
         result =
           case received["command"] do

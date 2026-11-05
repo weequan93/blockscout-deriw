@@ -47,10 +47,11 @@ def wal_limit(state):
     return limit
 
 
-def baseline(result):
+def baseline(result, row_limit=1000):
+    require(row_limit in (1000, 10000), 'Invalid snapshot row limit')
     snapshot = result.get('snapshot') or {}
     rows = snapshot.get('rows')
-    require(isinstance(rows, list) and 0 < len(rows) <= 1000 and all(isinstance(r, dict) for r in rows), 'Invalid bounded snapshot')
+    require(isinstance(rows, list) and 0 < len(rows) <= row_limit and all(isinstance(r, dict) for r in rows), 'Invalid bounded snapshot')
     require(len(R.encoded(rows)) <= 16 * 1024**2, 'Snapshot exceeds the pilot size limit')
     for name in ('full_hashes', 'semantic_hashes'):
         values = snapshot.get(name)
@@ -61,17 +62,19 @@ def baseline(result):
     return {**snapshot, 'statuses': result['statuses']}
 
 
-def block_rows(value):
+def block_rows(value, row_limit=1000):
     """Validate a descending manifest of complete blocks under the row cap."""
     require(isinstance(value, list) and 0 < len(value) <= 1000, 'Invalid bounded block manifest')
+    require(row_limit in (1000, 10000), 'Invalid block row limit')
+    cap = row_limit if len(value) == 1 else 1000
     previous, total = 2**63, 0
     for row in value:
         require(isinstance(row, dict) and set(row) == {'block', 'rows'}
                 and type(row['block']) is int and 0 <= row['block'] < previous
-                and type(row['rows']) is int and 0 < row['rows'] <= 1000, 'Invalid complete block/count')
+                and type(row['rows']) is int and 0 < row['rows'] <= cap, 'Invalid complete block/count')
         previous = row['block']
         total += row['rows']
-    require(total <= 1000, 'Batch exceeds 1000 rows')
+    require(total <= cap, 'Batch exceeds its complete-block row cap')
     return total
 
 
@@ -89,8 +92,9 @@ def completed_cursor(state):
     return state['block_rows'][-1]['block']
 
 
-def check_block_rows(state, snapshot):
+def check_block_rows(state, snapshot, row_limit=1000):
     if state.get('format') == BATCH_FORMAT:
+        block_rows(state['block_rows'], row_limit=row_limit)
         counts = {}
         for row in snapshot['rows']:
             height = row.get('block_number')

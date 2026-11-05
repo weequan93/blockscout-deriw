@@ -42,6 +42,7 @@ class SessionTests(unittest.TestCase):
         self.api = types.SimpleNamespace(inspect_project=lambda *a: {}, ensure_stable=lambda *a: None,
                                         run=lambda *a, **k: '')
         self.normalized = {100}
+        self.block_sizes = {}
         self.migrates = 0
         self.migrate_limits = []
         self.requests = []
@@ -51,27 +52,34 @@ class SessionTests(unittest.TestCase):
         class Client:
             def __init__(self, api, path, inputs, read_only=False):
                 self.path = path
+                self.inputs = inputs
                 self.read_only = read_only
                 self.name = 'blockscout-v10-schema-' + 'a' * 16
             def __enter__(self):
                 return self
             def __exit__(self, *args):
                 pass
+            def sample(self, cursor):
+                size = case.block_sizes.get(cursor - 1, 1)
+                if size > 1000:
+                    allowed = self.inputs['limits'].get('single_block_rows', 1000)
+                    return {'block_rows': [{'block': cursor - 1, 'rows': size}] if size <= allowed else [],
+                            'selected_rows': size if size <= allowed else 0, 'selected_bytes': 324 * size if size <= allowed else 0,
+                            'excluded_boundary_block': cursor - 2 if size <= allowed else cursor - 1}
+                return {'block_rows': [{'block': cursor - n, 'rows': 1} for n in (1, 2)],
+                        'selected_rows': 2, 'selected_bytes': 648, 'excluded_boundary_block': cursor - 3}
             def request(self, command, payload=None):
                 case.requests.append(command)
                 case.assertFalse(self.read_only and command == 'migrate')
                 if command == 'prepare_batch':
                     cursor = payload['before_block']
-                    sample = {'block_rows': [{'block': cursor - n, 'rows': 1} for n in (1, 2)],
-                              'selected_rows': 2, 'selected_bytes': 648, 'excluded_boundary_block': cursor - 3}
+                    sample = self.sample(cursor)
                     return {'resources': deepcopy(case.raw_resources), 'sample': sample,
-                            'inspection': case.result([cursor - 1, cursor - 2])}
+                            'inspection': case.result([r['block'] for r in sample['block_rows']]) if sample['selected_rows'] else None}
                 if command == 'resources':
                     return deepcopy(case.raw_resources)
                 if command == 'sample':
-                    cursor = payload['before_block']
-                    return {'block_rows': [{'block': cursor - n, 'rows': 1} for n in (1, 2)],
-                            'selected_rows': 2, 'selected_bytes': 648, 'excluded_boundary_block': cursor - 3}
+                    return self.sample(payload['before_block'])
                 if command == 'migrate':
                     case.migrate_limits.append(payload['wal_limit_bytes'])
                     state = J.load(self.path, case.manifest)
@@ -89,14 +97,15 @@ class SessionTests(unittest.TestCase):
                 result = case.result(payload['blocks'])
                 if case.drift:
                     result['snapshot']['semantic_hashes'][0] = 'f' * 32
-                return {**result, 'updated_rows': len(payload['blocks']), 'elapsed_ms': 10, 'cluster_wal_delta_bytes': 1000}
+                return {**result, 'updated_rows': payload['expected_rows'], 'elapsed_ms': 10, 'cluster_wal_delta_bytes': 1000}
         patch.object(J, 'Client', Client).start()
 
     def result(self, blocks):
-        rows = [{'block_number': b, 'value': None if b in self.normalized else 0, 'private': 'private-test-value'} for b in blocks]
+        rows = [{'block_number': b, 'value': None if b in self.normalized else 0, 'private': 'private-test-value', 'fixture_index': n}
+                for b in blocks for n in range(self.block_sizes.get(b, 1))]
         return {'snapshot': {'rows': rows, 'full_hashes': [J.R.digest(J.R.encoded(r))[:32] for r in rows],
-                             'semantic_hashes': [J.R.digest(str(b).encode())[:32] for b in blocks],
-                             'needs_normalization': sum(b not in self.normalized for b in blocks), 'sampled_row_bytes': 324 * len(blocks)},
+                             'semantic_hashes': [J.R.digest(str((r['block_number'], r['fixture_index'])).encode())[:32] for r in rows],
+                             'needs_normalization': sum(r['block_number'] not in self.normalized for r in rows), 'sampled_row_bytes': 324 * len(rows)},
                 'statuses': []}
 
     def prepare(self, execution_profile=None):
@@ -242,11 +251,11 @@ class SessionTests(unittest.TestCase):
         with self.assertRaises(J.U.UpgradeError):
             J.Q.validate_inputs(inputs)
 
-    def prepare_capacity(self):
+    def prepare_capacity(self, max_batches=4, max_rows=8):
         _, reuse = self.prepare_reuse()
         self.execute(reuse)
         patch.object(J.Q, 'CAPACITY_MIN_REUSE_ROWS', 6).start()
-        patch.dict(J.CAPACITY_LIMITS, max_batches=4, max_rows=8).start()
+        patch.dict(J.CAPACITY_LIMITS, max_batches=max_batches, max_rows=max_rows).start()
         return reuse, self.continuation(reuse, profile=J.Q.CAPACITY_PROFILE)
 
     def test_capacity_preserves_the_completed_reuse_and_original_accounting(self):
@@ -340,6 +349,81 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(result['selected_rows_verified'], 0)
         self.assertFalse(result['pending_transaction'])
         self.assertEqual(self.migrates, before_writes)
+
+    def prepare_boundary(self):
+        _, capacity = self.prepare_capacity(max_batches=10, max_rows=10000)
+        before = J.load(capacity, self.manifest)
+        self.block_sizes[before['cursor'] - 3] = 3501
+        result = self.execute(capacity)
+        self.assertEqual(result['stop_reason'], 'oversized_boundary_block')
+        self.assertEqual(result['selected_rows_verified'], 2)
+        patch.dict(J.BOUNDARY_LIMITS, {**J.CAPACITY_LIMITS, 'single_block_rows': 10000}, clear=True).start()
+        return capacity, self.continuation(capacity, profile=J.Q.BOUNDARY_PROFILE)
+
+    def test_boundary_carries_consumed_phase_budget_and_updates_the_large_block_whole(self):
+        parent, path = self.prepare_boundary()
+        parent_bytes = J.U.private(parent)
+        old = J.load(parent, self.manifest, check_resources=False)
+        child = J.load(path, self.manifest)
+        self.assertEqual(child['rows'], old['rows'])
+        self.assertEqual(child['charged_wal_bytes'], old['charged_wal_bytes'])
+        self.assertEqual(child['inputs']['created_epoch'], old['inputs']['created_epoch'])
+        self.assertEqual(child['inputs']['maintenance_rows_before'], old['inputs']['maintenance_rows_before'])
+        self.assertEqual(child['inputs']['maintenance_origin'], old['inputs']['maintenance_origin'])
+        result = self.execute(path)
+        self.assertEqual(result['completed_batches'], 10)
+        self.assertEqual(result['selected_rows_verified'], 3519)
+        self.assertEqual(result['updated_rows_observed'], 3519)
+        self.assertEqual(result['inherited_phase_rows'], 2)
+        self.assertEqual(J.U.private(parent), parent_bytes)
+        self.assertEqual(J.load(path, self.manifest)['timing_totals']['transaction_measurements'], 10)
+        self.assertTrue(J.U.private(parent.parent / 'normalization-boundary.json'))
+        with self.assertRaises(J.U.UpgradeError):
+            self.continuation(parent, profile=J.Q.BOUNDARY_PROFILE)
+        with self.assertRaises(J.U.UpgradeError):
+            self.continuation(path, profile=J.Q.BOUNDARY_PROFILE)
+
+    def test_boundary_lost_large_commit_reconciles_and_charges_original_remaining_wal(self):
+        _, path = self.prepare_boundary()
+        count = self.migrates
+        self.lose_response = True
+        with self.assertRaises(J.U.UpgradeError):
+            self.execute(path)
+        pending = J.load(path, self.manifest)
+        self.assertEqual(pending['rows'], 2)
+        self.assertIsNotNone(pending['pending'])
+        self.requests.clear()
+        result = self.execute(path)
+        self.assertEqual(self.migrates, count + 1)
+        self.assertNotIn('migrate', self.requests)
+        self.assertEqual(result['selected_rows_verified'], 3503)
+        self.assertEqual(result['charged_chunk_wal_bytes'], J.CAPACITY_LIMITS['wal_bytes'])
+        self.assertFalse(result['pending_transaction'])
+        self.assertFalse(result['wal_measurements_complete'])
+
+    def test_boundary_cannot_reset_deadline_or_consumed_counters(self):
+        _, path = self.prepare_boundary()
+        state = J.load(path, self.manifest)
+        inputs = deepcopy(state['inputs'])
+        inputs['created_epoch'] += 3600
+        with self.assertRaises(J.U.UpgradeError):
+            J.Q.validate_inputs(inputs)
+        changed = deepcopy(state)
+        changed['charged_wal_bytes'] = 0
+        with self.assertRaises(J.U.UpgradeError):
+            J.Q.validate_boundary_state(changed)
+        with patch.object(J.time, 'time', return_value=state['inputs']['created_epoch'] + 3601):
+            result = self.execute(path)
+        self.assertEqual(result['selected_rows_verified'], 2)
+        self.assertEqual(result['stop_reason'], 'new_write_window_expired')
+
+    def test_single_block_row_exception_does_not_enlarge_multiblock_batches(self):
+        with self.assertRaises(J.U.UpgradeError):
+            J.P.block_rows([{'block': 2, 'rows': 3501}])
+        self.assertEqual(J.P.block_rows([{'block': 2, 'rows': 3501}], row_limit=10000), 3501)
+        for manifest in ([{'block': 2, 'rows': 10001}], [{'block': 2, 'rows': 800}, {'block': 1, 'rows': 800}]):
+            with self.assertRaises(J.U.UpgradeError):
+                J.P.block_rows(manifest, row_limit=10000)
 
     def test_lean_batches_reduce_requests_without_changing_limits_or_recovery_slots(self):
         previous = self.prepare()

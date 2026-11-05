@@ -156,7 +156,7 @@ def observe(api, source, payload, target=None, verify_anchor=False, vacuum_query
     result['query_diagnostics'] = [row for row in queries if not target or
         row.get('pid') != target['pid'] or row.get('backend_started_at') != target['backend_start']]
     if verify_anchor:
-        P.require(J.observed(payload['anchor'], result['anchor']) == 'normalized', 'Normalization anchor no longer verifies')
+        P.require(J.observed(payload['anchor'], result['anchor'], row_limit=payload.get('single_block_rows', 1000)) == 'normalized', 'Normalization anchor no longer verifies')
         result.pop('anchor')  # Bounded raw rows remain private in the source journal.
     return result
 
@@ -357,7 +357,7 @@ def prepare(api, root, after_path, metrics_path, empty_path, profile=None):
     previous = J.load(after_path, manifest, check_resources=False)
     P.require(previous['phase'] == 'finished' and previous['pending'] is None and previous['rows'] > 0
               and (previous['stop_reason'] in ('vacuum_review_required', 'next_complete_batch_requires_vacuum_review')
-                   or (previous['inputs'].get('profile') == J.Q.CAPACITY_PROFILE
+                   or (J.Q.capacity_profile(previous['inputs'])
                        and previous['stop_reason'] in ('capacity_review_required', 'next_complete_batch_requires_capacity_review'))),
               'Vacuum qualification starts from a finished normalization review checkpoint')
     no_normalizer(api, manifest)

@@ -20,7 +20,8 @@ import v10_normalization_session as J
 import v10_vacuum as V
 
 
-def check(image, network, token, environment, sql, pg, directory, capacity=False):
+def check(image, network, token, environment, sql, pg, directory, capacity=False, boundary=False):
+    capacity = capacity or boundary
     sql("WITH seed AS MATERIALIZED (SELECT to_jsonb(t) AS row FROM internal_transactions t WHERE block_number=10 LIMIT 1), expanded AS MATERIALIZED (SELECT jsonb_populate_record(NULL::internal_transactions,seed.row||jsonb_build_object('block_number',100+g/100,'block_index',10000+g,'index',10000+g)) AS r FROM generate_series(0,2999) g CROSS JOIN seed) INSERT INTO internal_transactions SELECT (r).* FROM expanded")
     sql("INSERT INTO internal_transactions SELECT (jsonb_populate_record(NULL::internal_transactions,to_jsonb(t)||jsonb_build_object('block_number',200,'block_index',50000,'index',50000))).* FROM internal_transactions t WHERE block_number=10")
     sql('ANALYZE internal_transactions')
@@ -71,7 +72,8 @@ def check(image, network, token, environment, sql, pg, directory, capacity=False
          patch.dict(J.LIMITS, max_batches=1, max_rows=1000), \
          patch.dict(J.OBSERVATION_LIMITS, max_batches=1, max_rows=1000, maintenance_max_rows=1000), \
          patch.dict(J.REUSE_LIMITS, max_batches=1, max_rows=1000), \
-         patch.dict(J.CAPACITY_LIMITS, max_batches=2, max_rows=2000), \
+         patch.dict(J.CAPACITY_LIMITS, max_batches=10 if boundary else 2, max_rows=6000 if boundary else 2000), \
+         patch.dict(J.BOUNDARY_LIMITS, {**J.CAPACITY_LIMITS, 'single_block_rows': 10000}, clear=True), \
          patch.object(J.Q, 'CAPACITY_MIN_REUSE_ROWS', 1000), contextlib.redirect_stdout(io.StringIO()):
         pilot = J.P.prepare(api, ROOT, directory / 'upgrade.json', 200, 1)
         pilot_path = Path(pilot['state'])
@@ -148,6 +150,9 @@ def check(image, network, token, environment, sql, pg, directory, capacity=False
             # maintenance origin. The old reuse grant and parent stay frozen.
             sql("WITH seed AS MATERIALIZED (SELECT to_jsonb(t) AS row FROM internal_transactions t WHERE block_number=10 LIMIT 1), expanded AS MATERIALIZED (SELECT jsonb_populate_record(NULL::internal_transactions,seed.row||jsonb_build_object('block_number',80+g/100,'block_index',90000+g,'index',90000+g)) AS r FROM generate_series(0,1999) g CROSS JOIN seed) INSERT INTO internal_transactions SELECT (r).* FROM expanded")
             sql('ANALYZE internal_transactions')
+            if boundary:
+                sql("INSERT INTO internal_transactions SELECT (jsonb_populate_record(NULL::internal_transactions,to_jsonb(t)||jsonb_build_object('block_number',94,'block_index',300000+g,'index',300000+g))).* FROM (SELECT * FROM internal_transactions WHERE block_number=10 LIMIT 1) t CROSS JOIN generate_series(0,3400) g")
+                sql('ANALYZE internal_transactions')
             reuse_bytes = J.U.private(reuse_path)
             phase = J.prepare(api, ROOT, reuse_path, after_session=True, profile=J.Q.CAPACITY_PROFILE)
             phase_path = Path(phase['state'])
@@ -156,17 +161,58 @@ def check(image, network, token, environment, sql, pg, directory, capacity=False
             assert phase['reuse_review']['cumulative_space_limit_bytes'] == 10 * 1024**3
             capacity_reservation = J.U.private(reuse_path.parent / 'normalization-capacity.json')
             writes[0] = 0
-            with patch.object(J.Client, 'request', lose_commit_reply):
-                try:
-                    J.execute(api, ROOT, phase_path, manifest)
-                    raise AssertionError('capacity lost commit reply was not injected')
-                except J.U.UpgradeError:
-                    pass
-                pending = J.load(phase_path, manifest)
-                assert pending['cursor'] == 100 and pending['pending'] is not None
-                final = J.execute(api, ROOT, phase_path, manifest)
-            assert writes[0] == 1 and final['selected_rows_verified'] == 1000
-            assert final['maintenance_selected_rows'] == 3000 and final['next_before_block'] == 90
+            if boundary:
+                stopped = J.execute(api, ROOT, phase_path, manifest)
+                assert stopped['stop_reason'] == 'oversized_boundary_block'
+                assert stopped['selected_rows_verified'] == 500 and stopped['next_before_block'] == 95
+                phase_before = J.U.private(phase_path)
+                continued = J.prepare(api, ROOT, phase_path, after_session=True, profile=J.Q.BOUNDARY_PROFILE)
+                continued_path = Path(continued['state'])
+                assert continued['inherited_phase_rows'] == 500
+                assert continued['next_sample']['selected_rows'] == 3501
+                assert continued['next_sample']['block_rows'] == [{'block': 94, 'rows': 3501}]
+                continued_state = J.load(continued_path, manifest)
+                assert continued_state['inputs']['created_epoch'] == J.load(phase_path, manifest)['inputs']['created_epoch']
+                with patch.object(J.Client, 'request', lose_commit_reply):
+                    try:
+                        J.execute(api, ROOT, continued_path, manifest)
+                        raise AssertionError('large-block lost reply was not injected')
+                    except J.U.UpgradeError:
+                        pass
+                    assert J.load(continued_path, manifest)['rows'] == 500
+                    final = J.execute(api, ROOT, continued_path, manifest)
+                assert writes[0] == 1 and final['selected_rows_verified'] == 4001
+                assert final['next_before_block'] == 94 and not final['pending_transaction']
+                assert final['charged_chunk_wal_bytes'] == 8 * 1024**3
+                assert not final['wal_measurements_complete']
+                assert J.U.private(phase_path) == phase_before
+                assert sql('SELECT count(*) FROM internal_transactions WHERE block_number=94 AND trace_address IS NOT NULL').strip() == '0'
+                with J.Client(api, continued_path, continued_state['inputs'], read_only=True) as client:
+                    assert client.request('sample', {'before_block': 94})['selected_rows'] <= 1000
+                    sql("INSERT INTO internal_transactions SELECT (jsonb_populate_record(NULL::internal_transactions,to_jsonb(t)||jsonb_build_object('block_number',93,'block_index',400000+g,'index',400000+g))).* FROM (SELECT * FROM internal_transactions WHERE block_number=10 LIMIT 1) t CROSS JOIN generate_series(0,9900) g")
+                    blocked = client.request('sample', {'before_block': 94})
+                    assert blocked['selected_rows'] == 0 and blocked['excluded_boundary_block'] == 93
+                checkpoint = J.load(continued_path, manifest)
+                assert checkpoint['cursor'] == 94
+                window = V.load(vacuum_path)
+                observed = V.observe(api, V.observer_source(ROOT),
+                    {**window['inputs']['payload'], 'single_block_rows': 10000, 'anchor': J.target(checkpoint['last'])},
+                    window['target'], verify_anchor=True, runtime=runtime)
+                assert observed['runtime_holds_verified'] and 'anchor' not in observed
+            else:
+                with patch.object(J.Client, 'request', lose_commit_reply):
+                    try:
+                        J.execute(api, ROOT, phase_path, manifest)
+                        raise AssertionError('capacity lost commit reply was not injected')
+                    except J.U.UpgradeError:
+                        pass
+                    pending = J.load(phase_path, manifest)
+                    assert pending['cursor'] == 100 and pending['pending'] is not None
+                    final = J.execute(api, ROOT, phase_path, manifest)
+            assert writes[0] == 1
+            if not boundary:
+                assert final['selected_rows_verified'] == 1000
+                assert final['maintenance_selected_rows'] == 3000 and final['next_before_block'] == 90
             assert final['charged_chunk_wal_bytes'] == 8 * 1024**3
             assert final['stop_reason'] == 'next_batch_wal_reserve_reached'
             assert not final['pending_transaction'] and not final['wal_measurements_complete']
@@ -183,6 +229,7 @@ def check(image, network, token, environment, sql, pg, directory, capacity=False
             'lost_commit_reconciled_without_second_update': True, 'original_baseline_and_rows_preserved': True,
             'post_vacuum_deltas_recorded': True, 'sustained_run_enabled': False,
             'capacity_profile_checked': capacity,
+            'large_single_block_continuation_checked': boundary,
             'host_runtime_health_stubbed': True, 'live_services_accessed': False}
 
 

@@ -13,6 +13,10 @@ import v10_upgrade as U
 
 PROFILE = 'reuse-v1'
 CAPACITY_PROFILE = 'capacity-v1'
+BOUNDARY_PROFILE = 'capacity-boundary-v1'
+BOUNDARY_FORMAT = 'blockscout-dev-v10-normalization-boundary-continuation-v1'
+PHASE_FIELDS = ('batches', 'rows', 'updated_rows', 'charged_wal_bytes', 'wal_measurements_complete',
+                'cursor', 'last', 'last_sha256', 'recent', 'checkpoint_hash', 'timing_totals')
 CAPACITY_FORMAT = 'blockscout-dev-v10-normalization-capacity-review-v1'
 CAPACITY_MIN_REUSE_ROWS = 200000
 FORMAT = 'blockscout-dev-v10-normalization-reuse-review-v1'
@@ -101,11 +105,14 @@ def validate_review(review):
 def validate_inputs(inputs):
     review = inputs.get('reuse_review')
     capacity = inputs.get('capacity_review')
+    boundary = inputs.get('boundary_review')
     if not reviewed_profile(inputs):
-        P.require(review is None and capacity is None, 'A maintenance review requires its reviewed profile')
+        P.require(review is None and capacity is None and boundary is None, 'A maintenance review requires its reviewed profile')
         return
     P.require(review is not None, 'The reuse profile requires a completed vacuum review')
     validate_review(review)
+    P.require(inputs['payload'].get('single_block_rows') == (10000 if inputs['profile'] == BOUNDARY_PROFILE else None),
+              'Frozen single-block exception changed')
     P.require(inputs['execution_profile'] == inputs['payload'].get('execution_profile') == 'lean-v1'
               and R.digest(R.encoded(inputs['maintenance_origin'])) == review['maintenance_origin_sha256']
               and inputs['space_before'] == inputs['maintenance_origin']['space_before']
@@ -115,7 +122,7 @@ def validate_inputs(inputs):
               and all(inputs['payload'][k] == v for k, v in review['database_anchor'].items()),
               'Reuse review differs from the frozen normalization checkpoint or runtime')
     if inputs['profile'] == PROFILE:
-        P.require(capacity is None and inputs['start_cursor'] == review['normalization_cursor']
+        P.require(capacity is None and boundary is None and inputs['start_cursor'] == review['normalization_cursor']
                   and inputs['maintenance_rows_before'] == review['maintenance_selected_rows']
                   and inputs['start_parent'] == review['normalization_state']
                   and inputs['start_parent_sha256'] == review['normalization_state_sha256'],
@@ -124,13 +131,63 @@ def validate_inputs(inputs):
         P.require(capacity is not None, 'The capacity profile requires a completed reuse review')
         validate_capacity_review(capacity, review)
         P.require(inputs['start_cursor'] == capacity['cursor']
-                  and inputs['maintenance_rows_before'] == capacity['maintenance_selected_rows']
-                  and inputs['start_parent'] == capacity['state']
-                  and inputs['start_parent_sha256'] == capacity['state_sha256'], 'Capacity phase accounting changed')
+                  and inputs['maintenance_rows_before'] == capacity['maintenance_selected_rows'], 'Capacity phase accounting changed')
+        if inputs['profile'] == BOUNDARY_PROFILE:
+            P.require(boundary is not None and boundary['format'] == BOUNDARY_FORMAT
+                      and inputs['start_parent'] == boundary['state']
+                      and inputs['start_parent_sha256'] == boundary['state_sha256']
+                      and inputs['created_epoch'] == boundary['created_epoch']
+                      and inputs['limits'] == {**boundary['parent_limits'], 'single_block_rows': 10000}
+                      and boundary['capacity_review_sha256'] == R.digest(R.encoded(capacity))
+                      and boundary['seed']['wal_measurements_complete'] is True,
+                      'Boundary continuation changed the original phase budgets or proof')
+        else:
+            P.require(boundary is None and inputs['start_parent'] == capacity['state']
+                      and inputs['start_parent_sha256'] == capacity['state_sha256'], 'Capacity parent changed')
 
 
 def reviewed_profile(inputs):
-    return inputs.get('profile') in (PROFILE, CAPACITY_PROFILE)
+    return inputs.get('profile') in (PROFILE, CAPACITY_PROFILE, BOUNDARY_PROFILE)
+
+
+def capacity_profile(inputs):
+    return inputs.get('profile') in (CAPACITY_PROFILE, BOUNDARY_PROFILE)
+
+
+def prepare_boundary_review(api, path, previous, manifest):
+    import v10_normalization_session as J
+    import v10_vacuum as V
+    P.require(previous['inputs'].get('profile') == CAPACITY_PROFILE and previous['phase'] == 'finished'
+              and previous['stop_reason'] == 'oversized_boundary_block' and previous['pending'] is None
+              and previous['rows'] > 0 and previous['wal_measurements_complete'] is True,
+              'Boundary continuation requires a measured capacity stop at an oversized block')
+    P.require(J.limit_reason(previous) is None, 'Original capacity window or budget expired; retain its checkpoint for review')
+    P.require(not (path.parent / 'normalization-boundary.json').exists(),
+              'This capacity checkpoint already reserved a boundary continuation')
+    for directory in J.BASE.iterdir():
+        other = J.load(directory / 'state.json', manifest, check_resources=False)
+        saved = other['inputs'].get('boundary_review')
+        P.require(not saved or saved['inputs_sha256'] != previous['inputs_sha256'],
+                  'This capacity checkpoint already reserved a boundary continuation')
+    V.no_normalizer(api, manifest)
+    verify_holds(api)
+    return {'format': BOUNDARY_FORMAT, 'state': str(path), 'state_sha256': R.digest(U.private(path)),
+            'inputs_sha256': previous['inputs_sha256'], 'created_epoch': previous['inputs']['created_epoch'],
+            'parent_limits': previous['inputs']['limits'], 'phase_resources_before': previous['resources_before'],
+            'capacity_review_sha256': R.digest(R.encoded(previous['inputs']['capacity_review'])),
+            'seed': {k: previous[k] for k in PHASE_FIELDS}}
+
+
+def validate_boundary_state(state):
+    review = state['inputs'].get('boundary_review')
+    if review is None:
+        return
+    seed = review['seed']
+    P.require(all(state[k] >= seed[k] for k in ('batches', 'rows', 'charged_wal_bytes'))
+              and state['cursor'] <= seed['cursor']
+              and (state['updated_rows'] is None or state['updated_rows'] >= seed['updated_rows'])
+              and all(state['timing_totals'][k] >= v for k, v in seed['timing_totals'].items()),
+              'Boundary continuation rewound consumed phase budgets')
 
 
 def validate_capacity_review(capacity, vacuum_review):
@@ -260,6 +317,12 @@ def reserve_review(review, session_path, inputs_sha256):
 def reserve_capacity(capacity, session_path, inputs_sha256):
     reserve(Path(capacity['state']), capacity['state_sha256'], 'normalization-capacity.json', session_path,
             {'format': CAPACITY_FORMAT, 'parent_inputs_sha256': capacity['inputs_sha256'],
+             'state': str(session_path), 'inputs_sha256': inputs_sha256})
+
+
+def reserve_boundary(boundary, session_path, inputs_sha256):
+    reserve(Path(boundary['state']), boundary['state_sha256'], 'normalization-boundary.json', session_path,
+            {'format': BOUNDARY_FORMAT, 'parent_inputs_sha256': boundary['inputs_sha256'],
              'state': str(session_path), 'inputs_sha256': inputs_sha256})
 
 
