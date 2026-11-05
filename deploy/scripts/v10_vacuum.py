@@ -355,10 +355,15 @@ def prepare(api, root, after_path, metrics_path, empty_path, profile=None):
     limits = INDEX_CLEANUP_LIMITS if profile else LIMITS
     manifest, _, _ = api.configuration(root, 'dev')
     previous = J.load(after_path, manifest, check_resources=False)
+    measured_capacity_expiry = (J.Q.capacity_profile(previous['inputs'])
+        and previous['stop_reason'] == 'new_write_window_expired'
+        and previous['rows'] >= 200000 and previous.get('wal_measurements_complete') is True
+        and type(previous.get('updated_rows')) is int and 200000 <= previous['updated_rows'] <= previous['rows'])
     P.require(previous['phase'] == 'finished' and previous['pending'] is None and previous['rows'] > 0
               and (previous['stop_reason'] in ('vacuum_review_required', 'next_complete_batch_requires_vacuum_review')
                    or (J.Q.capacity_profile(previous['inputs'])
-                       and previous['stop_reason'] in ('capacity_review_required', 'next_complete_batch_requires_capacity_review'))),
+                       and previous['stop_reason'] in ('capacity_review_required', 'next_complete_batch_requires_capacity_review'))
+                   or measured_capacity_expiry),
               'Vacuum qualification starts from a finished normalization review checkpoint')
     no_normalizer(api, manifest)
     ancestor = previous['inputs']

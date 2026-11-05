@@ -112,6 +112,38 @@ class VacuumTests(unittest.TestCase):
                     self.prepare()
                 self.parent[key] = original
 
+    def test_expired_measured_capacity_can_prepare_vacuum_without_reopening_normalization(self):
+        self.parent.update(stop_reason='new_write_window_expired', rows=804023, updated_rows=804023,
+                           wal_measurements_complete=True, cursor=131776861)
+        self.parent['inputs'].update(profile=V.J.Q.BOUNDARY_PROFILE, maintenance_rows_before=492015)
+        before = deepcopy(self.parent)
+        path = self.prepare(V.FAST_PROFILE)
+        state = V.load(path)
+        self.assertEqual(state['inputs']['maintenance_selected_rows'], 1296038)
+        self.assertEqual(state['inputs']['normalization_cursor'], 131776861)
+        self.assertEqual(state['inputs']['maintenance_origin'], before['inputs']['maintenance_origin'])
+        self.assertEqual(state['inputs']['limits'], V.INDEX_CLEANUP_LIMITS)
+        self.assertFalse(V.public(path, state)['normalization_gate_reopened'])
+        self.assertEqual(self.parent, before)
+        self.assertEqual(self.path.read_text(), '{}')
+
+    def test_expiry_admission_requires_a_measured_capacity_phase(self):
+        original = deepcopy(self.parent)
+        for mutation in ({'wal_measurements_complete': False}, {'updated_rows': None},
+                         {'updated_rows': 199999}, {'rows': 199999}, {'stop_reason': 'runtime_failed'},
+                         {'profile': 'pilot-v1'}, {'profile': V.J.Q.PROFILE}):
+            with self.subTest(mutation=mutation):
+                self.parent = deepcopy(original)
+                self.parent.update(stop_reason='new_write_window_expired', rows=804023, updated_rows=804023,
+                                   wal_measurements_complete=True)
+                self.parent['inputs']['profile'] = V.J.Q.BOUNDARY_PROFILE
+                if 'profile' in mutation:
+                    self.parent['inputs']['profile'] = mutation['profile']
+                else:
+                    self.parent.update(mutation)
+                with self.assertRaises(V.U.UpgradeError):
+                    self.prepare(V.FAST_PROFILE)
+
     def test_explicit_four_hour_window_preserves_other_limits_and_reconciles_once(self):
         path = self.requested('completed', profile='index-cleanup-v1')
         state = V.load(path)
