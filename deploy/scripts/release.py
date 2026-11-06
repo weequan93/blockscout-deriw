@@ -91,6 +91,7 @@ def active_context(api,backend,manifest):
 def active_model(api,model,context):
  if context is None:return model
  if context.get('upgrade'):return api.load_tool('v10_upgrade').active_model(api,model,context)
+ if context['state'].get('bridge_patch'):return api.load_tool('v10_bridge_deploy').active_model(api,model,context)
  model=deepcopy(model)
  for name,service in model['services'].items():
   freeze_null_environment(service,context['state']['before'][name])

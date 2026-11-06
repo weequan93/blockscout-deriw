@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[2]
 BASE = Path('/data/blockscout-dev-private/v10-native-normalization')
 FORMAT = 'blockscout-dev-v10-native-normalization-v1'
 UNIT = 'blockscout-v10-native-normalization.service'
+SYSTEMD_DIRECTORY = Path('/etc/systemd/system')
 MIN_FREE = 200 * 1024**3
 PAUSE_FREE = 210 * 1024**3
 RESUME_FREE = 220 * 1024**3
@@ -94,7 +95,35 @@ def load(path):
     J.P.require(state['phase'] in ('prepared', 'launch_requested', 'running', 'waiting', 'paused', *TERMINAL)
                 and type(state['batch_blocks']) is int and 1 <= state['batch_blocks'] <= 1000,
                 'Invalid native job checkpoint')
+    runtime_binding(path, state)
     return state
+
+
+def runtime_binding(path, state):
+    """Accept a new deployment only through its immutable, verified handoff."""
+    filename = state.get('runtime_binding_file')
+    if filename is None:
+        J.P.require('runtime_binding_sha256' not in state, 'Incomplete runtime binding')
+        return None
+    J.P.require(filename == 'bridge-runtime-binding.json', 'Unexpected runtime binding file')
+    raw = U.private(path.parent / filename)
+    binding = json.loads(raw)
+    J.P.require(R.digest(raw) == state.get('runtime_binding_sha256')
+                and binding.get('format') == 'blockscout-native-bridge-binding-v1'
+                and binding.get('native_inputs_sha256') == state['inputs_sha256']
+                and binding.get('native_worker_script_sha256') == state['inputs']['script_sha256'],
+                'Native runtime binding changed')
+    release_path = Path(binding['release_state'])
+    manifest, _, _ = D.configuration(ROOT, 'dev')
+    release = R.load_state(D, release_path, manifest)
+    J.P.require(R.digest(U.private(release_path)) == binding['release_state_sha256']
+                and release.get('bridge_patch') is True and release['status'] == 'active'
+                and release['normalization_state'] == str(path)
+                and release['candidate_source_commit'] == binding['tool_source_commit']
+                and release['source_root'] == binding['source_root']
+                and binding['runtime_before']['backend']['Image'] == release['image_ids']['forward']['backend'],
+                'Native binding is not a verified bridge deployment')
+    return {**binding, 'release': release}
 
 
 def public(path, state):
@@ -112,6 +141,7 @@ def public(path, state):
             'native_worker': state.get('worker'), 'batch_blocks': state['batch_blocks'],
             'database_checkpoint_persisted_by': 'Explorer.Migrator.FillingMigration',
             'normalization_complete': state['phase'] == 'completed',
+            'deployment_handoff_applied': state.get('runtime_binding_file') is not None,
             'heavy_index_and_primary_key_migrations_started': False,
             'note': 'Native batching and database checkpoints. Automatic vacuum is configured only for internal_transactions. Other migrators remain held.'}
 
@@ -303,11 +333,13 @@ def run(api, root, path):
     if state['phase'] in TERMINAL:
         return public(path, state)
     inputs = state['inputs']
-    J.P.require(B.clean_source(api, root) == (inputs['tool_source_commit'], '10.2.6'), 'Use native job creation commit')
+    binding = runtime_binding(path, state)
+    context = binding or inputs
+    J.P.require(B.clean_source(api, root) == (context['tool_source_commit'], '10.2.6'), 'Use native job creation/deployment commit')
     reserve_sources(path, state)
     manifest, _, _ = api.configuration(root, 'dev')
     upgrade_path = Path(inputs['upgrade_state'])
-    upgrade = U.load_state(api, upgrade_path, manifest)
+    upgrade = None if binding else U.load_state(api, upgrade_path, manifest)
     last_health = 0
     health = {'status': 'needs_attention'}
     try:
@@ -318,12 +350,16 @@ def run(api, root, path):
                 save(path, state, 'waiting', 'runtime_observation_unavailable')
                 time.sleep(POLL_SECONDS)
                 continue
-            api.ensure_stable(inputs['runtime_before'], runtime, 'Runtime changed; native cursor retained')
+            api.ensure_stable(context['runtime_before'], runtime, 'Runtime changed; native cursor retained')
             Q.verify_holds(api)
             try:
                 if time.monotonic() - last_health >= 15:
                     started = time.monotonic()
-                    health = U.verify(api, upgrade_path, upgrade, manifest, deadline=started + 25)
+                    if binding:
+                        health = R.verify(DeadlineAPI(api, started + 25), B, V.C, manifest,
+                                          Path(binding['release_state']), binding['release'], 'forward')
+                    else:
+                        health = U.verify(api, upgrade_path, upgrade, manifest, deadline=started + 25)
                     last_health = started
                     state['health'] = health
                 name = json.dumps(inputs['payload']['application_name']).replace('#{', r'\#{')
@@ -421,27 +457,60 @@ def run(api, root, path):
         return public(path, state)
 
 
-def service_text(path):
+class DeadlineAPI:
+    def __init__(self, api, deadline):
+        self.api, self.deadline = api, deadline
+
+    def __getattr__(self, name):
+        return getattr(self.api, name)
+
+    def run(self, command, timeout=30, **kwargs):
+        remaining = self.deadline - time.monotonic()
+        J.P.require(remaining > 0, 'Runtime verification deadline reached')
+        return self.api.run(command, timeout=min(timeout, remaining), **kwargs)
+
+
+def render_service(path, root, executable):
     J.P.require(str(path).startswith('/data/') and not re.search(r'[\s"\\%]', str(path)), 'Unexpected service state path')
-    inputs = load(path)['inputs']
-    J.P.require(inputs['source_root'] == str(ROOT), 'Use native job source directory')
-    executable = Path(inputs['python_executable'])
+    executable = Path(executable)
     J.P.require(executable.is_absolute() and not re.search(r'[\s"\\%]', str(executable))
-                and not re.search(r'[\s"\\%]', str(ROOT)), 'Unexpected service executable/source path')
+                and root.is_absolute() and not re.search(r'[\s"\\%]', str(root)), 'Unexpected service executable/source path')
     return ('[Unit]\nDescription=Blockscout native normalization\nAfter=docker.service\nRequires=docker.service\n'
-            'RequiresMountsFor=/data\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=' + str(ROOT) + '\n'
-            'ExecStart=' + str(executable) + ' -u ' + str(ROOT / 'deploy/scripts/v10_native_normalization.py') +
+            'RequiresMountsFor=/data\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=' + str(root) + '\n'
+            'ExecStart=' + str(executable) + ' -u ' + str(root / 'deploy/scripts/v10_native_normalization.py') +
             ' --resume --state ' + str(path) + '\nRestart=on-failure\nRestartSec=30\nRestartPreventExitStatus=2\n'
             'TimeoutStopSec=60\nKillMode=process\nUMask=0077\n\n[Install]\nWantedBy=multi-user.target\n')
 
 
+def service_text(path):
+    state = load(path)
+    context = runtime_binding(path, state) or state['inputs']
+    J.P.require(context['source_root'] == str(ROOT), 'Use native job source directory')
+    return render_service(path, ROOT, state['inputs']['python_executable'])
+
+
 def install_service(api, path):
     state = load(path)
-    J.P.require(B.clean_source(api, ROOT) == (state['inputs']['tool_source_commit'], '10.2.6'), 'Use native job creation commit')
-    target = Path('/etc/systemd/system') / UNIT
+    binding = runtime_binding(path, state)
+    context = binding or state['inputs']
+    J.P.require(B.clean_source(api, ROOT) == (context['tool_source_commit'], '10.2.6'), 'Use native job creation/deployment commit')
+    target = SYSTEMD_DIRECTORY / UNIT
     data = service_text(path).encode()
     if target.exists():
-        J.P.require(not target.is_symlink() and target.read_bytes() == data, 'Another native service definition exists')
+        J.P.require(not target.is_symlink(), 'Native service cannot be a symlink')
+        previous = target.read_bytes()
+        if previous != data:
+            inputs = state['inputs']
+            expected = render_service(path, Path(inputs['source_root']), inputs['python_executable']).encode()
+            J.P.require(binding is not None and previous == expected,
+                        'Another native service definition exists')
+            backup = path.parent / 'service-before-bridge.private'
+            if not backup.exists():
+                R.write_new(backup, previous)
+            temporary = target.parent / ('.native-' + uuid.uuid4().hex + '.tmp')
+            R.write_new(temporary, data)
+            os.chmod(temporary, 0o644)
+            os.replace(temporary, target)
     else:
         R.write_new(target, data)
         os.chmod(target, 0o644)
@@ -451,7 +520,7 @@ def install_service(api, path):
 
 
 def require_service(path):
-    target = Path('/etc/systemd/system') / UNIT
+    target = SYSTEMD_DIRECTORY / UNIT
     J.P.require(target.is_file() and not target.is_symlink()
                 and target.read_text() == service_text(path), 'Native service belongs to another job')
 
