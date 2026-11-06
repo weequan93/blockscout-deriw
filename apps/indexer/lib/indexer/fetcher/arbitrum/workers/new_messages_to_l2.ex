@@ -217,12 +217,10 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewMessagesToL2 do
     else
       # The rollup init block is reached, flag that next iteration of
       # historical messages discovery is not needed.
-      updated_state =
-        state
-        |> ArbitrumHelper.update_fetcher_task_data(:check_historical, %{
-          end_block: l1_rollup_init_block - 1
-        })
-        |> set_historical_completion(true)
+      # Keep the existing boundary when known messages predate the configured
+      # init block. Raising it here can put it ahead of check_new.start_block,
+      # making every subsequent live discovery range empty.
+      updated_state = set_historical_completion(state, true)
 
       # Stop scheduling historical checks because the rollup init block was reached.
       {:ok, updated_state}
