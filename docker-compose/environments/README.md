@@ -1,5 +1,10 @@
 # Versioned environment configuration
 
+**For the deployed dev v10 stack, use the [current deployment and operations
+guide](../../docs/deployment/dev-v10.md).** The v9 capture/adoption workflow below
+preserves the original baseline. Its image pins are not a new v10 deployment
+selection; do not overwrite the active release or pinned native controller.
+
 The dev profile now records the public effective settings that previously lived
 in eight server repair layers. It is an adoption candidate, not an already
 verified replacement for the running stack. The old stack continues running.

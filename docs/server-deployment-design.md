@@ -1,5 +1,9 @@
 # Server deployments for dev, test and prod
 
+**Current dev instructions:** [dev v10 deployment and operations](deployment/dev-v10.md).
+The design and v9 adoption commands below are historical context, not the entry
+point for the deployed v10 backend/native job. Test/prod remain unconfigured.
+
 Status: partially implemented, 3 November 2026. The versioned dev adoption
 profile and `./deploy.sh dev capture-private`, `plan`, candidate `build`,
 read-only `deploy-check`, targeted `deploy`, `status` and `rollback` now exist;
