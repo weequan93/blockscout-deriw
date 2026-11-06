@@ -494,10 +494,13 @@ defmodule EthereumJSONRPC do
   Fetches internal transactions from variant API.
   """
   def fetch_internal_transactions(params_list, json_rpc_named_arguments) when is_list(params_list) do
-    Keyword.fetch!(json_rpc_named_arguments, :variant).fetch_internal_transactions(
-      params_list,
-      json_rpc_named_arguments
-    )
+    case traceable_transactions(params_list) do
+      [] ->
+        {:ok, []}
+
+      params ->
+        Keyword.fetch!(json_rpc_named_arguments, :variant).fetch_internal_transactions(params, json_rpc_named_arguments)
+    end
   end
 
   @doc """
@@ -516,10 +519,18 @@ defmodule EthereumJSONRPC do
   Retrieves traces from variant API.
   """
   def fetch_first_trace(params_list, json_rpc_named_arguments) when is_list(params_list) do
-    Keyword.fetch!(json_rpc_named_arguments, :variant).fetch_first_trace(
-      params_list,
-      json_rpc_named_arguments
-    )
+    case traceable_transactions(params_list) do
+      [] -> :ignore
+      params -> Keyword.fetch!(json_rpc_named_arguments, :variant).fetch_first_trace(params, json_rpc_named_arguments)
+    end
+  end
+
+  # Apply the same history boundary to background and on-demand transaction traces.
+  # Pending transactions have no historical prestate to trace.
+  defp traceable_transactions(params_list) do
+    params_list
+    |> Enum.filter(&is_integer(&1.block_number))
+    |> RangesHelper.filter_traceable_block_numbers()
   end
 
   @doc """
@@ -959,4 +970,28 @@ defmodule EthereumJSONRPC do
   defp address_correct?(_address) do
     false
   end
+
+  @doc """
+  Determines whether a given error represents a contract execution failure.
+
+  This function checks if an error indicates a contract failure by examining
+  specific error patterns. It supports both map-based and tuple-based error
+  formats. The function identifies two types of contract failures:
+  1. Errors with the atom `:unable_to_decode`
+  2. Binary errors containing the pattern "execution" followed by "revert"
+
+  ## Parameters
+  - `error`: The error to check. Can be a map with an `:error` key, a tuple
+    `{:error, reason}`, or any other value.
+
+  ## Returns
+  - `true` if the error represents a contract failure
+  - `false` otherwise
+  """
+  @spec contract_failure?(any()) :: boolean()
+  def contract_failure?(%{error: :unable_to_decode}), do: true
+  def contract_failure?(%{error: error}) when is_binary(error), do: String.match?(error, ~r/execution.*revert/)
+  def contract_failure?({:error, :unable_to_decode}), do: true
+  def contract_failure?({:error, error}) when is_binary(error), do: String.match?(error, ~r/execution.*revert/)
+  def contract_failure?(_), do: false
 end

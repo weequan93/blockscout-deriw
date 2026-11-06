@@ -1,0 +1,16 @@
+{
+  "status": "source_consolidated",
+  "read_only": true,
+  "production_ref": "origin/deriw-prod",
+  "production_commit": "ddfedcadd25e07367c6133d10a44e7fde4d3898e",
+  "release_commit": "875082f41d79ef72cd9dd9a4e771953a181c6cf2",
+  "merge_base": "ddfedcadd25e07367c6133d10a44e7fde4d3898e",
+  "production_commits_missing_from_release": 0,
+  "custom_production_commits": 29,
+  "unclassified_custom_commits": [],
+  "custom_changes_guide": "docs/upgrades/v10.2.6-custom-changes.md",
+  "note": "Local fetched refs only. Retained, adapted, replaced and reverted changes are classified in the guide.",
+  "reviewed_date": "2026-11-06",
+  "upstream_v9_0_1": "1106bfa688deea0a3c26750949fad9e5fedf65be",
+  "application_deployment_changed": false
+}

@@ -79,7 +79,7 @@ defmodule Indexer.Fetcher.ContractCode do
   def child_spec([init_options, gen_server_options]) do
     {state, mergeable_init_options} = Keyword.pop(init_options, :json_rpc_named_arguments)
 
-    unless state do
+    if !state do
       raise ArgumentError,
             ":json_rpc_named_arguments must be provided to `#{__MODULE__}.child_spec " <>
               "to allow for json_rpc calls when running."
@@ -87,6 +87,7 @@ defmodule Indexer.Fetcher.ContractCode do
 
     merged_init_opts =
       @defaults
+      |> Keyword.put(:max_concurrency, Application.get_env(:indexer, :contract_code_concurrency, @max_concurrency))
       |> Keyword.merge(mergeable_init_options)
       |> Keyword.put(:state, state)
 
@@ -137,6 +138,13 @@ defmodule Indexer.Fetcher.ContractCode do
           | {:variant, atom()}
         ]) :: :ok | {:retry, any()}
   def run(entries, json_rpc_named_arguments) do
+    case RangesHelper.filter_traceable_block_numbers(entries) do
+      [] -> :ok
+      eligible -> do_run(eligible, json_rpc_named_arguments)
+    end
+  end
+
+  defp do_run(entries, json_rpc_named_arguments) do
     Logger.debug("fetching created_contract_code for transactions")
 
     {succeeded, failed} =
@@ -171,6 +179,7 @@ defmodule Indexer.Fetcher.ContractCode do
           error_count: Enum.count(entries)
         )
 
+        Process.sleep(Application.get_env(:indexer, :contract_code_retry_delay, 5_000))
         {:retry, entries}
     end
   end
@@ -194,6 +203,9 @@ defmodule Indexer.Fetcher.ContractCode do
       {:ok, %{params_list: params, errors: []}} ->
         code_addresses_params = Addresses.extract_addresses(%{codes: params})
         {:ok, code_addresses_params}
+
+      {:ok, %{errors: errors}} ->
+        {:error, errors}
 
       error ->
         error

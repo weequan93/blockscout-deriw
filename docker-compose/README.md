@@ -1,5 +1,11 @@
 # Docker-compose configuration
 
+For the captured dev chain `18417507517`, use the
+[versioned environment configuration](environments/README.md) to collect private
+server inputs and compare the proposed profile against the existing repair
+layers. The comparison does not deploy changes. The generic commands below do
+not select that dev profile automatically.
+
 Runs Blockscout locally in Docker containers with [docker-compose](https://github.com/docker/compose).
 
 ## Prerequisites
@@ -66,6 +72,12 @@ You can adjust BlockScout environment variables:
 - for stats service in `./envs/common-stats.env`
 - for visualizer in `./envs/common-visualizer.env`
 - for user-ops-indexer in `./envs/common-user-ops-indexer.env`
+
+Machine-specific backend overrides belong in `./envs/common-blockscout.env.local`. This file is ignored by Git and loaded after `common-blockscout.env`, so its values take precedence and are not changed by `git pull`. The optional env-file syntax requires Docker Compose v2.24 or newer.
+
+Machine-specific Compose service settings belong in `./docker-compose.override.yml`, which is ignored by Git. Compose loads this file automatically when `docker compose up` is run from this directory without `-f`. When specifying files explicitly, include both files in order: `docker compose -f docker-compose.yml -f docker-compose.override.yml up -d`.
+
+Machine-specific values used for Compose interpolation, such as `DOCKER_TAG`, `DOCKER_REPO`, and host port variables, belong in `./.env`, which is also ignored by Git.
 
 Descriptions of the ENVs are available
 

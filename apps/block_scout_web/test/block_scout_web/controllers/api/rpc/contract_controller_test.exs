@@ -471,7 +471,8 @@ defmodule BlockScoutWeb.API.RPC.ContractControllerTest do
         }
       ]
 
-      TestHelper.get_all_proxies_implementation_zero_addresses()
+      EthereumJSONRPC.Mox
+      |> TestHelper.mock_generic_proxy_requests()
 
       assert response =
                conn
@@ -736,7 +737,8 @@ defmodule BlockScoutWeb.API.RPC.ContractControllerTest do
         }
       ]
 
-      TestHelper.get_all_proxies_implementation_zero_addresses()
+      EthereumJSONRPC.Mox
+      |> TestHelper.mock_generic_proxy_requests()
 
       assert response =
                conn
@@ -778,7 +780,6 @@ defmodule BlockScoutWeb.API.RPC.ContractControllerTest do
         created_contract_code: smart_contract_bytecode,
         block_number: transaction.block_number,
         block_hash: transaction.block_hash,
-        block_index: 0,
         transaction_index: transaction.index
       )
 
@@ -845,7 +846,8 @@ defmodule BlockScoutWeb.API.RPC.ContractControllerTest do
         }
       ]
 
-      TestHelper.get_all_proxies_implementation_zero_addresses()
+      EthereumJSONRPC.Mox
+      |> TestHelper.mock_generic_proxy_requests()
 
       assert response =
                conn
@@ -916,7 +918,8 @@ defmodule BlockScoutWeb.API.RPC.ContractControllerTest do
         "addressHash" => "0xf26594F585De4EB0Ae9De865d9053FEe02ac6eF1"
       }
 
-      TestHelper.get_all_proxies_implementation_zero_addresses()
+      EthereumJSONRPC.Mox
+      |> TestHelper.mock_generic_proxy_requests()
 
       conn
       |> get("/api", params)
@@ -1117,7 +1120,8 @@ defmodule BlockScoutWeb.API.RPC.ContractControllerTest do
           transaction: transaction,
           index: 1,
           block_hash: transaction.block_hash,
-          block_index: transaction.index
+          block_number: transaction.block_number,
+          transaction_index: transaction.index
         )
 
       address = internal_transaction.created_contract_address
@@ -1172,7 +1176,8 @@ defmodule BlockScoutWeb.API.RPC.ContractControllerTest do
         index: 0,
         created_contract_address: contract_address,
         block_hash: transaction.block_hash,
-        block_index: transaction.index
+        block_number: transaction.block_number,
+        transaction_index: transaction.index
       )
 
       assert %{
@@ -1316,7 +1321,7 @@ defmodule BlockScoutWeb.API.RPC.ContractControllerTest do
       }
     ]
     test "verify", %{conn: conn, params: params} do
-      proxy_contract_address = insert(:contract_address)
+      proxy_contract_address = insert(:contract_address, contract_code: "0xDEADBEEF5c60da1bDEADBEEF")
 
       insert(:smart_contract, address_hash: proxy_contract_address.hash, abi: @proxy_abi, contract_code_md5: "123")
 
@@ -1328,25 +1333,8 @@ defmodule BlockScoutWeb.API.RPC.ContractControllerTest do
         contract_code_md5: "123"
       )
 
-      implementation_contract_address_hash_string =
-        Base.encode16(implementation_contract_address.hash.bytes, case: :lower)
-
-      TestHelper.get_all_proxies_implementation_zero_addresses()
-
-      expect(
-        EthereumJSONRPC.Mox,
-        :json_rpc,
-        fn [%{id: id, method: _, params: [%{data: _, to: _}, _]}], _options ->
-          {:ok,
-           [
-             %{
-               id: id,
-               jsonrpc: "2.0",
-               result: "0x000000000000000000000000" <> implementation_contract_address_hash_string
-             }
-           ]}
-        end
-      )
+      EthereumJSONRPC.Mox
+      |> TestHelper.mock_generic_proxy_requests(basic_implementation: implementation_contract_address.hash)
 
       %{
         "message" => "OK",

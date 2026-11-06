@@ -159,6 +159,43 @@ defmodule Indexer.Fetcher.ContractCodeTest do
     end
   end
 
+  @tag :no_geth
+  @tag :no_nethermind
+  test "partial contract-code RPC errors retry without treating a struct as an address list", %{
+    json_rpc_named_arguments: json_rpc_named_arguments
+  } do
+    previous_delay = Application.get_env(:indexer, :contract_code_retry_delay)
+    Application.put_env(:indexer, :contract_code_retry_delay, 0)
+
+    on_exit(fn ->
+      if is_nil(previous_delay) do
+        Application.delete_env(:indexer, :contract_code_retry_delay)
+      else
+        Application.put_env(:indexer, :contract_code_retry_delay, previous_delay)
+      end
+    end)
+
+    entries = [
+      %{status: :ok, block_number: 37, created_contract_address_hash: "0x" <> String.duplicate("a", 40)},
+      %{status: :ok, block_number: 37, created_contract_address_hash: "0x" <> String.duplicate("b", 40)}
+    ]
+
+    expect(EthereumJSONRPC.Mox, :json_rpc, fn requests, _options ->
+      assert Enum.all?(requests, &(&1.method == "eth_getCode"))
+
+      {:ok,
+       Enum.map(requests, fn request ->
+         if hd(request.params) == hd(entries).created_contract_address_hash do
+           %{id: request.id, result: "0x6000"}
+         else
+           %{id: request.id, error: %{code: -32000, message: "historical state unavailable"}}
+         end
+       end)}
+    end)
+
+    assert {:retry, ^entries} = ContractCode.run(entries, json_rpc_named_arguments)
+  end
+
   defp wait(producer) do
     producer.()
   rescue

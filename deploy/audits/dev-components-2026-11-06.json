@@ -1,0 +1,140 @@
+{
+  "format": "blockscout-dev-component-audit-v1",
+  "observed_date": "2026-11-06",
+  "evidence": "Operator-supplied read-only live Docker image metadata and binary/package version probes; no component changes applied.",
+  "images": {
+    "backend": {
+      "image_id": "sha256:2dcc91c5274a0a2985721d68ca0ec6cb4a26e759360dcf752746feef1b825886",
+      "revision": "875082f41d79ef72cd9dd9a4e771953a181c6cf2",
+      "release": "10.2.6",
+      "created": "2026-11-06"
+    },
+    "db": {
+      "image_id": "sha256:1b92e7a80c021647bf70f5d3eb66066a998e4f5cf43c07bb9dc9f729782cf88e",
+      "revision": null,
+      "release": "15.18",
+      "created": "2026-05-19"
+    },
+    "db-init": {
+      "image_id": "sha256:1b92e7a80c021647bf70f5d3eb66066a998e4f5cf43c07bb9dc9f729782cf88e",
+      "revision": null,
+      "release": "15.18",
+      "created": "2026-05-19"
+    },
+    "frontend": {
+      "image_id": "sha256:4b49d1bbc0704f98bdf3fe4e6ca4181bf8bbc78d6e79870794a2dd5c8f8356e9",
+      "revision": null,
+      "release": null,
+      "created": "2026-07-09"
+    },
+    "nft_media_handler": {
+      "image_id": "sha256:56e1424518a81c3be86e0c607f34a3c5dc00599e635f1a0a96bcffd536c90b33",
+      "revision": "f8119a0a2f65593d184be66a57480660e3663b25",
+      "release": "10.2.6",
+      "created": "2026-11-04"
+    },
+    "proxy": {
+      "image_id": "sha256:5aca99593157f4ae539a5dec1092a0ad8762f8e2eb1789085a13a0f5622369f6",
+      "revision": null,
+      "release": "1.31.1",
+      "created": "2026-05-22"
+    },
+    "redis-db": {
+      "image_id": "sha256:09160599abd229764c0fb44cb6be640294e1d360a54b19985ab4843dcf2d90f1",
+      "revision": null,
+      "release": "8.8.0",
+      "created": "2026-05-26"
+    },
+    "sc-verifier": {
+      "image_id": "sha256:a7580f42b55c0aafad43a2acd979b60adddc1e9985a8cf01857179962f0fe063",
+      "revision": "9457af29b9f98a5f6ad0ee289f8a3255fa4cc7ed",
+      "release": "1.11.1",
+      "created": "2026-10-28"
+    },
+    "sig-provider": {
+      "image_id": "sha256:fd9e344b22022d25c853c447d7903b98ba118e1246218d6de6817c27d55b6f70",
+      "revision": "1aff234b419265f8bdd1d3dd1056219f733592b5",
+      "release": "1.1.4",
+      "created": "2026-09-22"
+    },
+    "stats": {
+      "image_id": "sha256:a618847070aa0d8256b99082de882f6c5fca7cd20721e04511ee0e1bb5d0b6b5",
+      "revision": "cd413c58c3469bdd442d0e7a0cebdaba79e641d5",
+      "release": "2.19.1",
+      "created": "2026-09-08"
+    },
+    "stats-db": {
+      "image_id": "sha256:1b92e7a80c021647bf70f5d3eb66066a998e4f5cf43c07bb9dc9f729782cf88e",
+      "revision": null,
+      "release": "15.18",
+      "created": "2026-05-19"
+    },
+    "stats-db-init": {
+      "image_id": "sha256:1b92e7a80c021647bf70f5d3eb66066a998e4f5cf43c07bb9dc9f729782cf88e",
+      "revision": null,
+      "release": "15.18",
+      "created": "2026-05-19"
+    },
+    "user-ops-indexer": {
+      "image_id": "sha256:d0ffe9c672d9c5cf1e035b2dd8e4baf9e9b28d3382822ea2d07e69a924562932",
+      "revision": "3c82877cd7ebc45360670a4fc0108923dfd059cc",
+      "release": "1.4.3",
+      "created": "2026-06-25"
+    },
+    "visualizer": {
+      "image_id": "sha256:ffce88a765b0466824175cc8fed6e6b31d682310a96933b98451aefdfffecdc7",
+      "revision": "acf11c8757f5c4cba1caddcfe6ea0ee7914f30ff",
+      "release": "0.2.1",
+      "created": "2024-07-17"
+    }
+  },
+  "frontend": {
+    "image": "quanquanah/blockscout-frontend:dev",
+    "package_version": "1.0.0",
+    "node": "22.15.0",
+    "next": "16.2.10",
+    "react": "19.1.0",
+    "upstream_frontend_release": null,
+    "source_revision": null
+  },
+  "recommendations": [
+    {
+      "component": "postgresql",
+      "observed": "15.18",
+      "candidate": "15.19",
+      "action": "plan_same_major_patch",
+      "source": "https://www.postgresql.org/docs/release/15.19/"
+    },
+    {
+      "component": "redis",
+      "observed": "8.8.0",
+      "candidate": "8.8.4",
+      "action": "plan_same_minor_patch",
+      "source": "https://github.com/redis/redis/releases/tag/8.8.4"
+    },
+    {
+      "component": "nginx",
+      "observed": "1.31.1",
+      "candidate": "1.31.8",
+      "action": "plan_mainline_patch",
+      "source": "https://nginx.org/news.html"
+    },
+    {
+      "component": "frontend_node",
+      "observed": "22.15.0",
+      "candidate": "22.23.4",
+      "action": "rebuild_custom_frontend_after_compatibility_review",
+      "source": "https://nodejs.org/dist/index.json"
+    }
+  ],
+  "rust_release_mapping": {
+    "method": "Exact OCI revision matched to official blockscout/blockscout-rs Git release tags using git ls-remote --tags, checked 2026-11-06. No version inferred from a mutable latest tag or Cargo package 0.1.0.",
+    "tags": {
+      "stats": "https://github.com/blockscout/blockscout-rs/tree/stats/v2.19.1",
+      "sc-verifier": "https://github.com/blockscout/blockscout-rs/tree/smart-contract-verifier/v1.11.1",
+      "sig-provider": "https://github.com/blockscout/blockscout-rs/tree/sig-provider/v1.1.4",
+      "user-ops-indexer": "https://github.com/blockscout/blockscout-rs/tree/user-ops-indexer/v1.4.3",
+      "visualizer": "https://github.com/blockscout/blockscout-rs/tree/visualizer/v0.2.1"
+    }
+  }
+}
