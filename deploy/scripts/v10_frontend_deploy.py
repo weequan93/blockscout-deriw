@@ -23,11 +23,12 @@ import v10_upgrade as U
 ROOT = Path(__file__).resolve().parents[2]
 BASE = Path('/data/blockscout-dev-private/frontend-releases')
 FORMAT = 'deriw-frontend-release-v1'
-REVISION = '8c7bfddd732365f6cc8963bf9d214ee69735eeca'
-VERSION = '2.7.2-deriw.3'
+REVISION = 'd30a3ebe40d6fb6a061a84afed74afe32c8a6abe'
+VERSION = '2.7.2-deriw.4'
 REVIEWED_RELEASES = {
     '27a4139d09ac57d975cc8c2bd4f1d804c8589f20': '2.7.2-deriw.1',
     '8fbbb5f6742ab474cbcdaded0beb23cbdd89e2dc': '2.7.2-deriw.2',
+    '8c7bfddd732365f6cc8963bf9d214ee69735eeca': '2.7.2-deriw.3',
     REVISION: VERSION,
 }
 BACKEND = '875082f41d79ef72cd9dd9a4e771953a181c6cf2'

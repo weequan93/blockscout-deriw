@@ -2,8 +2,8 @@
 
 This procedure updates only the frontend container for `explorer.dev.deriw.com`.
 The backend remains v10.2.6 at `875082f41d79ef72cd9dd9a4e771953a181c6cf2`.
-The UI image must identify source `8c7bfddd732365f6cc8963bf9d214ee69735eeca`
-and version `2.7.2-deriw.3`, and must be Linux AMD64. This patch uses DeriW-only
+The UI image must identify source `d30a3ebe40d6fb6a061a84afed74afe32c8a6abe`
+and version `2.7.2-deriw.4`, and must be Linux AMD64. This patch uses DeriW-only
 footer branding, a short description adapted from the official website, and
 its community links. Select the published image
 by its registry digest, never the moving `dev` tag.
@@ -20,8 +20,9 @@ build value as a runtime setting causes strict validation to reject it.
 `ENVS_PRESET=none` prevents a newer upstream preset from replacing the captured
 settings. Strict startup environment validation remains enabled.
 
-The default footer contains six links in two columns and three rows:
-Website / Docs, X / Telegram, and Discord / Blog. Docs links directly to
+The default desktop footer contains three columns with two links in each:
+Website above Docs, X above Telegram, and Discord above Blog. Mobile retains
+two columns and three rows. Docs links directly to
 `https://docs.deriw.com/`. The helper removes the previous configurable Docs
 entry and its now-empty Resources group, so the default footer uses this flat
 grid without an extra heading. Other custom footer links are retained.
@@ -35,7 +36,7 @@ Do not repoint that checkout to the squashed release branch.
 ```bash
 python3 deploy/scripts/v10_frontend_deploy.py --run \
   --normalization-state /data/blockscout-dev-private/v10-native-normalization/job-20261106T103901Z-59bb4dc6/state.json \
-  --image quanquanah/blockscout-frontend@sha256:7ff6969bbd76991dc84432515ab56364fa314361796258969f7e70223ffbbd66
+  --image quanquanah/blockscout-frontend@sha256:44bd15d39c839baf1e32e28ce99c63c9eee99db8e08043cc0df8ceb1d84faf28
 ```
 
 The helper pulls and checks the image, then runs a temporary container with the
@@ -143,3 +144,9 @@ the earlier `.2` image, with networking disabled during the check.
 The [footer grid validation](../../deploy/audits/frontend-footer-grid-validation-2026-11-07.json)
 records the `.3` image, two-column/three-row layout, legacy Resources cleanup,
 281 deployment tests, container startup, branding assets and registry checks.
+
+The [three-column footer validation](../../deploy/audits/deriw-footer-three-columns-validation-2026-11-07.json)
+records the `.4` image, desktop three-column/two-row arrangement, 13 footer
+browser checks, 305 deployment regression tests, full startup, branding assets
+and the verified registry digest. It also records compatibility with the
+prepared infrastructure handoffs and retains the `.1`–`.3` release proofs.

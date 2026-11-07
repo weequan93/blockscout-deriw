@@ -41,21 +41,33 @@ installation. Keep every earlier backend/frontend/native-controller worktree
 and all private journals. The new checkout becomes the controller source after
 the first successful handoff; keep it clean and pinned too.
 
-The published tag identifies the tested tools commit:
+The published tag identifies the tested tools commit. Revision `r2` also
+recognizes the `.4` frontend footer release and retains the earlier frontend
+proofs. Use these tools after that footer rollout; the original tag only knew
+frontend releases through `.3`. Both tags select the same infrastructure images
+and patch operations. The original image-fixture evidence remains recorded in
+the first validation snapshot; the footer release records the updated helper's
+regression run.
 
 ```bash
 bash <<'SELECT_INFRA_TOOLS'
 set -euo pipefail
-git -C /data/blockscout fetch origin tag deriw-infra-patches-2026-11-07
+git -C /data/blockscout fetch origin tag deriw-infra-patches-2026-11-07-r2
 if ! test -e /data/blockscout-v10-infrastructure; then
-  git -C /data/blockscout worktree add --detach /data/blockscout-v10-infrastructure deriw-infra-patches-2026-11-07
+  git -C /data/blockscout worktree add --detach /data/blockscout-v10-infrastructure deriw-infra-patches-2026-11-07-r2
 fi
 cd /data/blockscout-v10-infrastructure
-test "$(git rev-parse HEAD)" = "$(git rev-parse deriw-infra-patches-2026-11-07^{commit})"
+test "$(git rev-parse HEAD)" = "$(git rev-parse deriw-infra-patches-2026-11-07-r2^{commit})"
 test -z "$(git status --porcelain)"
 python3 deploy/scripts/v10_infrastructure_deploy.py --help
 SELECT_INFRA_TOOLS
 ```
+
+If `/data/blockscout-v10-infrastructure` is already pinned at the first release,
+keep it for its service/journal references. Use the clean `.4` footer tools
+checkout `/data/blockscout-v10-footer-columns` instead for the commands below;
+it contains the same `r2` helpers. Do not change a checkout used by an existing
+migration service.
 
 ## Apply one component
 
