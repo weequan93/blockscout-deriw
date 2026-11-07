@@ -2,8 +2,10 @@
 
 This procedure updates only the frontend container for `explorer.dev.deriw.com`.
 The backend remains v10.2.6 at `875082f41d79ef72cd9dd9a4e771953a181c6cf2`.
-The UI image must identify source `27a4139d09ac57d975cc8c2bd4f1d804c8589f20`
-and version `2.7.2-deriw.1`, and must be Linux AMD64. Select the published image
+The UI image must identify source `8fbbb5f6742ab474cbcdaded0beb23cbdd89e2dc`
+and version `2.7.2-deriw.2`, and must be Linux AMD64. This patch uses DeriW-only
+footer branding, a short description adapted from the official website, and
+its community links. Select the published image
 by its registry digest, never the moving `dev` tag.
 
 The helper reads the current generated browser settings and Docker environment
@@ -27,7 +29,7 @@ Do not repoint that checkout to the squashed release branch.
 ```bash
 python3 deploy/scripts/v10_frontend_deploy.py --run \
   --normalization-state /data/blockscout-dev-private/v10-native-normalization/job-20261106T103901Z-59bb4dc6/state.json \
-  --image quanquanah/blockscout-frontend@sha256:76a170d12b74183e3df77dbfa4d047aa0937ad66ed43615ca0d278b4c67429a9
+  --image quanquanah/blockscout-frontend@sha256:5e4aa57fd687f25e98a145c83d4681ad32be2b13af6c77b3ac0c0d4501b20b56
 ```
 
 The helper pulls and checks the image, then runs a temporary container with the
@@ -48,9 +50,19 @@ can receive an immutable qualification receipt.
 A new immutable frontend runtime binding retains the original bridge binding,
 all prior journals, native worker source, database cursor and job token. The
 systemd controller moves to this deployment-tool checkout and resumes the same
-job. No backend/container restart, schema migration, reset of progress, growth
+job. The backend stays running. No schema migration, reset of progress, growth
 cap, or additional migration is introduced. Existing free-space reserves and
 pause/retry policy continue to apply.
+
+For a second frontend rollout, the helper inherits the previous qualified
+frontend Compose snapshot, rather than the older backend snapshot. It accepts
+the reviewed `.1` source when checking prior immutable receipts while requiring
+the exact `.2` source/version for the new image. The previous frontend plan and
+binding remain unchanged, and rollback restores that plan's image and settings.
+Run each deployment from its own pinned tool worktree; keep earlier controller
+checkouts available because they are part of the verification history.
+If normalization already completed, the helper records the new frontend binding
+while keeping that job completed and does not request another service start.
 
 Save the printed `/data/blockscout-dev-private/frontend-releases/frontend-.../state.json`.
 The final result should show `frontend_active` and a requested normalization
@@ -68,8 +80,10 @@ python3 deploy/scripts/v10_frontend_deploy.py --resume --state /data/.../state.j
 python3 deploy/scripts/v10_frontend_deploy.py --rollback --state /data/.../state.json
 ```
 
-If a plan failed during staging and remains `prepared`, use the corrected
-deployment-tool checkout to replace that preparation:
+If a plan failed during staging and remains `prepared`, use the matching
+deployment-tool version to replace that preparation. For the initial `.1`
+sprite failure, use the correction checkout pinned at
+`a2fd771b72e1698705ff6e94026c1d74bef89a92`:
 
 ```bash
 python3 deploy/scripts/v10_frontend_deploy.py --retry-staging \
@@ -111,3 +125,7 @@ records the unit, configuration and real Compose transport checks.
 The [sprite-handoff correction](../../deploy/audits/frontend-sprite-handoff-validation-2026-11-07.json)
 records the reproduced validator failure, corrected settings and image-owned
 sprite check.
+
+The [DeriW footer validation record](../../deploy/audits/frontend-footer-deployment-validation-2026-11-07.json)
+records the `.2` source, 281 deployment tests, footer layout checks, full image
+startup and branding checks, and the verified registry digest.

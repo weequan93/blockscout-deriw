@@ -177,6 +177,75 @@ class FrontendDeploymentTests(unittest.TestCase):
         for p, raw in preserved.items():
             self.assertEqual((self.native_directory / p).read_bytes(), raw)
 
+    def test_second_frontend_release_preserves_the_previous_receipt_and_same_native_cursor(self):
+        old_revision = '27a4139d09ac57d975cc8c2bd4f1d804c8589f20'
+        self.inputs.update(frontend_revision=old_revision, source_root='/data/previous-frontend-controller')
+        N.R.update_state(self.directory / 'inputs.json', self.inputs)
+        self.state['inputs_sha256'] = N.R.digest(N.U.private(self.directory / 'inputs.json'))
+        N.R.update_state(self.path, self.state)
+        (self.directory / 'receipt-forward.json').unlink()
+        self.receipt('forward', self.after)
+        with patch.object(F, 'verify', return_value=self.after):
+            F.bind_native(self.api, self.path, 'forward')
+        prior_native = N.load(self.native_path)
+        self.assertEqual(F.public(self.path, self.state)['frontend_version'], '2.7.2-deriw.1')
+        original = {p: p.read_bytes() for p in self.directory.iterdir()}
+        original_binding = self.native_directory / prior_native['runtime_binding_file']
+        binding_bytes = original_binding.read_bytes()
+
+        next_directory = self.base / 'frontend-20261107T050000Z-5678abcd'
+        next_directory.mkdir(mode=0o700)
+        next_inputs = deepcopy(self.inputs)
+        next_inputs.update(frontend_revision=F.REVISION, before=self.after, source_root=str(ROOT),
+                           prior_binding={k: prior_native[k] for k in ('runtime_binding_file', 'runtime_binding_sha256')})
+        for side in ('forward', 'rollback'):
+            N.R.write_new(next_directory / (side + '.compose.json'), N.U.private(self.directory / (side + '.compose.json')))
+        N.R.write_new(next_directory / 'inputs.json', N.R.encoded(next_inputs))
+        next_state = {**self.state, 'inputs_sha256': N.R.digest(N.R.encoded(next_inputs))}
+        next_path = next_directory / 'state.json'
+        N.R.write_new(next_path, N.R.encoded(next_state))
+        next_runtime = deepcopy(self.after)
+        next_runtime['frontend'] = self.row('branded-ui', 'new-ui-image')
+        receipt = {**json.loads(N.U.private(self.directory / 'receipt-forward.json')),
+                   'inputs_sha256': next_state['inputs_sha256'], 'source_root': str(ROOT), 'runtime_before': next_runtime}
+        N.R.write_new(next_directory / 'receipt-forward.json', N.R.encoded(receipt))
+        with patch.object(F, 'verify', return_value=next_runtime):
+            F.bind_native(self.api, next_path, 'forward')
+        current = N.load(self.native_path)
+        context = N.runtime_binding(self.native_path, current)
+        self.assertEqual(context['runtime_before'], next_runtime)
+        self.assertEqual(context['previous_source_root'], '/data/previous-frontend-controller')
+        self.assertEqual(F.current_compose_files(self.api, next_runtime, {}, context), [next_directory / 'forward.compose.json'])
+        self.assertEqual(current['database']['native_meta']['max_block_number'], 129878966)
+        self.assertEqual(current['inputs_sha256'], prior_native['inputs_sha256'])
+        self.assertEqual(original_binding.read_bytes(), binding_bytes)
+        self.assertEqual(F.public(next_path, next_state)['frontend_version'], F.VERSION)
+        for path, raw in original.items():
+            self.assertEqual(path.read_bytes(), raw)
+
+    def test_initial_frontend_release_inherits_the_recorded_backend_selection(self):
+        self.api.live_files = lambda directory, backend, manifest: [self.bridge_path]
+        self.assertEqual(F.current_compose_files(self.api, self.before, {}, {}), [self.bridge_path])
+
+    def test_completed_native_job_records_the_new_frontend_without_reopening_progress(self):
+        self.native['phase'] = 'completed'
+        N.R.update_state(self.native_path, self.native)
+        with patch.object(F, 'verify', return_value=self.after):
+            result = F.bind_native(self.api, self.path, 'forward')
+        current = N.load(self.native_path)
+        self.assertTrue(result['normalization_complete'])
+        self.assertEqual(current['phase'], 'completed')
+        self.assertEqual(current['database'], self.native['database'])
+        self.assertEqual(N.runtime_binding(self.native_path, current)['runtime_before'], self.after)
+
+    def test_unreviewed_previous_frontend_revision_cannot_authorize_the_native_job(self):
+        self.inputs['frontend_revision'] = 'f' * 40
+        N.R.update_state(self.directory / 'inputs.json', self.inputs)
+        self.state['inputs_sha256'] = N.R.digest(N.U.private(self.directory / 'inputs.json'))
+        N.R.update_state(self.path, self.state)
+        with self.assertRaisesRegex(N.D.ConfigError, 'inputs changed'):
+            F.load(self.path)
+
     def test_failed_verification_cannot_bind_or_reset_the_native_job(self):
         with patch.object(F, 'verify', side_effect=N.D.ConfigError('not verified')):
             with self.assertRaises(N.D.ConfigError):

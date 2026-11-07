@@ -23,8 +23,12 @@ import v10_upgrade as U
 ROOT = Path(__file__).resolve().parents[2]
 BASE = Path('/data/blockscout-dev-private/frontend-releases')
 FORMAT = 'deriw-frontend-release-v1'
-REVISION = '27a4139d09ac57d975cc8c2bd4f1d804c8589f20'
-VERSION = '2.7.2-deriw.1'
+REVISION = '8fbbb5f6742ab474cbcdaded0beb23cbdd89e2dc'
+VERSION = '2.7.2-deriw.2'
+REVIEWED_RELEASES = {
+    '27a4139d09ac57d975cc8c2bd4f1d804c8589f20': '2.7.2-deriw.1',
+    REVISION: VERSION,
+}
 BACKEND = '875082f41d79ef72cd9dd9a4e771953a181c6cf2'
 LABEL = 'org.deriw.frontend-release-state'
 SIDE_LABEL = 'org.deriw.frontend-release-side'
@@ -121,7 +125,7 @@ def load(path):
     raw = U.private(path.parent / 'inputs.json')
     inputs = json.loads(raw)
     D.require(state.get('format') == FORMAT and state.get('inputs_sha256') == R.digest(raw)
-              and inputs.get('format') == FORMAT and inputs.get('frontend_revision') == REVISION,
+              and inputs.get('format') == FORMAT and inputs.get('frontend_revision') in REVIEWED_RELEASES,
               'Frontend release inputs changed')
     D.require(state.get('phase') in ('prepared', 'staged', 'activation_requested', 'rollback_requested', 'active', 'rolled_back'),
               'Unrecognized frontend release phase')
@@ -137,8 +141,10 @@ def save(path, state, phase):
 
 
 def public(path, state):
-    return {'status': 'frontend_' + state['phase'], 'state': str(path), 'frontend_version': VERSION,
-            'frontend_revision': REVISION, 'backend_restarted': False, 'database_migrations_run': False,
+    _, inputs = load(path)
+    revision = inputs['frontend_revision']
+    return {'status': 'frontend_' + state['phase'], 'state': str(path), 'frontend_version': REVIEWED_RELEASES[revision],
+            'frontend_revision': revision, 'backend_restarted': False, 'database_migrations_run': False,
             'normalization_checkpoint_preserved': True}
 
 
@@ -235,6 +241,16 @@ def remove_stage(api, name, path):
     api.run(['docker', 'rm', '-f', name], timeout=30)
 
 
+def current_compose_files(api, before, manifest, context):
+    # Later frontend releases must inherit the last qualified frontend selection.
+    if context.get('frontend_release_state'):
+        path = Path(context['frontend_release_state'])
+        load(path)
+        D.require(context.get('side') in ('forward', 'rollback'), 'Invalid prior frontend selection')
+        return [path.parent / (context['side'] + '.compose.json')]
+    return api.live_files(P.V.LIVE_DIRECTORY, before['backend'], manifest)
+
+
 def prepare(api, native_path, reference, supersedes=None):
     D.require(re.fullmatch(r'quanquanah/blockscout-frontend@sha256:[a-f0-9]{64}', reference),
               'Use the immutable published frontend digest')
@@ -256,7 +272,7 @@ def prepare(api, native_path, reference, supersedes=None):
     image = image_info(api, reference)
     script = api.run(['docker', 'exec', 'frontend', 'cat', '/app/public/assets/envs.js'])
     environment = migrate_environment(effective_environment(api.env_map(before['frontend']), script), manifest['chain_id'])
-    files = api.live_files(P.V.LIVE_DIRECTORY, before['backend'], manifest)
+    files = current_compose_files(api, before, manifest, context)
     model = api.compose_model(P.V.LIVE_DIRECTORY, manifest, {}, files, True)
     D.require(not api.live_environment_differences(model, before), 'Current Compose environment differs from running services')
     snapshots = {}
@@ -450,8 +466,7 @@ def bind_native(api, path, side):
     native_path = Path(inputs['normalization_state'])
     native = N.load(native_path)
     D.require(native['inputs_sha256'] == inputs['native_inputs_sha256'], 'Native frozen inputs changed')
-    if native['phase'] == 'completed':
-        return N.public(native_path, native)
+    completed = native['phase'] == 'completed'
     filename = 'frontend-runtime-binding-' + path.parent.name.rsplit('-', 1)[1] + '-' + side + '.json'
     binding = {'format': FORMAT, 'native_inputs_sha256': native['inputs_sha256'],
                'native_worker_script_sha256': native['inputs']['script_sha256'], 'frontend_release_state': str(path),
@@ -466,7 +481,7 @@ def bind_native(api, path, side):
     native.update(runtime_binding_file=filename, runtime_binding_sha256=R.digest(U.private(target)),
                   transient_retries=0, worker_crash_retries=0)
     N.runtime_binding(native_path, native)
-    N.save(native_path, native, 'prepared')
+    N.save(native_path, native, 'completed' if completed else 'prepared')
     request = native_path.parent / 'pause.request'
     if request.exists():
         U.private(request)

@@ -1,0 +1,83 @@
+{
+  "status": "passed",
+  "checked_at_utc": "2026-11-07T05:48:37.596450+00:00",
+  "source_revision": "8fbbb5f6742ab474cbcdaded0beb23cbdd89e2dc",
+  "frontend_version": "2.7.2-deriw.2",
+  "description_source": "https://www.deriw.com/",
+  "footer_description": "DeriW is a decentralized perpetual exchange offering gas-free on-chain trading.",
+  "visible_footer_branding": "DeriW only; official logo, short description, copyright, website and community links",
+  "checks": {
+    "typescript_passed": true,
+    "changed_file_eslint_passed": true,
+    "footer_browser_layout_checks": 13,
+    "desktop_mobile_dark_screenshots_reviewed": true,
+    "browser_screenshot_test_date": "2022-11-11",
+    "production_build_passed": true,
+    "build_node_heap_mib": 3072,
+    "container_qualification": {
+      "status": "passed",
+      "image_id": "sha256:7eba7c7afb5d9d2bad61810f83f6a6d20efd829584b8297954ac5c138f1935be",
+      "image_reference": "quanquanah/blockscout-frontend:deriw-v2.7.2-footer-8fbbb5f67",
+      "source_revision": "8fbbb5f6742ab474cbcdaded0beb23cbdd89e2dc",
+      "platform": "linux/amd64",
+      "versions": {
+        "node": "v22.23.4",
+        "version": "2.7.2-deriw.2",
+        "next": "16.2.10",
+        "react": "19.1.4"
+      },
+      "full_entrypoint_health_passed": true,
+      "private_environment_migration_passed": true,
+      "strict_invalid_token_rejected": true,
+      "invalid_token_exit_code": 1,
+      "native_dependency_import_passed": true,
+      "deriw_footer_bundle_verified": true,
+      "generated_parent_current_labels": "L2/L3",
+      "browser_source_map_count": 0,
+      "staging_memory_limit_bytes": 1073741824,
+      "containers_removed": true,
+      "live_server_changed": false,
+      "network_scope": "Synthetic API origins; no dev explorer database or API requests"
+    },
+    "branding_assets": {
+      "status": "passed",
+      "asset_downloads": 5,
+      "favicon_generated": true,
+      "image_owned_sprite_reference": true,
+      "old_sprite_not_copied": true,
+      "memory_limit_bytes": 1073741824,
+      "no_live_server_requests": true
+    },
+    "deployment_unit_tests": 281,
+    "frontend_deployment_tests": 25,
+    "native_worker_unchanged": true,
+    "previous_frontend_receipt_and_checkpoint_preserved": true,
+    "completed_job_not_reopened": true
+  },
+  "registry": {
+    "status": "passed",
+    "repository": "quanquanah/blockscout-frontend",
+    "tag": "deriw-v2.7.2-footer-8fbbb5f67",
+    "index_digest": "sha256:7eba7c7afb5d9d2bad61810f83f6a6d20efd829584b8297954ac5c138f1935be",
+    "platform_manifest_digest": "sha256:5e4aa57fd687f25e98a145c83d4681ad32be2b13af6c77b3ac0c0d4501b20b56",
+    "config_digest": "sha256:7d94f2f123a1aea762c450a1c67a5729f0c2d117d6fbafbef4504444b2035e12",
+    "deployment_reference": "quanquanah/blockscout-frontend@sha256:5e4aa57fd687f25e98a145c83d4681ad32be2b13af6c77b3ac0c0d4501b20b56",
+    "source_revision": "8fbbb5f6742ab474cbcdaded0beb23cbdd89e2dc",
+    "frontend_version": "2.7.2-deriw.2",
+    "platform": "linux/amd64",
+    "canonical_pull_passed": true,
+    "image_config_and_layers_match_qualified_build": true
+  },
+  "server_deployment_executed": false,
+  "limits": [
+    "Image checks use synthetic API origins and a disposable local branding asset server.",
+    "The deployment helper stages the actual private settings before replacing the live frontend."
+  ],
+  "log_sha256": {
+    "build": "3d4c0ae606b79e5cd21f27164c1e4f2da5fea00f4cb78e2a90b59aac6132135a",
+    "browser": "36975caa9e68b3382f1056cb9471c4d02f439babf5af14fa9611380a58f18e76",
+    "container": "0edee549970905a0303b7487a86b77af55ed3ee3e56bb96b5ab1ac25ae61f975",
+    "assets": "9fe6143c94addcf1e04982a98e3ab6a3f88c7c557cbe0631280d6d0093de0641",
+    "deployment_tests": "954cfe5c8abf214bead581684ee5eedd45e636cb66df7b2ce0cf1510ebeaf6e8"
+  }
+}
