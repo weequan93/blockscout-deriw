@@ -24,7 +24,7 @@ Do not repoint that checkout to the squashed release branch.
 ```bash
 python3 deploy/scripts/v10_frontend_deploy.py --run \
   --normalization-state /data/blockscout-dev-private/v10-native-normalization/job-20261106T103901Z-59bb4dc6/state.json \
-  --image quanquanah/blockscout-frontend@sha256:REPLACE_WITH_PUBLISHED_DIGEST
+  --image quanquanah/blockscout-frontend@sha256:76a170d12b74183e3df77dbfa4d047aa0937ad66ed43615ca0d278b4c67429a9
 ```
 
 The helper pulls and checks the image, then runs a temporary container with the

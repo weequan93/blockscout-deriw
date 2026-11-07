@@ -169,7 +169,8 @@ def wait_health(api, name, seconds=300):
     while True:
         try:
             value = api.run(['docker', 'exec', name, 'node', '-e',
-                "fetch('http://127.0.0.1:3000/node-api/healthz').then(async r=>{if(r.status!==200||JSON.parse(await r.text())!=='ok')process.exit(1)}).catch(()=>process.exit(1))"], timeout=10)
+                "const host=process.env.HOSTNAME||'127.0.0.1';const port=process.env.PORT||'3000';"
+                "fetch('http://'+host+':'+port+'/node-api/healthz').then(async r=>{if(r.status!==200||JSON.parse(await r.text())!=='ok')process.exit(1)}).catch(()=>process.exit(1))"], timeout=10)
             return
         except D.ConfigError:
             D.require(time.monotonic() < deadline, 'Frontend startup/validation did not become healthy; private logs retained')
@@ -265,7 +266,7 @@ def unchanged_others(api, before, after):
                       {k: v for k, v in after.items() if k != 'frontend'}, 'Another service changed during frontend deployment')
 
 
-def verify(api, path, side, receipt=None):
+def verify(api, path, side, receipt=None, wait=False):
     state, inputs = load(path)
     manifest, _, _ = api.configuration(ROOT, 'dev')
     runtime = api.inspect_project(manifest)
@@ -293,7 +294,7 @@ def verify(api, path, side, receipt=None):
     # The immutable frontend receipt supplies the only changed service in the existing backend verification.
     reviewed = deepcopy(bridge)
     reviewed['before']['frontend'] = runtime['frontend']
-    health = R.verify(api, B, P.C, manifest, bridge_path, reviewed, 'forward')
+    health = R.verify(api, B, P.C, manifest, bridge_path, reviewed, 'forward', wait=wait)
     D.require(health['status'] == 'verified', 'Existing backend health is not verified; native writer stays paused')
     api.ensure_stable(runtime, api.inspect_project(manifest), 'Runtime changed during frontend verification')
     return runtime
@@ -312,7 +313,7 @@ def activate(api, path, side):
     receipt_path = path.parent / ('receipt-' + side + '.json')
     if receipt_path.exists():
         receipt = json.loads(U.private(receipt_path))
-        verify(api, path, side, receipt)
+        verify(api, path, side, receipt, wait=True)
         return receipt
     before = api.inspect_project(manifest, require_running=False, allow_missing_services=('frontend',))
     unchanged_others(api, inputs['before'], before)
@@ -334,7 +335,7 @@ def activate(api, path, side):
                'up', '-d', '--no-deps', '--no-build', '--pull', 'never', 'frontend']
     private_command(command, path.parent / ('activate-' + uuid.uuid4().hex[:8] + '.log.private'), 'recreating_frontend')
     wait_health(api, 'frontend')
-    runtime = verify(api, path, side)
+    runtime = verify(api, path, side, wait=True)
     D.require(P.database_anchor(api) == anchor, 'Database migration/cursor/heap changed across frontend deployment')
     receipt = {'format': FORMAT, 'side': side, 'inputs_sha256': state['inputs_sha256'],
                'runtime_before': runtime, 'tool_source_commit': inputs['tool_source_commit'],
@@ -382,7 +383,7 @@ def bind_native(api, path, side):
     state, inputs = load(path)
     receipt_path = path.parent / ('receipt-' + side + '.json')
     receipt = json.loads(U.private(receipt_path))
-    verify(api, path, side, receipt)
+    verify(api, path, side, receipt, wait=True)
     native_path = Path(inputs['normalization_state'])
     native = N.load(native_path)
     D.require(native['inputs_sha256'] == inputs['native_inputs_sha256'], 'Native frozen inputs changed')
