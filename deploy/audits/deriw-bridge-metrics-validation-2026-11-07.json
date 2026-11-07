@@ -1,0 +1,43 @@
+{
+  "date": "2026-11-07",
+  "base_commit": "2de178888f85923bb4c346eb8596081b4fcd48cd",
+  "target_backend_release": "10.2.6",
+  "target_chain_id": "18417507517",
+  "status": "local_validation_passed",
+  "unit_tests": {
+    "passed": 14
+  },
+  "postgres15_fixture": {
+    "actual_rpc_executed": true,
+    "message_states_and_origin_metadata_gaps_verified": true,
+    "settlement_states_and_parent_finality_verified": true,
+    "reorg_regression_verified": true,
+    "sample_truncation_visible": true,
+    "read_only_enforced": true,
+    "statement_timeout_and_plan_budget_enforced": true,
+    "backend_application_started": false,
+    "live_services_accessed": false
+  },
+  "service": {
+    "name": "deriw-bridge-metrics.service",
+    "default_endpoint": "http://127.0.0.1:9160/metrics",
+    "poll_seconds": 60,
+    "snapshot_max_age_seconds": 150,
+    "message_sample_limit_per_direction": 10000,
+    "rollup_sample_limit": 1000,
+    "read_only": true,
+    "backend_restart_required": false,
+    "schema_migrations_required": false,
+    "normalization_changed": false,
+    "installed_on_server": false
+  },
+  "file_sha256": {
+    "deploy/scripts/deriw_bridge_metrics.py": "b7a5d588ec7d5e5b791d50d84a21dd780757bc356372d27aad5198c36de21510",
+    "deploy/scripts/v10/bridge_metrics.exs": "8108659bba9c97cc713d132e13106b330230745b75f0ee302ba998e4e9a460cd",
+    "deploy/scripts/v10/bridge_metrics_queries.json": "2cb04854838e25cdd9dd6fe5a00d67e90ec3ff5d8eb3b59cf6e22b17f1fb3c78",
+    "deploy/tests/check_deriw_bridge_metrics.py": "4523b5eac21290b94253de8631b8e3fcce9752022bc502041b860dab0d916bc0",
+    "deploy/tests/test_deriw_bridge_metrics.py": "a278a4aa157b64a5c16151522edf6cc8efa79fa1f8278613e2d14890a2e36411",
+    "docs/deployment/deriw-bridge-metrics.md": "f64b1b8c8eba8045f4b1bf1bf678cdc7cd9d1554837903e0b12fff5eb2ee4a60",
+    "docs/deployment/dev-v10.md": "456b0434044099545028c18132f9a9cb4c794cdbdfc11d885bf334f01eda5f6e"
+  }
+}

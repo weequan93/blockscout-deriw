@@ -9,6 +9,10 @@ The [frontend v2.7.2 rollout](frontend-v2.7.2.md) has a separate targeted helper
 After that rollout, its new worktree hosts the same native normalization job's
 controller. Preserve the earlier backend/controller checkouts and private journals.
 
+For Prometheus deposit/withdrawal progress and the processed/sent/confirmed rollup
+stages, use the separate [bridge metrics exporter](deriw-bridge-metrics.md).
+It adds a read-only internal endpoint alongside the migration service.
+
 ## 1. Select the right checkout
 
 | Checkout on the dev server | Purpose | Required revision |
