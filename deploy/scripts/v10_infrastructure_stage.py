@@ -16,7 +16,7 @@ import v10_frontend_deploy as F
 import v10_infrastructure_checks as K
 
 
-def capture_nginx(api, directory):
+def capture_nginx(api, directory, mounts=()):
     raw = api.run(['docker', 'exec', 'proxy', 'nginx', '-T'])
     sections = W.loaded_sections(api, raw)
     D.require('/etc/nginx/nginx.conf' in sections, 'Loaded Nginx master configuration is missing')
@@ -32,16 +32,27 @@ def capture_nginx(api, directory):
         api.run(['docker', 'cp', '-L', 'proxy:' + filename, str(destination)], timeout=30)
         D.require(destination.is_file() and not destination.is_symlink(), 'Nginx configuration artifact is not a regular file')
         os.chmod(destination, 0o600)
+        live_asset = filename not in sections and any(
+            m.get('Type') == 'bind' and filename.startswith(m['Destination'].rstrip('/') + '/')
+            for m in mounts)
         artifacts.append({'source': str(destination), 'target': filename,
-                          'sha256': R.digest(destination.read_bytes()), 'type': 'bind', 'read_only': True})
+                          'sha256': R.digest(destination.read_bytes()), 'type': 'bind', 'read_only': True,
+                          'runtime_overlay': not live_asset})
     return {'loaded': raw, 'files': artifacts}
+
+
+def deployment_files(artifacts):
+    # Older journals mounted every saved artifact. Preserve that contract.
+    for item in artifacts:
+        D.require(type(item.get('runtime_overlay', True)) is bool, 'Invalid Nginx artifact role')
+    return [item for item in artifacts if item.get('runtime_overlay', True)]
 
 
 def nginx_snapshot(model, artifacts):
     model = deepcopy(model)
     service = model['services']['proxy']
     volumes = service.setdefault('volumes', [])
-    for artifact in artifacts:
+    for artifact in deployment_files(artifacts):
         # Freeze the configuration actually loaded by the current process. No
         # entrypoint template rewrite or copying of old dynamic-module binaries.
         volumes[:] = [v for v in volumes if v.get('target') != artifact['target']]
@@ -52,7 +63,9 @@ def nginx_snapshot(model, artifacts):
 
 
 def validate_artifacts(inputs):
-    for artifact in (inputs.get('nginx') or {}).get('files', []):
+    artifacts = (inputs.get('nginx') or {}).get('files', [])
+    deployment_files(artifacts)
+    for artifact in artifacts:
         path = Path(artifact['source'])
         D.require(path.is_file() and not path.is_symlink() and R.digest(path.read_bytes()) == artifact['sha256'],
                   'Frozen Nginx configuration/certificate changed')

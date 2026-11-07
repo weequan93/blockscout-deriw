@@ -257,6 +257,35 @@ class InfrastructureTests(unittest.TestCase):
         self.assertEqual(result['services']['proxy']['volumes'][0], model['services']['proxy']['volumes'][0])
         self.assertTrue(result['services']['proxy']['volumes'][1]['read_only'])
 
+    def test_nginx_keeps_live_certificate_assets_in_the_existing_directory_mount(self):
+        model = {'services': {'proxy': {'volumes': [
+            {'type': 'bind', 'source': '/data/templates', 'target': '/etc/nginx/templates'}]}}}
+        files = [
+            {'type': 'bind', 'source': '/private/config', 'target': '/etc/nginx/nginx.conf',
+             'read_only': True, 'runtime_overlay': True},
+            {'type': 'bind', 'source': '/private/certificate-history',
+             'target': '/etc/nginx/templates/ssl/fullchain.pem', 'read_only': True, 'runtime_overlay': False}]
+        selected = S.nginx_snapshot(model, files)
+        self.assertEqual(len(selected['services']['proxy']['volumes']), 2)
+        self.assertEqual(selected['services']['proxy']['volumes'][0], model['services']['proxy']['volumes'][0])
+        self.assertEqual(selected['services']['proxy']['volumes'][1]['target'], '/etc/nginx/nginx.conf')
+        self.assertEqual(len(S.deployment_files([{k: v for k, v in item.items() if k != 'runtime_overlay'} for item in files])), 2)
+
+    def test_redis_verification_does_not_depend_on_the_origin_https_certificate(self):
+        self.inputs.update(component='redis', target=K.catalog()['redis'],
+            component_before={'appendonly': 'no', 'save': '3600 1', 'cluster-enabled': 'no'}, nginx=None)
+        self.write_inputs()
+        runtime = deepcopy(self.before)
+        runtime['redis-db'] = row('patched-redis', 'b')
+        self.api.inspect_project = lambda *a, **kw: runtime
+        self.api.run = lambda command, **kw: 'PONG' if command == ['docker', 'exec', 'redis-db', 'redis-cli', 'PING'] else ''
+        with patch.object(I, 'component_contract'), patch.object(I.R, 'verify', return_value={'status': 'verified'}), \
+             patch.object(I.P.Q, 'verify_holds'), patch.object(K, 'stable_database_anchor', return_value=anchor()), \
+             patch.object(K, 'live_fingerprint', return_value={'version': '8.8.4'}), \
+             patch.object(K, 'redis', return_value=self.inputs['component_before']), \
+             patch.object(S, 'nginx_routes', side_effect=AssertionError('Origin TLS is a separate operation')):
+            self.assertEqual(I.verify(self.api, self.path, 'forward'), runtime)
+
     def test_unverified_tls_or_websocket_is_not_qualified(self):
         good = {name:{'http_status':200,'transport_exit':0} for name in ('deposits','backend_api','deposit_api','stats_api','https')}
         good.update(source_map={'http_status':404,'transport_exit':0}, websocket={'http_status':101,'transport_exit':28})

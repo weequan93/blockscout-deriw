@@ -1,0 +1,158 @@
+{
+  "format": "deriw-origin-certificate-recovery-validation-v1",
+  "checked_at_utc": "2026-11-07T13:55:18.605870+00:00",
+  "status": "passed",
+  "release_tag": "deriw-infra-patches-2026-11-07-r4",
+  "base_commit": "012fd8e9c11aaaffb8269d8588b68d9ba489abd9",
+  "operator_evidence": {
+    "infrastructure_state": "/data/blockscout-dev-private/infrastructure-releases/infra-20261107T124139Z-0223ab4a/state.json",
+    "phase": "prepared",
+    "https_listener_count": 4,
+    "origin_certificate": {
+      "expired": true,
+      "expires_utc": "2026-10-18T02:11:54+00:00",
+      "matches_explorer_hostname": true,
+      "issuer": "Alibaba Cloud Computing Ltd."
+    },
+    "certbot_installed": false,
+    "acme_sh_installed": false,
+    "renewal_configs": [],
+    "origin_https": {
+      "http_status": 0,
+      "transport_exit": 60
+    },
+    "proxy_replaced_by_failed_attempt": false,
+    "normalization_paused_by_failed_attempt": false
+  },
+  "changes": [
+    "Read-only replacement certificate review: private-key ownership/mode, matching public key, validity, trusted chain and every captured TLS hostname.",
+    "Loaded Nginx configuration remains frozen. Assets covered by an existing directory bind mount remain live and renewable, with immutable private historical evidence.",
+    "Older journal artifacts without runtime_overlay retain their original overlay behavior.",
+    "Redis/PostgreSQL can proceed independently of the failed Nginx origin TLS preflight. A certificate or peer change requires a fresh unactivated Nginx preparation."
+  ],
+  "unit_tests": {
+    "v10": 315,
+    "selected_configuration_and_release": 55,
+    "certificate_cases": [
+      "valid_bundle_and_multiple_hostnames",
+      "expired",
+      "mismatched_key",
+      "wrong_hostname",
+      "untrusted_chain",
+      "unsafe_key_permissions",
+      "private_material_in_certificate_input",
+      "all_captured_tls_names"
+    ],
+    "optional_compose_transport": {
+      "tests": 20,
+      "status": "passed",
+      "note": "An initial broad unittest discovery included the optional Docker fixture without sandbox Docker access. The dedicated entry point passed with local Docker access; no source fix was needed."
+    }
+  },
+  "compose_config_only_check": {
+    "status": "passed",
+    "compose_version": "Docker Compose version v5.6.0",
+    "snapshot_round_trips": [
+      {
+        "component": "nginx",
+        "side": "forward",
+        "empty_ipam_added_by_compose": true
+      },
+      {
+        "component": "nginx",
+        "side": "rollback",
+        "empty_ipam_added_by_compose": true
+      },
+      {
+        "component": "redis",
+        "side": "forward",
+        "empty_ipam_added_by_compose": true
+      },
+      {
+        "component": "redis",
+        "side": "rollback",
+        "empty_ipam_added_by_compose": true
+      },
+      {
+        "component": "postgresql-main",
+        "side": "forward",
+        "empty_ipam_added_by_compose": true
+      },
+      {
+        "component": "postgresql-main",
+        "side": "rollback",
+        "empty_ipam_added_by_compose": true
+      },
+      {
+        "component": "postgresql-stats",
+        "side": "forward",
+        "empty_ipam_added_by_compose": true
+      },
+      {
+        "component": "postgresql-stats",
+        "side": "rollback",
+        "empty_ipam_added_by_compose": true
+      }
+    ],
+    "literal_dollars_quotes_newlines_preserved": true,
+    "static_ips_and_pg_guard_preserved": true,
+    "explicit_ipam_and_ip_changes_rejected": true,
+    "service_changes": false,
+    "image_pulls": false,
+    "database_calls": false,
+    "network_changes": false,
+    "temporary_files_removed_on_exit": true
+  },
+  "real_nginx_renewal_and_rollback_fixture": {
+    "status": "passed",
+    "live_services_accessed": false,
+    "fixture_resources_removed": true,
+    "nginx": {
+      "status": "passed",
+      "old_version": "1.31.1",
+      "patch_version": "1.31.8",
+      "compose_snapshot_round_trip_verified": true,
+      "actual_staging_and_component_contract_used": true,
+      "frozen_configuration_and_private_certificate_evidence": true,
+      "directory_mounted_tls_assets_remain_renewable": true,
+      "http_and_verified_https_routes": true,
+      "deposits_backend_and_stats_routes": true,
+      "websocket_101_upgrade": true,
+      "source_maps_restricted": true,
+      "static_ip_and_unrelated_containers_preserved": true,
+      "certificate_rotation_verified_without_container_recreation": true,
+      "historical_certificate_evidence_unchanged": true,
+      "image_rollback_keeps_the_renewed_certificate": true,
+      "previous_image_rollback_verified": true
+    }
+  },
+  "static_checks": {
+    "python_compile": true,
+    "shell_syntax": true,
+    "diff_whitespace": true
+  },
+  "preservation": {
+    "native_controller_and_worker_source_unchanged": true,
+    "image_targets_unchanged": true,
+    "backend_frontend_source_unchanged": true,
+    "old_preparation_files_unchanged": true,
+    "server_services_changed_by_agent": false,
+    "server_certificate_installed_by_agent": false,
+    "new_automatic_certificate_renewal_installed": false
+  },
+  "sources": [
+    "https://www.alibabacloud.com/help/en/ssl-certificate/download-an-ssl-certificate",
+    "https://www.alibabacloud.com/help/en/ssl-certificate/install-ssl-certificates-on-nginx-servers-or-tengine-servers"
+  ],
+  "source_sha256": {
+    "deploy/scripts/v10_certificate_review.py": "dfc3f020decffc4d5ec1fb54b9993be837b586cc974529129655f3293619c1ae",
+    "deploy/scripts/v10_infrastructure_deploy.py": "b7676a9f14b254126c6f339e59ec103b4b875529d122c90a8bdfb4f2b72c6804",
+    "deploy/scripts/v10_infrastructure_stage.py": "2f680389c5220bb5f49d15fc2b74c2e31cb9d39b47e4d357e8f261e284a8b493",
+    "deploy/tests/test_v10_certificate_review.py": "5587798f7a392b9b8a07dad0916a2f9805cda074f3c729ce0644f39c63fc29ec",
+    "deploy/tests/test_v10_infrastructure.py": "d5559e8c30426ab98773614fca8c88d144e9c4604245809768eb53aa2db7fd14",
+    "deploy/tests/check_v10_infrastructure.py": "8d1617b45b50662c4191b79d012ac9492a3926a61e63685e3eeb32139c00a6af",
+    "docs/deployment/infrastructure-patches.md": "7ba319001fd5a7a7185071a43caee6d3a44cc62cb73e9354de4c5275637f2fb9",
+    "docs/deployment/origin-certificate.md": "0e610b1892cbf23bcf6b652f196ac824c0b282cebe5e4ac9fe60a93820c520c1"
+  },
+  "limits": "Synthetic local certificates/data. No live server or certificate account accessed. Certificate issuance, secure transfer and installation remain with the certificate administrator. Local validation does not establish public CDN TLS or qualify the remote patch rollout."
+}

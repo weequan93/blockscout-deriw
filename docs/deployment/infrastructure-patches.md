@@ -19,11 +19,19 @@ manifests by digest. The [operator inventory](../../deploy/audits/infrastructure
 records the current OS families, extensions and Redis persistence policy.
 The helper verifies the live inventory again before applying a patch.
 
-Perform the operations in table order, **one at a time**. Prepare the next
+Perform the operations **one at a time**. Prepare the next
 operation only after the previous one returns `infrastructure_finished`.
 Each preparation inherits the latest verified Compose snapshot and migration
 binding. Four preparations made from the original baseline cannot be applied
 independently later.
+
+The 7 November Nginx attempt stopped during staging because the existing origin
+certificate expired on 18 October. The proxy was not replaced and normalization
+was not paused by that attempt. Follow the [origin certificate recovery guide](origin-certificate.md).
+While DevOps obtains the replacement, run **Redis → stats PostgreSQL → main
+PostgreSQL**, then prepare Nginx again after certificate installation. These
+three component checks do not depend on origin HTTPS. Keep the earlier Nginx
+preparation as evidence; its snapshot is stale after a certificate or peer change.
 
 Each operation has a private journal and a rollback image. The helper pulls and
 stages the candidate while normalization runs. It then pauses the native writer,
@@ -41,46 +49,54 @@ installation. Keep every earlier backend/frontend/native-controller worktree
 and all private journals. The new checkout becomes the controller source after
 the first successful handoff; keep it clean and pinned too.
 
-The published tag identifies the tested tools commit. Revision `r3` accepts
-Compose's empty default IPAM representation while retaining strict checks on
+The published tag identifies the tested tools commit. Revision `r4` retains `r3`'s
+handling of Compose's empty default IPAM representation, with strict checks on
 network names, addresses, drivers and explicit IPAM settings. It recognizes the
 `.4` frontend footer release and retains earlier deployment proofs. The target
-infrastructure images are unchanged. The original image-fixture evidence and
-subsequent snapshot regression evidence remain separately recorded.
+infrastructure images are unchanged. It also includes a read-only certificate
+reviewer and keeps TLS assets renewable through existing directory bind mounts.
+Private copies remain immutable evidence. Earlier journals keep their original
+mount contract. The original image-fixture and snapshot regression evidence
+remain separately recorded.
 
 ```bash
 bash <<'SELECT_INFRA_TOOLS'
 set -euo pipefail
-git -C /data/blockscout fetch origin tag deriw-infra-patches-2026-11-07-r3
-if ! test -e /data/blockscout-v10-infrastructure-fix; then
-  git -C /data/blockscout worktree add --detach /data/blockscout-v10-infrastructure-fix deriw-infra-patches-2026-11-07-r3
+git -C /data/blockscout fetch origin tag deriw-infra-patches-2026-11-07-r4
+if ! test -e /data/blockscout-v10-origin-certificate; then
+  git -C /data/blockscout worktree add --detach /data/blockscout-v10-origin-certificate deriw-infra-patches-2026-11-07-r4
 fi
-cd /data/blockscout-v10-infrastructure-fix
-test "$(git rev-parse HEAD)" = "$(git rev-parse deriw-infra-patches-2026-11-07-r3^{commit})"
+cd /data/blockscout-v10-origin-certificate
+test "$(git rev-parse HEAD)" = "$(git rev-parse deriw-infra-patches-2026-11-07-r4^{commit})"
 test -z "$(git status --porcelain)"
 python3 deploy/scripts/v10_infrastructure_deploy.py --help
 SELECT_INFRA_TOOLS
 ```
 
 Keep all earlier infrastructure and footer checkouts pinned for their service
-and journal references. The new `-fix` checkout hosts these corrected tools. Do
+and journal references. The new `-origin-certificate` checkout hosts these tools. Do
 not change a checkout used by an existing migration service.
 
 ## Apply one component
 
-Start with Nginx. The final JSON must say `infrastructure_finished`; its
+Start with Redis while the certificate is being replaced. The final JSON must
+say `infrastructure_finished`; its
 `normalization` section must report `running`, `waiting`, or `completed`.
 `waiting_for_autovacuum` and `long_transaction` are normal automatic safety
 pauses. `service_start_requested` alone does not qualify success.
 
 ```bash
-cd /data/blockscout-v10-infrastructure-fix
-bash deploy/steps/dev-v10-infrastructure.sh --run --component nginx \
+cd /data/blockscout-v10-origin-certificate
+bash deploy/steps/dev-v10-infrastructure.sh --run --component redis \
   --normalization-state /data/blockscout-dev-private/v10-native-normalization/job-20261106T103901Z-59bb4dc6/state.json
 ```
 
-After it finishes, run the same command with `--component redis`, then
-`--component postgresql-stats`, then `--component postgresql-main`. Retain the
+After it finishes, run the same command with `--component postgresql-stats`,
+then `--component postgresql-main`. After certificate recovery, run it with
+`--component nginx` to create a fresh Nginx preparation. The existing `r3`
+checkout `/data/blockscout-v10-infrastructure-fix` can also perform Redis and
+PostgreSQL patches; installing `r4` is needed for the new certificate reviewer
+and renewable Nginx asset mounts. Retain the
 different infrastructure `state` path printed by **each** operation.
 Run inside an existing terminal multiplexer if the SSH connection is unreliable.
 After interruption use the saved state, rather than creating another release.
@@ -123,7 +139,11 @@ resume. A failure such as `Stored Compose snapshot differs ...: networks` can
 occur before any service change. Keep its incomplete preparation directory and
 use the corrected pinned tools to run a fresh `--run` preparation. Do not edit
 the saved snapshots or native inputs. Once a real `state.json` has been created,
-recover using that same state instead of preparing a replacement.
+recover using that same state. The exception is an operation still `prepared`,
+with no staging receipt or activation, whose preflight baseline was intentionally
+changed: the expired-certificate Nginx attempt is one such case. Preserve that
+journal and prepare Nginx afresh after the certificate/peer updates. Never resume
+the stale snapshot across those changes or replace a journal after activation.
 
 Infrastructure `--status` reads saved files. Native status is also a checkpoint
 read; check its timestamp. The native service may be inactive when the job has
@@ -193,12 +213,16 @@ It saves and stops cleanly, archives the final data privately with a checksum,
 and checks RDB compatibility before either binary starts. A changed persistence
 policy stops preparation. [Redis 8.8.4 notes](https://github.com/redis/redis/releases/tag/8.8.4)
 
-Nginx retains the loaded configuration and referenced certificates/auth files
-as private immutable artifacts. Its entrypoint loads these directly. Future
-certificate/configuration changes must update this pinned selection through a
-reviewed deployment; changing the former template directory alone will not
-replace frozen files. Staging verifies HTTP, trusted HTTPS, deposits, backend
-and stats APIs, websocket101 and source-map restrictions.
+Nginx retains private immutable copies of its loaded configuration and referenced
+certificate/auth assets. Loaded configuration is mounted from those copies.
+In new `r4` preparations, referenced assets already accessible through an
+existing directory bind mount use that original mount, so certificate renewal
+and graceful reload remain possible. Assets without that coverage stay frozen;
+earlier journals without the new role field keep every original overlay. The
+current live files must match their captured bytes before staging/activation;
+changing them during preparation requires a fresh preflight. Later configuration
+changes still require a reviewed deployment. Staging verifies HTTP, trusted
+HTTPS, deposits, backend and stats APIs, websocket101 and source-map restrictions.
 [Nginx changes](https://nginx.org/en/CHANGES)
 
 The original upgrade's recorded recovery policy remains **operator manual
@@ -229,3 +253,10 @@ trips, the expanded Nginx upgrade/rollback fixture, and unit coverage proving
 that explicit topology changes still stop validation. Preparation now prints its
 evidence directory before checking snapshots and distinguishes an uncreated
 journal from a resumable operation.
+
+The [certificate recovery validation record](../../deploy/audits/origin-certificate-validation-2026-11-07.json)
+adds offline key/chain/hostname/expiry checks and a real Nginx renewal exercise.
+The fixture verifies the new certificate is served after reload without
+recreating a container, historical certificate evidence stays unchanged, and
+binary rollback continues serving the renewed certificate. Live certificate
+issuance and installation are performed by the certificate administrator.

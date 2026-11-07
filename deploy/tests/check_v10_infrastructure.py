@@ -8,6 +8,7 @@ import ipaddress
 import json
 import os
 from pathlib import Path
+import ssl
 import subprocess
 import sys
 import tarfile
@@ -407,9 +408,10 @@ loop.(loop)
         hostname='explorer.fixture.invalid'
         folder=self.directory/'nginx'
         folder.mkdir(mode=0o700)
-        (folder/'certificate.cnf').write_text('[req]\ndistinguished_name=dn\nx509_extensions=v3\nprompt=no\n[dn]\nCN='+hostname+'\n[v3]\nsubjectAltName=DNS:'+hostname+'\nbasicConstraints=critical,CA:TRUE\nkeyUsage=critical,digitalSignature,keyEncipherment,keyCertSign\n')
+        (folder/'certificate.cnf').write_text('[req]\ndistinguished_name=dn\nx509_extensions=v3\nprompt=no\n[dn]\nCN=Infrastructure Fixture CA\n[v3]\nsubjectAltName=DNS:'+hostname+'\nbasicConstraints=critical,CA:TRUE\nkeyUsage=critical,digitalSignature,keyEncipherment,keyCertSign\n')
         self.run(['openssl','req','-new','-x509','-newkey','rsa:2048','-nodes','-days','1',
             '-config',str(folder/'certificate.cnf'),'-keyout',str(folder/'fixture.key'),'-out',str(folder/'fixture.crt')])
+        (folder/'trust.crt').write_bytes((folder/'fixture.crt').read_bytes())
         mock='infra-mock-'+self.token
         proxy='infra-proxy-'+self.token
         client='infra-http-'+self.token
@@ -424,7 +426,8 @@ location /socket/v2/websocket {
 location / { default_type application/json; return 200 '{"fixture":true}'; }
 } }\n'''
         (folder/'mock.conf').write_text(mock_config)
-        app=json.loads(self.run(['docker','image','inspect','deriw-blockscout:v10-nft-local-validation']))[0]['Id']
+        app=json.loads(self.run(['docker','image','inspect',
+            'quanquanah/blockscout-frontend@sha256:44bd15d39c839baf1e32e28ce99c63c9eee99db8e08043cc0df8ceb1d84faf28']))[0]['Id']
         self.run(['docker','run','-d','--pull','never','--name',client,'--label',G.LABEL+'='+self.token,
             '--network',self.network,'--read-only','--tmpfs','/tmp:rw,mode=1777','--memory','128m',
             '--entrypoint','sleep',app,'infinity'])
@@ -437,7 +440,7 @@ location /socket/v2/websocket {
 }
 location / { proxy_pass http://mock:8081; }
 '''
-        nginx='events {}\nhttp {\nserver { listen 80; server_name '+hostname+';\n'+locations+'}\nserver { listen 443 ssl; server_name '+hostname+';\nssl_certificate /etc/nginx/fixture.crt;\nssl_certificate_key /etc/nginx/fixture.key;\n'+locations+'}\n}\n'
+        nginx='events {}\nhttp {\nserver { listen 80; server_name '+hostname+';\n'+locations+'}\nserver { listen 443 ssl; server_name '+hostname+';\nssl_certificate /etc/nginx/templates/fixture.crt;\nssl_certificate_key /etc/nginx/templates/fixture.key;\n'+locations+'}\n}\n'
         (folder/'nginx.conf').write_text(nginx)
         configuration=self.volume('nginx-config')
         daemon_root=self.seed_files(configuration,[folder/f for f in ('mock.conf','nginx.conf','fixture.crt','fixture.key')])
@@ -449,8 +452,8 @@ location / { proxy_pass http://mock:8081; }
         candidate=json.loads(self.run(['docker','image','inspect',K.catalog()['nginx']['reference']]))[0]['Id']
         model={'services':{'proxy':{'image':original,'container_name':proxy,'labels':{G.LABEL:self.token},
             'entrypoint':['nginx'],'command':['-g','daemon off;'],'mem_limit':'128m',
-            'volumes':[{'type':'bind','source':daemon_path(folder/f),'target':'/etc/nginx/'+f,'read_only':True}
-                       for f in ('nginx.conf','fixture.crt','fixture.key')],
+            'volumes':[{'type':'bind','source':daemon_path(folder/'nginx.conf'),'target':'/etc/nginx/nginx.conf','read_only':True},
+                       {'type':'bind','source':daemon_path(folder),'target':'/etc/nginx/templates'}],
             'networks':{'default':{'aliases':['proxy']}}},'backend':{'image':app},'frontend':{'image':original}},
             'networks':{'default':{'external':True,'name':self.network}}}
         initial=self.directory/'nginx-initial.compose.json'
@@ -479,12 +482,12 @@ location / { proxy_pass http://mock:8081; }
             compose_model=D.compose_model,model_differences=D.model_differences)
         model=api.compose_model(self.directory,manifest,{},[initial],True)
         path=self.directory/'state.json'
-        saved=S.capture_nginx(api,self.directory)
+        saved=S.capture_nginx(api,self.directory,before['proxy']['Mounts'])
         self.seed_files(configuration,[Path(file['source']) for file in saved['files']])
         for artifact in saved['files']:
             artifact['source']=daemon_path(Path(artifact['source']))
         inputs={'component':'nginx','before':before,'nginx':saved,'public_host':hostname,
-                'image_id':candidate,'tls_ca_file':str(folder/'fixture.crt')}
+                'image_id':candidate,'tls_ca_file':str(folder/'trust.crt')}
         for side in ('forward','rollback'):
             selected=S.nginx_snapshot(K.snapshot(model,before,'nginx',candidate,path,side),saved['files'])
             snapshot=self.directory/(side+'.compose.json')
@@ -506,17 +509,45 @@ location / { proxy_pass http://mock:8081; }
             K.unchanged_others(api,before,after,'nginx')
             I.component_contract(api,path,inputs,'forward',after)
             assert K.live_fingerprint(api,'proxy','nginx')['version']=='1.31.8'
+            assert all(m['Destination'] not in ('/etc/nginx/templates/fixture.crt','/etc/nginx/templates/fixture.key')
+                       for m in after['proxy']['Mounts'])
+            def peer_fingerprint():
+                code='const fs=require("fs"),tls=require("tls");const s=tls.connect({host:process.argv[1],port:443,servername:process.argv[2],ca:fs.readFileSync(0,"utf8")},()=>{process.stdout.write(s.getPeerCertificate().fingerprint256.replaceAll(":","").toLowerCase());s.end()});s.on("error",()=>process.exit(2));'
+                return self.run(['docker','exec','-i',client,'node','-e',code,proxy,hostname],
+                                input=(folder/'trust.crt').read_text(),timeout=15).strip()
+            first_fingerprint=peer_fingerprint()
+            self.run(['openssl','req','-new','-newkey','rsa:2048','-nodes','-subj','/CN='+hostname,
+                '-keyout',str(folder/'next.key'),'-out',str(folder/'next.csr')])
+            (folder/'next.cnf').write_text('basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:'+hostname+'\n')
+            self.run(['openssl','x509','-req','-in',str(folder/'next.csr'),'-CA',str(folder/'fixture.crt'),
+                '-CAkey',str(folder/'fixture.key'),'-set_serial','2','-days','1','-extfile',str(folder/'next.cnf'),
+                '-out',str(folder/'next.crt')])
+            renewed_fingerprint=hashlib.sha256(ssl.PEM_cert_to_DER_cert((folder/'next.crt').read_text())).hexdigest()
+            assert first_fingerprint != renewed_fingerprint
+            (folder/'fixture.crt').write_bytes((folder/'next.crt').read_bytes())
+            (folder/'fixture.key').write_bytes((folder/'next.key').read_bytes())
+            self.seed_files(configuration,[folder/'fixture.crt',folder/'fixture.key'])
+            api.run(['docker','exec','proxy','nginx','-t'])
+            api.run(['docker','exec','proxy','nginx','-s','reload'])
+            self.wait(lambda:peer_fingerprint()==renewed_fingerprint,'Renewed certificate was not served after reload')
+            S.validate_artifacts(inputs)
+            S.ready_routes(api,inputs,proxy)
+            D.ensure_stable(after,inspect(),'Certificate reload recreated a container')
             self.run(compose+['-f',str(self.directory/'rollback.compose.json'),'up','-d','--no-deps','--no-build','--pull','never','proxy'])
             S.ready_routes(api,inputs,proxy)
+            assert peer_fingerprint()==renewed_fingerprint
             rollback=inspect()
             K.unchanged_others(api,before,rollback,'nginx')
             I.component_contract(api,path,inputs,'rollback',rollback)
             assert K.live_fingerprint(api,'proxy','nginx')['version']=='1.31.1'
         return {'nginx':{'status':'passed','old_version':'1.31.1','patch_version':'1.31.8',
             'compose_snapshot_round_trip_verified':True,
-            'actual_staging_and_component_contract_used':True,'frozen_configuration_and_certificates':True,
+            'actual_staging_and_component_contract_used':True,'frozen_configuration_and_private_certificate_evidence':True,
+            'directory_mounted_tls_assets_remain_renewable':True,
             'http_and_verified_https_routes':True,'deposits_backend_and_stats_routes':True,
             'websocket_101_upgrade':True,'source_maps_restricted':True,'static_ip_and_unrelated_containers_preserved':True,
+            'certificate_rotation_verified_without_container_recreation':True,
+            'historical_certificate_evidence_unchanged':True,'image_rollback_keeps_the_renewed_certificate':True,
             'previous_image_rollback_verified':True}}
 
     def cleanup(self):

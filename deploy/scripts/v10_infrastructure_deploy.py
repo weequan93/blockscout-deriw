@@ -137,7 +137,7 @@ def prepare(api, native_path, component, tls_ca=None):
     files = F.current_compose_files(api, before, manifest, context)
     model = api.compose_model(P.V.LIVE_DIRECTORY, manifest, {}, files, True)
     D.require(not api.live_environment_differences(model, before), 'Current Compose environment differs from running services')
-    nginx = S.capture_nginx(api, directory) if kind == 'nginx' else None
+    nginx = S.capture_nginx(api, directory, before[service].get('Mounts', [])) if kind == 'nginx' else None
     tls_ca_file = None
     if tls_ca:
         raw = tls_ca.read_bytes()
@@ -239,7 +239,7 @@ def expected_mounts(inputs, selected):
     name = K.COMPONENTS[inputs['component']][0]
     mounts = {v['Destination']: {key: v[key] for key in ('Type', 'Source', 'Destination', 'RW')}
               for v in inputs['before'][name].get('Mounts', [])}
-    for item in (inputs.get('nginx') or {}).get('files', []):
+    for item in S.deployment_files((inputs.get('nginx') or {}).get('files', [])):
         mounts[item['target']] = {'Type': 'bind', 'Source': item['source'], 'Destination': item['target'], 'RW': False}
     actual = {v['Destination']: {key: v[key] for key in ('Type', 'Source', 'Destination', 'RW')} for v in selected.get('Mounts', [])}
     D.require(actual == mounts, 'Service data/configuration mounts changed outside the frozen patch selection')
