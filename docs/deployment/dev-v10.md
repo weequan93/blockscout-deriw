@@ -12,6 +12,8 @@ controller. Preserve the earlier backend/controller checkouts and private journa
 For Prometheus deposit/withdrawal progress and the processed/sent/confirmed rollup
 stages, use the separate [bridge metrics exporter](deriw-bridge-metrics.md).
 It adds a read-only internal endpoint alongside the migration service.
+The qualified release tag is `deriw-bridge-metrics-2026-11-07`; that runbook
+includes installation/check commands and the dated live endpoint evidence.
 
 ## 1. Select the right checkout
 

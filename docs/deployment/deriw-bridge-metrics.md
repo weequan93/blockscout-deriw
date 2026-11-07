@@ -11,6 +11,32 @@ only this new monitoring service. It does not restart backend/frontend, restore
 the held indexer metrics collector, change normalization, modify database rows,
 run migrations, or enable other migrators. Keep all existing pinned worktrees.
 
+## Final release and deployed state
+
+The finalized release is tagged **`deriw-bridge-metrics-2026-11-07`** on branch
+`feat/deriw-bridge-metrics`. Its exporter implementation is unchanged from
+**`74f2bed18440fad335b5e66ff87174467b2261cd`**, which the operator deployed and
+verified on dev at **2026-11-07 08:15:33 UTC / 16:15:33 SGT**.
+
+The operator's output confirmed an active systemd service, `exporter_up=1`, all
+five query sections successful, and complete indexed-message samples in both
+directions. The [live qualification record](../../deploy/audits/deriw-bridge-metrics-live-2026-11-07.json)
+captures that dated observation. The [local validation record](../../deploy/audits/deriw-bridge-metrics-validation-2026-11-07.json)
+belongs to implementation commit `74f2bed184`; its file hashes and pre-deployment
+status are historical evidence and are retained unchanged.
+
+The existing dev service points to **`/data/blockscout-bridge-metrics` at
+`74f2bed18440fad335b5e66ff87174467b2261cd`**. Leave that checkout pinned. The final
+release adds the runbook, step file and live evidence; the already active exporter
+does not need a reinstall or application rollout for these additions.
+
+Prometheus scraping, an external private network route, and Grafana dashboard
+installation have not been verified. The successful local `/metrics` response
+qualifies the exporter endpoint only. This procedure targets the captured
+**DeriW dev v10.2.6 deployment**; a production host needs its own reviewed inventory.
+The [main dev operations guide](dev-v10.md) and [frontend rollout guide](frontend-v2.7.2.md)
+cover the application deployment that this monitoring service observes.
+
 ## Meaning of the states
 
 Blockscout uses `to_l2`/`from_l2` for the child rollup in its schema. On this
@@ -105,8 +131,34 @@ only that the exporter process serves HTTP, not that data collection succeeds.
 
 ## One-time installation on the dev server
 
-Use a clean, pinned checkout containing this exporter. First inspect a bounded
-snapshot without creating a service:
+For an **existing active installation**, use the check instructions below. For a
+**new installation** on the configured dev deployment, run this entire block in
+the dev server terminal. It fetches the immutable release tag, creates a pinned
+worktree, runs the live read preflight, installs the service, and waits for a
+fresh metrics response with all five query sections successful:
+
+```bash
+bash <<'INSTALL_DERIW_BRIDGE_METRICS'
+set -euo pipefail
+git -C /data/blockscout fetch origin tag deriw-bridge-metrics-2026-11-07
+metrics_commit=$(git -C /data/blockscout rev-parse 'refs/tags/deriw-bridge-metrics-2026-11-07^{commit}')
+if ! test -e /data/blockscout-bridge-metrics; then
+  git -C /data/blockscout worktree add --detach /data/blockscout-bridge-metrics "$metrics_commit"
+fi
+cd /data/blockscout-bridge-metrics
+test "$(git rev-parse HEAD)" = "$metrics_commit"
+test -z "$(git status --porcelain)"
+bash deploy/steps/deriw-bridge-metrics.sh install
+INSTALL_DERIW_BRIDGE_METRICS
+```
+
+If `/data/blockscout-bridge-metrics` already contains the qualified `74f2bed184`
+installation, the revision check intentionally stops this new-install sequence.
+Keep the running installation and use its existing endpoint; do not move its
+checkout or replace its service just to obtain documentation updates.
+
+For a bounded live diagnostic without installing a service, the pinned exporter
+checkout also provides:
 
 ```bash
 python3 deploy/scripts/deriw_bridge_metrics.py --once
@@ -114,13 +166,6 @@ python3 deploy/scripts/deriw_bridge_metrics.py --once
 
 The JSON contains only aggregate numbers, state names and process/cursor metadata.
 Review `sections.*.ok`; false means data is unavailable within the fixed budgets.
-Then install the new persistent monitoring service:
-
-```bash
-python3 deploy/scripts/deriw_bridge_metrics.py --install-service
-systemctl is-active deriw-bridge-metrics.service
-curl --fail --silent --show-error http://127.0.0.1:9160/metrics
-```
 
 The service restarts after process failure/host reboot. It has no migration cursor
 or transactional work to resume. A backend restart merely invalidates a poll;
@@ -136,6 +181,13 @@ select a trusted private host IPv4 address with `--listen ADDRESS` at installati
 and allow that port only from the monitoring network, or arrange a private proxy.
 This exporter does not add a public explorer route or modify firewall rules.
 
+An existing unit is tied to its installed source directory and bind arguments.
+The installer refuses a different unit definition. To change the private bind
+address, DevOps should first review the current unit with
+`systemctl cat deriw-bridge-metrics.service`, keep its pinned source root, and
+plan an explicit service-unit replacement. A second `--install-service` call
+with different arguments does not silently reconfigure the running service.
+
 For Prometheus running on the same host (outside Docker):
 
 ```yaml
@@ -147,9 +199,40 @@ scrape_configs:
       - targets: ["127.0.0.1:9160"]
 ```
 
+After DevOps adds the scrape job, verify Prometheus reports
+`up{job="deriw_bridge"} == 1` and `deriw_bridge_exporter_up == 1`, with all five
+`deriw_bridge_query_success` sections equal to 1. HTTP scrape success alone
+does not establish successful database collection. Check the configured target's
+address from the actual Prometheus network namespace before changing the host.
+
 Uninstall only this observer with `systemctl disable --now deriw-bridge-metrics.service`
 and remove its reviewed unit file followed by `systemctl daemon-reload`. Do not
 stop the separate native normalization service or delete any deployment journals.
+
+## Check an existing installation
+
+On the current dev server, no fetch or reinstall is needed to inspect the active
+endpoint:
+
+```bash
+systemctl is-active deriw-bridge-metrics.service
+curl -q --noproxy '*' --fail --silent --show-error --max-time 5 \
+  http://127.0.0.1:9160/metrics
+```
+
+From a documentation/ops checkout containing the final release step file, use:
+
+```bash
+bash deploy/steps/deriw-bridge-metrics.sh check
+```
+
+`check` is the default. It reads systemd and the cached HTTP endpoint, waits up
+to 45 seconds for fresh successful collection, and prints the metrics. It starts
+no services, creates no maintenance client and performs no direct database/RPC
+read. Exit 0 means fresh exporter data and all five query sections were observed;
+exit 1 means inactive/unavailable data, and exit 2 means incorrect usage or missing
+host tools. The original `74f2bed184` checkout predates this step file; use the
+direct `systemctl`/`curl` commands there.
 
 ## Dashboard queries
 
@@ -192,3 +275,8 @@ The second command uses locally cached application and PG15 images on a disposab
 internal Docker network. It checks the actual RPC/SQL, message states, origin
 metadata gaps, settlement/finality distinctions, reorg regression, window limits,
 read-only enforcement, timeouts and plan budgets. It accesses no live deployment.
+
+Finalization retained the deployed exporter/query file hashes. The new step file
+passed `bash -n`, cached-endpoint check/install flow verification with stubbed host
+tools, invalid-argument rejection, and inactive-service reporting. No systemd or
+Docker operation was executed on the development Mac for those step-file checks.
