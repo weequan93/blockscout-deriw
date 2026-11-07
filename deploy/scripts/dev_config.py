@@ -111,7 +111,7 @@ def inspect_project(manifest,require_running=True,allow_missing_backend=False,al
   by_service[service]=row
  expected=set(manifest['baseline_image_ids'])
  missing=set(allow_missing_services)|({'backend'} if allow_missing_backend else set())
- require(missing<= {'backend','nft_media_handler','frontend'},'Only upgrade services may be missing during recreation')
+ require(missing<= {'backend','nft_media_handler','frontend','proxy','redis-db','db','stats-db'},'Only upgrade services may be missing during recreation')
  require(set(by_service)<=expected and expected-set(by_service)<=missing,
   'Live service set differs from the captured dev inventory')
  if 'backend' not in by_service:return by_service

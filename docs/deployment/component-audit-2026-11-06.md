@@ -12,6 +12,12 @@ current [deployment guide](dev-v10.md) describes the required native-job handoff
 before changing a bound runtime. These are dated decisions; recheck release
 notes and image availability when scheduling deployment.
 
+Update, 7 November: the frontend v2.7.2 Deriw rollout is now recorded in its
+[deployment guide](frontend-v2.7.2.md). Nginx/Redis/PostgreSQL patch scripts and
+synthetic upgrade/rollback tests are prepared in the
+[infrastructure guide](infrastructure-patches.md); those server patches remain
+unapplied. The table below preserves the original dated audit.
+
 ## Upgrade decisions
 
 | Component | Confirmed running version | Decision |

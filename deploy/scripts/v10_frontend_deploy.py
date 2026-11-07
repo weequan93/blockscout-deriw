@@ -245,6 +245,9 @@ def remove_stage(api, name, path):
 
 def current_compose_files(api, before, manifest, context):
     # Later frontend releases must inherit the last qualified frontend selection.
+    if context.get('infrastructure_release_state'):
+        import v10_infrastructure_deploy as I
+        return I.current_files(context)
     if context.get('frontend_release_state'):
         path = Path(context['frontend_release_state'])
         load(path)
@@ -397,6 +400,7 @@ def verify(api, path, side, receipt=None, wait=False):
     bridge = R.load_state(api, bridge_path, manifest)
     # The immutable frontend receipt supplies the only changed service in the existing backend verification.
     reviewed = deepcopy(bridge)
+    reviewed['before'] = deepcopy(inputs['before'])
     reviewed['before']['frontend'] = runtime['frontend']
     health = R.verify(api, B, P.C, manifest, bridge_path, reviewed, 'forward', wait=wait)
     D.require(health['status'] == 'verified', 'Existing backend health is not verified; native writer stays paused')

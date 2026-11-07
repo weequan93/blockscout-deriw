@@ -5,6 +5,11 @@ The v10.2.6 backend and bridge fix are deployed. Historical internal-transaction
 normalization continues as a resumable systemd job. Component patch updates and
 the deferred index/primary-key work are separate follow-ups.
 
+The tested [infrastructure patch guide](infrastructure-patches.md) covers Nginx
+1.31.8, Redis 8.8.4 and both PostgreSQL 15.19 instances, including rollback and
+handoff of the existing native migration. Preparing these tools does not apply
+the server upgrades.
+
 The [frontend v2.7.2 rollout](frontend-v2.7.2.md) has a separate targeted helper.
 After that rollout, its new worktree hosts the same native normalization job's
 controller. Preserve the earlier backend/controller checkouts and private journals.

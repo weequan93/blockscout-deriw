@@ -1,0 +1,27 @@
+{
+  "format": "deriw-v10-infrastructure-targets-v1",
+  "platform": "linux/amd64",
+  "nginx": {
+    "from_version": "1.31.1",
+    "version": "1.31.8",
+    "os_id": "debian",
+    "os_version": "13",
+    "reference": "nginx@sha256:5cb45c65713151f856f6b64f6a9b6a96b74d6a10709a7aa18919a444fd00bffa",
+    "reviewed_tag": "1.31.8-trixie"
+  },
+  "redis": {
+    "from_version": "8.8.0",
+    "version": "8.8.4",
+    "os_id": "alpine",
+    "reference": "redis@sha256:b85e284e14f616937c8e94a5d0374a6cfa6eb4bc5d6ab4ce59e38eca2fcec476",
+    "reviewed_tag": "8.8.4-alpine"
+  },
+  "postgresql": {
+    "from_version": "15.18",
+    "version": "15.19",
+    "os_id": "debian",
+    "os_version": "13",
+    "reference": "postgres@sha256:61a5b377afa2f8604cf6f3e6d7b17b7bcee2ac3cc0245a7b698a43a29e9896c6",
+    "reviewed_tag": "15.19-trixie"
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "format": "deriw-v10-infrastructure-inventory-v1",
+  "evidence_source": "operator read-only inventory",
+  "inventory": {
+    "observed_at_utc": "2026-11-07T09:04:15.536616+00:00",
+    "os": {
+      "proxy": "debian13",
+      "redis-db": "alpine3.23.4",
+      "db": "debian13",
+      "stats-db": "debian13"
+    },
+    "postgres_main": {
+      "version": "15.18",
+      "extensions": {
+        "plpgsql": "1.0",
+        "btree_gist": "1.7",
+        "citext": "1.6",
+        "pg_trgm": "1.6",
+        "btree_gin": "1.3"
+      },
+      "prepared_transactions": 0,
+      "slot_plugins": []
+    },
+    "postgres_stats": {
+      "version": "15.18",
+      "extensions": {
+        "plpgsql": "1.0"
+      },
+      "prepared_transactions": 0,
+      "slot_plugins": []
+    },
+    "redis": {
+      "appendonly": false,
+      "rdb_rules": true,
+      "cluster": false
+    },
+    "native": {
+      "state": "/data/blockscout-dev-private/v10-native-normalization/job-20261106T103901Z-59bb4dc6/state.json",
+      "status": "running",
+      "cursor": 14664788,
+      "complete": false
+    }
+  }
+}

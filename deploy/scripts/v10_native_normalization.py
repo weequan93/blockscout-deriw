@@ -105,6 +105,9 @@ def runtime_binding(path, state):
     if filename is None:
         J.P.require('runtime_binding_sha256' not in state, 'Incomplete runtime binding')
         return None
+    if filename.startswith('infrastructure-runtime-binding-'):
+        import v10_infrastructure_deploy as I
+        return I.native_context(path, state)
     if filename.startswith('frontend-runtime-binding-'):
         import v10_frontend_deploy as F
         return F.native_context(path, state)
@@ -359,7 +362,10 @@ def run(api, root, path):
                 if time.monotonic() - last_health >= 15:
                     started = time.monotonic()
                     if binding:
-                        if 'frontend_release_state' in binding:
+                        if 'infrastructure_release_state' in binding:
+                            import v10_infrastructure_deploy as I
+                            health = I.verify_native(DeadlineAPI(api, started + 25), path, state, binding)
+                        elif 'frontend_release_state' in binding:
                             import v10_frontend_deploy as F
                             health = F.verify_native(DeadlineAPI(api, started + 25), path, state, binding)
                         else:
@@ -496,7 +502,7 @@ def service_text(path):
     return render_service(path, ROOT, state['inputs']['python_executable'])
 
 
-def install_service(api, path):
+def install_service(api, path, start=True):
     state = load(path)
     binding = runtime_binding(path, state)
     context = binding or state['inputs']
@@ -513,7 +519,9 @@ def install_service(api, path):
                 expected.append(render_service(path, Path(binding['previous_source_root']), inputs['python_executable']).encode())
             J.P.require(binding is not None and previous in expected,
                         'Another native service definition exists')
-            backup_name = ('service-before-frontend-' + state['runtime_binding_sha256'][:12] + '.private'
+            backup_name = ('service-before-infrastructure-' + state['runtime_binding_sha256'][:12] + '.private'
+                           if binding and 'infrastructure_release_state' in binding else
+                           'service-before-frontend-' + state['runtime_binding_sha256'][:12] + '.private'
                            if binding and 'frontend_release_state' in binding else 'service-before-bridge.private')
             backup = path.parent / backup_name
             if not backup.exists():
@@ -526,8 +534,8 @@ def install_service(api, path):
         R.write_new(target, data)
         os.chmod(target, 0o644)
     api.run(['systemctl', 'daemon-reload'], timeout=15)
-    api.run(['systemctl', 'enable', '--now', UNIT], timeout=30)
-    return {**public(path, state), 'service': UNIT, 'service_start_requested': True}
+    api.run(['systemctl', 'enable', *(['--now'] if start else []), UNIT], timeout=30)
+    return {**public(path, state), 'service': UNIT, 'service_start_requested': start}
 
 
 def require_service(path):
