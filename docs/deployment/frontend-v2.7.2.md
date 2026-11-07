@@ -20,6 +20,13 @@ build value as a runtime setting causes strict validation to reject it.
 `ENVS_PRESET=none` prevents a newer upstream preset from replacing the captured
 settings. Strict startup environment validation remains enabled.
 
+The rollout adds **Docs** linking to `https://docs.deriw.com/` through the
+image's existing `NEXT_PUBLIC_FOOTER_LINKS` setting. With no custom links, it
+appears in a Resources group. Existing custom groups are read from the running
+frontend's resolved JSON asset and retained, with the Docs link added to a
+visible group if needed. The image digest remains unchanged; no rebuild is
+required for this setting.
+
 ## Activate on the dev server
 
 Use a separate clean worktree at the published deployment-tool commit. Keep
@@ -129,3 +136,7 @@ sprite check.
 The [DeriW footer validation record](../../deploy/audits/frontend-footer-deployment-validation-2026-11-07.json)
 records the `.2` source, 281 deployment tests, footer layout checks, full image
 startup and branding checks, and the verified registry digest.
+
+The [Docs configuration check](../../deploy/audits/frontend-docs-footer-validation-2026-11-07.json)
+records strict startup validation and the generated Docs footer asset using
+the same published image, with networking disabled during the check.

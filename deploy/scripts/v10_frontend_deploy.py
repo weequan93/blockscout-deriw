@@ -32,6 +32,7 @@ REVIEWED_RELEASES = {
 BACKEND = '875082f41d79ef72cd9dd9a4e771953a181c6cf2'
 LABEL = 'org.deriw.frontend-release-state'
 SIDE_LABEL = 'org.deriw.frontend-release-side'
+DOCS_URL = 'https://docs.deriw.com/'
 
 
 def source_review(api):
@@ -251,6 +252,33 @@ def current_compose_files(api, before, manifest, context):
     return api.live_files(P.V.LIVE_DIRECTORY, before['backend'], manifest)
 
 
+def documentation_environment(api, environment):
+    result = dict(environment)
+    groups = []
+    if result.get('NEXT_PUBLIC_FOOTER_LINKS'):
+        raw = api.run(['docker', 'exec', 'frontend', 'cat', '/app/public/assets/configs/footer_links.json'])
+        try:
+            groups = json.loads(raw)
+        except ValueError:
+            raise D.ConfigError('Existing footer links could not be read; values suppressed') from None
+    D.require(isinstance(groups, list) and all(isinstance(g, dict) and isinstance(g.get('title'), str) and isinstance(g.get('links'), list)
+              and all(isinstance(link, dict) and isinstance(link.get('url'), str) for link in g['links']) for g in groups),
+              'Existing footer links have an unexpected shape')
+    # The qualified UI displays at most four custom groups beside its DeriW links.
+    visible = groups[:4]
+    if not any(link.get('url', '').rstrip('/') == DOCS_URL.rstrip('/') for group in visible for link in group['links']):
+        target = next((g for g in visible if g.get('title') == 'Resources'), None)
+        if target is None:
+            if len(groups) >= 4:
+                target = groups[0]
+            else:
+                target = {'title': 'Resources', 'links': []}
+                groups.append(target)
+        target['links'].append({'text': 'Docs', 'url': DOCS_URL})
+    result['NEXT_PUBLIC_FOOTER_LINKS'] = json.dumps(groups, separators=(',', ':'))
+    return result
+
+
 def prepare(api, native_path, reference, supersedes=None):
     D.require(re.fullmatch(r'quanquanah/blockscout-frontend@sha256:[a-f0-9]{64}', reference),
               'Use the immutable published frontend digest')
@@ -272,6 +300,7 @@ def prepare(api, native_path, reference, supersedes=None):
     image = image_info(api, reference)
     script = api.run(['docker', 'exec', 'frontend', 'cat', '/app/public/assets/envs.js'])
     environment = migrate_environment(effective_environment(api.env_map(before['frontend']), script), manifest['chain_id'])
+    environment = documentation_environment(api, environment)
     files = current_compose_files(api, before, manifest, context)
     model = api.compose_model(P.V.LIVE_DIRECTORY, manifest, {}, files, True)
     D.require(not api.live_environment_differences(model, before), 'Current Compose environment differs from running services')
