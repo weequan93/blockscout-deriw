@@ -105,6 +105,9 @@ def runtime_binding(path, state):
     if filename is None:
         J.P.require('runtime_binding_sha256' not in state, 'Incomplete runtime binding')
         return None
+    if filename.startswith('frontend-runtime-binding-'):
+        import v10_frontend_deploy as F
+        return F.native_context(path, state)
     J.P.require(filename == 'bridge-runtime-binding.json', 'Unexpected runtime binding file')
     raw = U.private(path.parent / filename)
     binding = json.loads(raw)
@@ -356,8 +359,12 @@ def run(api, root, path):
                 if time.monotonic() - last_health >= 15:
                     started = time.monotonic()
                     if binding:
-                        health = R.verify(DeadlineAPI(api, started + 25), B, V.C, manifest,
-                                          Path(binding['release_state']), binding['release'], 'forward')
+                        if 'frontend_release_state' in binding:
+                            import v10_frontend_deploy as F
+                            health = F.verify_native(DeadlineAPI(api, started + 25), path, state, binding)
+                        else:
+                            health = R.verify(DeadlineAPI(api, started + 25), B, V.C, manifest,
+                                              Path(binding['release_state']), binding['release'], 'forward')
                     else:
                         health = U.verify(api, upgrade_path, upgrade, manifest, deadline=started + 25)
                     last_health = started
@@ -501,10 +508,14 @@ def install_service(api, path):
         previous = target.read_bytes()
         if previous != data:
             inputs = state['inputs']
-            expected = render_service(path, Path(inputs['source_root']), inputs['python_executable']).encode()
-            J.P.require(binding is not None and previous == expected,
+            expected = [render_service(path, Path(inputs['source_root']), inputs['python_executable']).encode()]
+            if binding and 'previous_source_root' in binding:
+                expected.append(render_service(path, Path(binding['previous_source_root']), inputs['python_executable']).encode())
+            J.P.require(binding is not None and previous in expected,
                         'Another native service definition exists')
-            backup = path.parent / 'service-before-bridge.private'
+            backup_name = ('service-before-frontend-' + state['runtime_binding_sha256'][:12] + '.private'
+                           if binding and 'frontend_release_state' in binding else 'service-before-bridge.private')
+            backup = path.parent / backup_name
             if not backup.exists():
                 R.write_new(backup, previous)
             temporary = target.parent / ('.native-' + uuid.uuid4().hex + '.tmp')

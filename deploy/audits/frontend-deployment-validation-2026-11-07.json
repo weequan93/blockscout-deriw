@@ -1,0 +1,35 @@
+{
+  "status": "deployment_tooling_validated",
+  "checked_at_utc": "2026-11-07T03:01:27.596041+00:00",
+  "frontend_revision": "27a4139d09ac57d975cc8c2bd4f1d804c8589f20",
+  "backend_application_revision": "875082f41d79ef72cd9dd9a4e771953a181c6cf2",
+  "checks": {
+    "v10_unit_tests_passed": 270,
+    "new_frontend_deployment_tests": 14,
+    "configuration_tests_passed": 73,
+    "release_checks": {
+      "tests": 76,
+      "unit_and_compose_checks_passed": 75,
+      "docker_transport_retest_passed": 1,
+      "note": "The initial Docker transport invocation lacked socket access. Its isolated rerun passed with local Docker access."
+    },
+    "python_compile": true,
+    "shell_syntax": true,
+    "diff_whitespace": true,
+    "native_worker_source_unchanged": true
+  },
+  "verified_behaviors": [
+    "Settings migration preserves Deriw values and parent explorer properties",
+    "Only frontend is selected for recreation; other containers and literal environment values are preserved",
+    "Unqualified images, changed snapshots/receipts and another backend change are rejected",
+    "Native cursor/token/inputs/worker and the original bridge binding remain intact",
+    "Rollback receives a separate immutable binding; unknown systemd definitions are refused"
+  ],
+  "scope": "Local unit/Compose tooling validation. No dev-server deployment has run. The Docker frontend image and actual server-private environment require their separate checks.",
+  "log_sha256": {
+    "v10": "635e8a3c6f5e32c369dd971ca6649b84fdeadd67332225c15359a2b313dd7f7d",
+    "configuration": "c6c6a113a83059e2a666fc5c2a49cf734bd4210c43c2bd567c0fd4df8ccc4d61",
+    "release": "e0dd66f4614099dce307a44c8bb0e0b8f4edb0787ed6933a6180deb0c0344bf5",
+    "docker_transport": "0ca923be1ef919e18c4283feecdf98856da93a3fd208e86282d011491f4f1e21"
+  }
+}

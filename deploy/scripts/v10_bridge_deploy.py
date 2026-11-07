@@ -43,7 +43,7 @@ def source_review(api, root):
     return source
 
 
-def pause_native(api, path):
+def pause_native(api, path, reason='bridge_deployment'):
     state = N.load(path)
     inputs = state['inputs']
     binding = N.runtime_binding(path, state)
@@ -52,12 +52,14 @@ def pause_native(api, path):
     definitions = [N.render_service(path, root, inputs['python_executable'])]
     if binding:
         definitions.append(N.render_service(path, Path(inputs['source_root']), inputs['python_executable']))
+        if 'previous_source_root' in binding:
+            definitions.append(N.render_service(path, Path(binding['previous_source_root']), inputs['python_executable']))
     D.require(target.is_file() and not target.is_symlink() and target.read_text() in definitions,
               'Native service ownership changed')
     if state['phase'] != 'completed':
         request = path.parent / 'pause.request'
         if not request.exists():
-            R.write_new(request, b'bridge deployment\n')
+            R.write_new(request, (reason + '\n').encode())
     api.run(['systemctl', 'stop', N.UNIT], timeout=65)
     status = api.run(['systemctl', 'show', N.UNIT, '--property=ActiveState', '--value'], timeout=10).strip()
     D.require(status in ('inactive', 'failed'), 'Native controller is still active; deployment not started')
@@ -76,7 +78,7 @@ IO.puts("BLOCKSCOUT_DEPLOY_CHECK=" <> Jason.encode!(%{remaining_native_connectio
         D.require(time.monotonic() < deadline, 'Native database connection cleanup is pending; deployment not started')
         time.sleep(0.25)
     if state['phase'] != 'completed':
-        N.save(path, state, 'paused', 'bridge_deployment')
+        N.save(path, state, 'paused', reason)
     return state
 
 

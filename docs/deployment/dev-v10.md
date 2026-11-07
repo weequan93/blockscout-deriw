@@ -1,9 +1,13 @@
 # Deriw dev v10 deployment and operations
 
-This is the current entry point for the dev explorer, updated **6 November 2026**.
+This is the current entry point for the dev explorer, updated **7 November 2026**.
 The v10.2.6 backend and bridge fix are deployed. Historical internal-transaction
 normalization continues as a resumable systemd job. Component patch updates and
 the deferred index/primary-key work are separate follow-ups.
+
+The [frontend v2.7.2 rollout](frontend-v2.7.2.md) has a separate targeted helper.
+After that rollout, its new worktree hosts the same native normalization job's
+controller. Preserve the earlier backend/controller checkouts and private journals.
 
 ## 1. Select the right checkout
 

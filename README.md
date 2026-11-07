@@ -30,6 +30,8 @@ For the Deriw installation, start with the [current dev v10 deployment and
 operations guide](docs/deployment/dev-v10.md), its
 [command/step file](deploy/steps/dev-v10-review.sh), and the
 [Compose component audit](docs/deployment/component-audit-2026-11-06.md).
+Use the [frontend v2.7.2 rollout guide](docs/deployment/frontend-v2.7.2.md)
+for the UI image and its normalization handoff.
 The deployed controller checkout stays pinned while historical normalization runs.
 
 See the [project documentation](https://docs.blockscout.com/) for instructions:
