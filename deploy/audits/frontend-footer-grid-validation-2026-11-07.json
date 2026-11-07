@@ -1,0 +1,95 @@
+{
+  "status": "passed",
+  "checked_at_utc": "2026-11-07T07:02:52.191210+00:00",
+  "source_revision": "8c7bfddd732365f6cc8963bf9d214ee69735eeca",
+  "frontend_version": "2.7.2-deriw.3",
+  "layout": {
+    "columns": 2,
+    "rows": 3,
+    "links": [
+      [
+        "DeriW website",
+        "Docs"
+      ],
+      [
+        "X",
+        "Telegram"
+      ],
+      [
+        "Discord",
+        "Blog"
+      ]
+    ],
+    "separate_resources_group": false
+  },
+  "checks": {
+    "existing_footer_browser_checks": 13,
+    "desktop_mobile_screenshots_reviewed": true,
+    "typescript_passed": true,
+    "changed_file_eslint_passed": true,
+    "production_build_passed": true,
+    "build_node_heap_mib": 3072,
+    "deployment_unit_tests": 281,
+    "frontend_deployment_tests": 25,
+    "native_worker_unchanged": true,
+    "container_qualification": {
+      "status": "passed",
+      "image_id": "sha256:ca7071e8d0a4826cce0de68d1b83005f0eed7ec79b2d445a4e763663992a03a7",
+      "image_reference": "quanquanah/blockscout-frontend:deriw-v2.7.2-grid-8c7bfddd7",
+      "source_revision": "8c7bfddd732365f6cc8963bf9d214ee69735eeca",
+      "platform": "linux/amd64",
+      "versions": {
+        "node": "v22.23.4",
+        "version": "2.7.2-deriw.3",
+        "next": "16.2.10",
+        "react": "19.1.4"
+      },
+      "full_entrypoint_health_passed": true,
+      "private_environment_migration_passed": true,
+      "strict_invalid_token_rejected": true,
+      "invalid_token_exit_code": 1,
+      "native_dependency_import_passed": true,
+      "deriw_footer_bundle_verified": true,
+      "docs_built_into_grid": true,
+      "legacy_resources_group_removed": true,
+      "generated_parent_current_labels": "L2/L3",
+      "browser_source_map_count": 0,
+      "staging_memory_limit_bytes": 1073741824,
+      "containers_removed": true,
+      "live_server_changed": false,
+      "network_scope": "Synthetic API origins; no dev explorer database or API requests"
+    },
+    "branding_assets": {
+      "status": "passed",
+      "asset_downloads": 5,
+      "favicon_generated": true,
+      "image_owned_sprite_reference": true,
+      "old_sprite_not_copied": true,
+      "memory_limit_bytes": 1073741824,
+      "no_live_server_requests": true
+    }
+  },
+  "registry": {
+    "status": "passed",
+    "repository": "quanquanah/blockscout-frontend",
+    "tag": "deriw-v2.7.2-grid-8c7bfddd7",
+    "index_digest": "sha256:ca7071e8d0a4826cce0de68d1b83005f0eed7ec79b2d445a4e763663992a03a7",
+    "platform_manifest_digest": "sha256:7ff6969bbd76991dc84432515ab56364fa314361796258969f7e70223ffbbd66",
+    "config_digest": "sha256:cb524564aa09beb60241f206a5f23e233d299c190e2a67afde0e1715465da643",
+    "deployment_reference": "quanquanah/blockscout-frontend@sha256:7ff6969bbd76991dc84432515ab56364fa314361796258969f7e70223ffbbd66",
+    "source_revision": "8c7bfddd732365f6cc8963bf9d214ee69735eeca",
+    "frontend_version": "2.7.2-deriw.3",
+    "platform": "linux/amd64",
+    "canonical_pull_passed": true,
+    "image_config_and_layers_match_qualified_build": true
+  },
+  "server_deployment_executed": false,
+  "scope": "Local layout, image and startup qualification. The user runs the pinned frontend rollout on the dev server.",
+  "log_sha256": {
+    "build": "ce9cbe24acd49124c458406e9939325b7f8bf4835e8e82026215a604bf760457",
+    "browser": "e3b4e02bf6392fe4a7b2493f54341c9ceb31b4e05c2c2eded92b161599809d93",
+    "container": "5b531b4da313fcfbf72b4522a351533db56169c06b942e22918d6052e6b73485",
+    "assets": "9fe6143c94addcf1e04982a98e3ab6a3f88c7c557cbe0631280d6d0093de0641",
+    "deployment_tests": "8b673e2b3b00f13cf0e66ffe58f5c7aa8f166de3b7e80378c2af2611c9a7e7d7"
+  }
+}

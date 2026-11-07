@@ -2,8 +2,8 @@
 
 This procedure updates only the frontend container for `explorer.dev.deriw.com`.
 The backend remains v10.2.6 at `875082f41d79ef72cd9dd9a4e771953a181c6cf2`.
-The UI image must identify source `8fbbb5f6742ab474cbcdaded0beb23cbdd89e2dc`
-and version `2.7.2-deriw.2`, and must be Linux AMD64. This patch uses DeriW-only
+The UI image must identify source `8c7bfddd732365f6cc8963bf9d214ee69735eeca`
+and version `2.7.2-deriw.3`, and must be Linux AMD64. This patch uses DeriW-only
 footer branding, a short description adapted from the official website, and
 its community links. Select the published image
 by its registry digest, never the moving `dev` tag.
@@ -20,12 +20,11 @@ build value as a runtime setting causes strict validation to reject it.
 `ENVS_PRESET=none` prevents a newer upstream preset from replacing the captured
 settings. Strict startup environment validation remains enabled.
 
-The rollout adds **Docs** linking to `https://docs.deriw.com/` through the
-image's existing `NEXT_PUBLIC_FOOTER_LINKS` setting. With no custom links, it
-appears in a Resources group. Existing custom groups are read from the running
-frontend's resolved JSON asset and retained, with the Docs link added to a
-visible group if needed. The image digest remains unchanged; no rebuild is
-required for this setting.
+The default footer contains six links in two columns and three rows:
+Website / Docs, X / Telegram, and Discord / Blog. Docs links directly to
+`https://docs.deriw.com/`. The helper removes the previous configurable Docs
+entry and its now-empty Resources group, so the default footer uses this flat
+grid without an extra heading. Other custom footer links are retained.
 
 ## Activate on the dev server
 
@@ -36,7 +35,7 @@ Do not repoint that checkout to the squashed release branch.
 ```bash
 python3 deploy/scripts/v10_frontend_deploy.py --run \
   --normalization-state /data/blockscout-dev-private/v10-native-normalization/job-20261106T103901Z-59bb4dc6/state.json \
-  --image quanquanah/blockscout-frontend@sha256:5e4aa57fd687f25e98a145c83d4681ad32be2b13af6c77b3ac0c0d4501b20b56
+  --image quanquanah/blockscout-frontend@sha256:7ff6969bbd76991dc84432515ab56364fa314361796258969f7e70223ffbbd66
 ```
 
 The helper pulls and checks the image, then runs a temporary container with the
@@ -63,8 +62,8 @@ pause/retry policy continue to apply.
 
 For a second frontend rollout, the helper inherits the previous qualified
 frontend Compose snapshot, rather than the older backend snapshot. It accepts
-the reviewed `.1` source when checking prior immutable receipts while requiring
-the exact `.2` source/version for the new image. The previous frontend plan and
+the reviewed `.1` and `.2` sources when checking prior immutable receipts while requiring
+the exact `.3` source/version for the new image. The previous frontend plan and
 binding remain unchanged, and rollback restores that plan's image and settings.
 Run each deployment from its own pinned tool worktree; keep earlier controller
 checkouts available because they are part of the verification history.
@@ -139,4 +138,8 @@ startup and branding checks, and the verified registry digest.
 
 The [Docs configuration check](../../deploy/audits/frontend-docs-footer-validation-2026-11-07.json)
 records strict startup validation and the generated Docs footer asset using
-the same published image, with networking disabled during the check.
+the earlier `.2` image, with networking disabled during the check.
+
+The [footer grid validation](../../deploy/audits/frontend-footer-grid-validation-2026-11-07.json)
+records the `.3` image, two-column/three-row layout, legacy Resources cleanup,
+281 deployment tests, container startup, branding assets and registry checks.
