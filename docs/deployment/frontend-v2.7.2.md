@@ -12,6 +12,9 @@ snapshots. It retains the Deriw API/token configuration, branding, chain/RPC,
 ports, mounts, network and parent explorer details. It removes the retired
 `NEXT_PUBLIC_API_SPEC_URL` and `NEXT_PUBLIC_ROLLUP_L1_BASE_URL`, fills the parent
 chain's `baseUrl` if needed, and sets `NEXT_PUBLIC_ROLLUP_LAYER_NUMBER=3`.
+It excludes the old image's generated `NEXT_PUBLIC_ICON_SPRITE_HASH`; the new
+image supplies the hash for its own sprite file during startup. Copying that
+build value as a runtime setting causes strict validation to reject it.
 `ENVS_PRESET=none` prevents a newer upstream preset from replacing the captured
 settings. Strict startup environment validation remains enabled.
 
@@ -37,6 +40,8 @@ connections are gone, and captures the database migration/cursor/heap identity.
 It runs Compose with `--no-deps --no-build --pull never frontend`; other services
 must retain their exact container identities. It checks frontend startup,
 environment, image, mounts/ports/network and the existing backend health checks.
+It gracefully reloads the existing Nginx process so its service-name lookups
+follow the replacement frontend. The proxy container retains its identity.
 The same database identity and checkpoint must still match before activation
 can receive an immutable qualification receipt.
 
@@ -63,6 +68,23 @@ python3 deploy/scripts/v10_frontend_deploy.py --resume --state /data/.../state.j
 python3 deploy/scripts/v10_frontend_deploy.py --rollback --state /data/.../state.json
 ```
 
+If a plan failed during staging and remains `prepared`, use the corrected
+deployment-tool checkout to replace that preparation:
+
+```bash
+python3 deploy/scripts/v10_frontend_deploy.py --retry-staging \
+  --state /data/blockscout-dev-private/frontend-releases/frontend-20261107T034957Z-60cc04fd/state.json
+```
+
+This requires the original containers to remain unchanged and refuses an
+activated or qualified preparation. It creates a new private plan linked to the
+failed state, resamples the current settings, and preserves the original plan
+and logs. Both plans refer to the same native normalization job and checkpoint.
+Use a separate worktree for the corrected tool; keep the earlier controller and
+failed deployment checkout pinned. Do not edit frozen JSON to remove a setting.
+Exited startup containers now report their exit code, error category and setting
+names immediately, without printing setting values or waiting five minutes.
+
 Status reads saved files. Resume reconciles the same prepared image and
 snapshots. Rollback selects the preserved frontend image/environment and makes
 another verified binding for the same normalization job. It retains the
@@ -86,3 +108,6 @@ ownership. The server staging step validates the actual private environment;
 local mocked tests cannot replace it.
 The [dated tooling record](../../deploy/audits/frontend-deployment-validation-2026-11-07.json)
 records the unit, configuration and real Compose transport checks.
+The [sprite-handoff correction](../../deploy/audits/frontend-sprite-handoff-validation-2026-11-07.json)
+records the reproduced validator failure, corrected settings and image-owned
+sprite check.

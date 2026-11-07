@@ -77,7 +77,8 @@ def migrate_environment(environment, chain_id):
     result['NEXT_PUBLIC_GIT_TAG'] = 'v' + VERSION
     result['ENVS_PRESET'] = 'none'
     result['SKIP_ENVS_VALIDATION'] = 'false'
-    for name in ('NEXT_PUBLIC_ROLLUP_L1_BASE_URL', 'NEXT_PUBLIC_API_SPEC_URL'):
+    # Sprite references belong to the image, not the previous container's runtime settings.
+    for name in ('NEXT_PUBLIC_ROLLUP_L1_BASE_URL', 'NEXT_PUBLIC_API_SPEC_URL', 'NEXT_PUBLIC_ICON_SPRITE_HASH'):
         result.pop(name, None)
     D.require(all(isinstance(v, str) and '\n' not in v and '\r' not in v and '\0' not in v for v in result.values()),
               'Frontend environment contains an unsupported value')
@@ -164,6 +165,43 @@ def private_command(command, log, phase, timeout=480):
                     process.wait(timeout=10)
 
 
+def startup_diagnostics(text, state):
+    lower = text.lower()
+    if state.get('OOMKilled'):
+        category = 'container_memory_limit'
+    elif 'congruity check failed' in lower:
+        category = 'unregistered_runtime_setting'
+    elif 'envs validation failed' in lower:
+        category = 'invalid_runtime_setting'
+    elif 'failed to download from' in lower:
+        category = 'asset_download_failed'
+    elif state.get('Running'):
+        category = 'startup_timeout'
+    else:
+        category = 'container_startup_failed'
+    start = lower.find('for the following environment variables')
+    if start < 0:
+        start = lower.find('envs validation failed')
+    section = text[start:] if start >= 0 else ''
+    stages = [('next', 'Starting Next.js application'), ('client_environment', 'Creating client script'),
+              ('favicon', 'Generating favicons'), ('favicon_dependencies', 'yarn install'),
+              ('validation', 'Validating ENV variables'), ('assets', 'Downloading external assets')]
+    stage = ('validation' if category in ('unregistered_runtime_setting', 'invalid_runtime_setting') else
+             next((stage for stage, marker in stages if marker in text), 'initializing'))
+    return {'category': category, 'exit_code': state.get('ExitCode'), 'oom_killed': state.get('OOMKilled') is True,
+            'runtime_stage': stage,
+            'setting_names': sorted(set(re.findall(r'NEXT_PUBLIC_[A-Z0-9_]+', section))),
+            'next_start_requested': 'Starting Next.js application' in text, 'next_ready': 'Ready in' in text}
+
+
+def startup_failure(api, name, info, reason):
+    # Positional shell argument keeps the name out of shell code; merge both Docker log streams.
+    text = api.run(['sh', '-c', 'docker logs --tail 100 "$1" 2>&1', '--', name], timeout=5)
+    error = D.ConfigError(reason)
+    error.startup_diagnostics = startup_diagnostics(text, info)
+    return error
+
+
 def wait_health(api, name, seconds=300):
     deadline = time.monotonic() + seconds
     while True:
@@ -173,7 +211,11 @@ def wait_health(api, name, seconds=300):
                 "fetch('http://'+host+':'+port+'/node-api/healthz').then(async r=>{if(r.status!==200||JSON.parse(await r.text())!=='ok')process.exit(1)}).catch(()=>process.exit(1))"], timeout=10)
             return
         except D.ConfigError:
-            D.require(time.monotonic() < deadline, 'Frontend startup/validation did not become healthy; private logs retained')
+            info = json.loads(api.run(['docker', 'inspect', '--format', '{{json .State}}', name], timeout=5))
+            if info.get('Running') is False:
+                raise startup_failure(api, name, info, 'Frontend container exited during startup; private logs retained') from None
+            if time.monotonic() >= deadline:
+                raise startup_failure(api, name, info, 'Frontend startup did not become healthy before its deadline; private logs retained') from None
             time.sleep(2)
 
 
@@ -187,10 +229,13 @@ def remove_stage(api, name, path):
     logs = captured.stdout + captured.stderr
     target = path.parent / ('stage-' + uuid.uuid4().hex[:8] + '.log.private')
     R.write_new(target, logs)
+    info = row.get('State') or {}
+    R.write_new(target.with_name(target.name.replace('.log.private', '.status.json.private')),
+                R.encoded({k: info.get(k) for k in ('Status', 'Running', 'ExitCode', 'OOMKilled', 'StartedAt', 'FinishedAt')}))
     api.run(['docker', 'rm', '-f', name], timeout=30)
 
 
-def prepare(api, native_path, reference):
+def prepare(api, native_path, reference, supersedes=None):
     D.require(re.fullmatch(r'quanquanah/blockscout-frontend@sha256:[a-f0-9]{64}', reference),
               'Use the immutable published frontend digest')
     source = source_review(api)
@@ -226,11 +271,26 @@ def prepare(api, native_path, reference):
               'source_root': str(ROOT), 'tool_source_commit': source, 'normalization_state': str(native_path),
               'native_inputs_sha256': native['inputs_sha256'], 'prior_binding': prior, 'before': before,
               'base_bridge_state': context['release_state'], 'snapshots': snapshots, 'environment': environment}
+    if supersedes is not None:
+        inputs['supersedes_preparation'] = {'state': str(supersedes), 'state_sha256': R.digest(U.private(supersedes))}
     R.write_new(directory / 'inputs.json', R.encoded(inputs))
     state = {'format': FORMAT, 'inputs_sha256': R.digest(R.encoded(inputs)), 'phase': 'prepared'}
     save(path, state, 'prepared')
     print(json.dumps(public(path, state)), flush=True)
     return path
+
+
+def retry_staging(api, path):
+    state, inputs = load(path)
+    D.require(state['phase'] == 'prepared' and not (path.parent / 'stage-receipt.json').exists()
+              and not (path.parent / 'receipt-forward.json').exists(),
+              'Only a preparation that failed before activation can be replaced')
+    manifest, _, _ = api.configuration(ROOT, 'dev')
+    api.ensure_stable(inputs['before'], api.inspect_project(manifest), 'Runtime changed after failed frontend staging')
+    native_path = Path(inputs['normalization_state'])
+    native = N.load(native_path)
+    D.require(native['inputs_sha256'] == inputs['native_inputs_sha256'], 'Native frozen inputs changed')
+    return prepare(api, native_path, inputs['image_reference'], supersedes=path)
 
 
 def stage(api, path, state, inputs, manifest):
@@ -335,6 +395,9 @@ def activate(api, path, side):
                'up', '-d', '--no-deps', '--no-build', '--pull', 'never', 'frontend']
     private_command(command, path.parent / ('activate-' + uuid.uuid4().hex[:8] + '.log.private'), 'recreating_frontend')
     wait_health(api, 'frontend')
+    # Nginx resolves service names when loading its configuration; retain its container.
+    api.run(['docker', 'exec', 'proxy', 'nginx', '-t'], timeout=10)
+    api.run(['docker', 'exec', 'proxy', 'nginx', '-s', 'reload'], timeout=10)
     runtime = verify(api, path, side, wait=True)
     D.require(P.database_anchor(api) == anchor, 'Database migration/cursor/heap changed across frontend deployment')
     receipt = {'format': FORMAT, 'side': side, 'inputs_sha256': state['inputs_sha256'],
@@ -414,7 +477,7 @@ def bind_native(api, path, side):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group(required=True)
-    for mode in ('run', 'resume', 'status', 'rollback'):
+    for mode in ('run', 'resume', 'status', 'rollback', 'retry-staging'):
         modes.add_argument('--' + mode, action='store_true')
     parser.add_argument('--normalization-state', type=Path)
     parser.add_argument('--image')
@@ -428,6 +491,8 @@ def main():
             path = prepare(D, args.normalization_state, args.image)
         else:
             D.require(path is not None and not args.normalization_state and not args.image, 'Use only the saved frontend release state')
+            if args.retry_staging:
+                path = retry_staging(D, path)
         state, inputs = load(path)
         if args.status:
             print(json.dumps(public(path, state), indent=2))
@@ -452,7 +517,8 @@ def main():
     except Exception as error:
         print(json.dumps({'status': 'stopped', 'state': str(path) if path else None, 'raw_values_suppressed': True,
                           'reason': str(error) if isinstance(error, D.ConfigError) else 'Frontend deployment check failed; private files retained',
-                          'recovery': 'Keep all private journals. Resume this frontend state, or use --rollback with the same state. Native checkpoints are retained.'}))
+                          'startup_diagnostics': getattr(error, 'startup_diagnostics', None),
+                          'recovery': 'Keep all private journals. Before activation, --retry-staging creates a new preparation; otherwise resume or roll back the same state. Native checkpoints are retained.'}))
         return 2
 
 

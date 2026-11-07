@@ -1,0 +1,38 @@
+{
+  "status": "fix_validated",
+  "checked_at_utc": "2026-11-07T04:27:47.498969+00:00",
+  "correction": "Drop the old sprite hash while preserving user settings and assigning the reviewed image revision/tag. The image generates its own browser sprite reference.",
+  "frontend_image_unchanged": "quanquanah/blockscout-frontend@sha256:76a170d12b74183e3df77dbfa4d047aa0937ad66ed43615ca0d278b4c67429a9",
+  "checks": {
+    "v10_unit_tests_passed": 277,
+    "frontend_deployment_tests": 21,
+    "current_public_settings_accepted_after_migration": true,
+    "raw_runtime_values_suppressed": true,
+    "branding_startup": {
+      "status": "passed",
+      "asset_downloads": 5,
+      "favicon_generated": true,
+      "image_owned_sprite_reference": true,
+      "old_sprite_not_copied": true,
+      "memory_limit_bytes": 1073741824,
+      "no_live_server_requests": true
+    },
+    "failed_plan_preservation_and_retry": true,
+    "activated_plan_retry_refused": true,
+    "changed_runtime_retry_refused": true,
+    "startup_exit_reported_without_five_minute_wait": true,
+    "public_settings_validator_before_correction_passed": false,
+    "rejected_setting_names_before_correction": [
+      "NEXT_PUBLIC_ICON_SPRITE_HASH"
+    ],
+    "proxy_reload_commands_verified": true
+  },
+  "server_failure_state": "/data/blockscout-dev-private/frontend-releases/frontend-20261107T034957Z-60cc04fd/state.json",
+  "scope": "Read-only public runtime settings were validated locally in the published image with networking disabled. Branding checks used a disposable local asset server. Corrected server deployment has not yet run.",
+  "log_sha256": {
+    "unit": "06092cb233f1d43b0122667d466541dff479c466633f53d2fc45262920b72f61",
+    "public_settings": "a3e3d50b0e84a71fb3bf0d50c82d5f8af8bfe57dea30d78d6817619a7964ea66",
+    "branding_and_sprite": "9fe6143c94addcf1e04982a98e3ab6a3f88c7c557cbe0631280d6d0093de0641"
+  },
+  "reproduced_failure": "The old image-generated NEXT_PUBLIC_ICON_SPRITE_HASH was transferred into the new container runtime settings. Strict validation rejects that build-owned field."
+}
