@@ -217,6 +217,19 @@ class ConfigTests(unittest.TestCase):
   for options in ({'aliases':['different']},{'ipv4_address':'172.19.0.99'},{'priority':1}):
    b={'services':{'backend':{'networks':{'default':options}}}}
    self.assertEqual(T.model_differences(a,b),['services.backend.networks'])
+ def test_empty_top_level_ipam_is_only_a_representation_difference(self):
+  a={'services':{},'networks':{'default':{'name':'fixture-network','external':True}}}
+  b=deepcopy(a);b['networks']['default']['ipam']={}
+  self.assertEqual(T.model_differences(a,b),[])
+  self.assertEqual(T.model_differences(b,a),[])
+  self.assertNotIn('ipam',a['networks']['default'])
+  self.assertEqual(b['networks']['default']['ipam'],{})
+ def test_explicit_top_level_network_settings_remain_differences(self):
+  a={'services':{},'networks':{'default':{'name':'fixture-network','external':True,'ipam':{}}}}
+  for changed in ({'ipam':{'driver':'default'}},{'ipam':{'config':[{'subnet':'172.31.0.0/24'}]}},
+                  {'external':False},{'name':'another-network'},{'driver':'overlay'}):
+   b=deepcopy(a);b['networks']['default'].update(changed)
+   self.assertEqual(T.model_differences(a,b),['networks'])
  def test_default_volume_representation_is_equivalent(self):
   a={'services':{'backend':{'volumes':[{'type':'bind','source':'/data/logs','target':'/app/logs','read_only':False,'bind':{}}]}}}
   b=deepcopy(a);b['services']['backend']['volumes'][0].pop('read_only');b['services']['backend']['volumes'][0].pop('bind')

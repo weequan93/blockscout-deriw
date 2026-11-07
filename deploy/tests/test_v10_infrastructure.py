@@ -387,6 +387,24 @@ class InfrastructureTests(unittest.TestCase):
         bind.assert_not_called()
         resume.assert_not_called()
 
+    def test_preparation_failure_reports_no_service_change_or_resumable_state(self):
+        output = io.StringIO()
+        with patch.object(sys, 'argv', ['upgrade', '--run', '--component', 'nginx',
+                                       '--normalization-state', str(self.native_path)]), \
+             patch.object(I.sys, 'platform', 'linux'), patch.object(I.os, 'geteuid', return_value=0), \
+             patch.object(I, 'prepare', side_effect=N.D.ConfigError('Snapshot validation failed')), \
+             patch.object(I, 'pause') as pause, patch.object(I, 'activate') as activate, \
+             patch.object(I, 'bind_native') as bind, patch.object(I, 'resume_native') as resume, \
+             redirect_stdout(output):
+            self.assertEqual(I.main(), 2)
+        event = json.loads(output.getvalue())
+        self.assertIsNone(event['state'])
+        self.assertIn('before service changes', event['recovery'])
+        pause.assert_not_called()
+        activate.assert_not_called()
+        bind.assert_not_called()
+        resume.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

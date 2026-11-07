@@ -1,0 +1,123 @@
+{
+  "format": "deriw-v10-infrastructure-snapshot-fix-v1",
+  "checked_at_utc": "2026-11-07T12:38:40.487406+00:00",
+  "status": "passed",
+  "release_tag": "deriw-infra-patches-2026-11-07-r3",
+  "operator_evidence": {
+    "preparation_directory": "/data/blockscout-dev-private/infrastructure-releases/infra-20261107T122352Z-39dc9959",
+    "state_file_present": false,
+    "changed_fields": [
+      "networks"
+    ],
+    "mount_differences": [],
+    "normalization": {
+      "status": "native_normalization_waiting",
+      "reason": "waiting_for_autovacuum",
+      "native_cursor": 14485699,
+      "observed_at_utc": "2026-11-07T12:30:40.312672+00:00"
+    }
+  },
+  "cause": "Pinning an existing network as external drops the renderer default ipam object. Compose adds ipam:{} on the next config pass. The old strict comparison rejected this unchanged topology before saving a state journal.",
+  "change": "Normalize only an empty top-level IPAM object. Keep explicit IPAM, network names, external flags, drivers and service addresses strict. Print the preparation directory before validation and distinguish preparation failure from resumable activation.",
+  "unit_tests": {
+    "v10": 306,
+    "configuration_and_release": 55
+  },
+  "compose_config_only_check": {
+    "status": "passed",
+    "compose_version": "Docker Compose version v5.6.0",
+    "snapshot_round_trips": [
+      {
+        "component": "nginx",
+        "side": "forward",
+        "empty_ipam_added_by_compose": true
+      },
+      {
+        "component": "nginx",
+        "side": "rollback",
+        "empty_ipam_added_by_compose": true
+      },
+      {
+        "component": "redis",
+        "side": "forward",
+        "empty_ipam_added_by_compose": true
+      },
+      {
+        "component": "redis",
+        "side": "rollback",
+        "empty_ipam_added_by_compose": true
+      },
+      {
+        "component": "postgresql-main",
+        "side": "forward",
+        "empty_ipam_added_by_compose": true
+      },
+      {
+        "component": "postgresql-main",
+        "side": "rollback",
+        "empty_ipam_added_by_compose": true
+      },
+      {
+        "component": "postgresql-stats",
+        "side": "forward",
+        "empty_ipam_added_by_compose": true
+      },
+      {
+        "component": "postgresql-stats",
+        "side": "rollback",
+        "empty_ipam_added_by_compose": true
+      }
+    ],
+    "literal_dollars_quotes_newlines_preserved": true,
+    "static_ips_and_pg_guard_preserved": true,
+    "explicit_ipam_and_ip_changes_rejected": true,
+    "service_changes": false,
+    "image_pulls": false,
+    "database_calls": false,
+    "network_changes": false,
+    "temporary_files_removed_on_exit": true
+  },
+  "real_nginx_fixture": {
+    "status": "passed",
+    "live_services_accessed": false,
+    "fixture_resources_removed": true,
+    "nginx": {
+      "status": "passed",
+      "old_version": "1.31.1",
+      "patch_version": "1.31.8",
+      "compose_snapshot_round_trip_verified": true,
+      "actual_staging_and_component_contract_used": true,
+      "frozen_configuration_and_certificates": true,
+      "http_and_verified_https_routes": true,
+      "deposits_backend_and_stats_routes": true,
+      "websocket_101_upgrade": true,
+      "source_maps_restricted": true,
+      "static_ip_and_unrelated_containers_preserved": true,
+      "previous_image_rollback_verified": true
+    }
+  },
+  "static_checks": {
+    "python_compile": true,
+    "shell_syntax": true,
+    "diff_whitespace": true
+  },
+  "preservation": {
+    "native_worker_controller_and_inputs_schema_unchanged": true,
+    "image_targets_unchanged": true,
+    "frontend_release_history_unchanged": true,
+    "no_failed_preparation_files_edited": true,
+    "server_deployment_executed_by_agent": false
+  },
+  "source_sha256": {
+    "deploy/scripts/dev_config.py": "1d22d0ef3dd3c6d905ff1b45f7f12f8c632d0f04a408023cce0e0426710f9f09",
+    "deploy/scripts/release.py": "5a11703f86e8a144bd80b525cc79eb36a633845f0fc5473775c3bfbade66b88a",
+    "deploy/scripts/v10_infrastructure_deploy.py": "ed337aab435ddaaa45c286e0bc79753d3b19cc0335ed64fa1b02bee0def4cba1",
+    "deploy/tests/check_v10_infrastructure.py": "0f7f8efdd7217505ef5c7cbc9abd2861d35697cdddd95c1f1bea6595650f9bd4",
+    "deploy/tests/check_v10_infrastructure_snapshot.py": "56bf4da409cddf394b0e5a3f61a958b5c43acfc69844c10235101681d8524c90",
+    "deploy/tests/test_dev_config.py": "758756096537bfa2890150f8e0ebb278914a0133aae60261c077d517aa207dcc",
+    "deploy/tests/test_release.py": "7ceed879282804b9cd7708dce78fa0c77bef5bd1573b57b8bad29151d646fb95",
+    "deploy/tests/test_v10_infrastructure.py": "0c999a7adb8c4837dfc253474145a3d21144760e8e5e1c7e9f039ae98736b43d"
+  },
+  "test_gap_closed": "The Nginx fixture now resolves its base model and validates both saved snapshots through release.check_snapshot before starting the candidate.",
+  "limits": "Local image fixtures use synthetic data. The operator retries live staging and deployment from the fixed pinned checkout; the incomplete original preparation is retained."
+}

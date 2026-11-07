@@ -327,7 +327,20 @@ def model_differences(before,after):
    else:
     result.append('services.'+name+'.'+key if re.fullmatch(r'[a-z_]+',key) else 'services.'+name+'.other_field')
  for key in ('networks','volumes','secrets','configs'):
-  if (before.get(key) or {})!=(after.get(key) or {}):result.append(key)
+  if key=='networks':
+   different=canonical_network_definitions(before.get(key))!=canonical_network_definitions(after.get(key))
+  else:different=(before.get(key) or {})!=(after.get(key) or {})
+  if different:result.append(key)
+ return result
+
+
+def canonical_network_definitions(networks):
+ # Compose may render omitted IPAM as {}. Keep all explicit topology settings.
+ result={}
+ for name,options in (networks or {}).items():
+  item=dict(options or {})
+  if item.get('ipam')=={}:item.pop('ipam')
+  result[name]=item
  return result
 
 

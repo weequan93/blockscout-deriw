@@ -127,6 +127,8 @@ def prepare(api, native_path, component, tls_ca=None):
     directory = BASE / ('infra-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ-') + uuid.uuid4().hex[:8])
     directory.mkdir(mode=0o700)
     path = directory / 'state.json'
+    print(json.dumps({'phase': 'infrastructure_preparation_saved', 'preparation_directory': str(directory),
+                      'database_writes': False, 'services_changed': False}), flush=True)
     F.private_command(['docker', 'pull', '--platform', 'linux/amd64', target['reference']],
                       directory / 'pull.log.private', 'pulling_' + component, timeout=300)
     candidate = K.image_fingerprint(api, target['reference'], kind)
@@ -608,7 +610,8 @@ def main():
     except Exception as error:
         print(json.dumps({'status': 'stopped', 'state': str(path) if path else None, 'raw_values_suppressed': True,
                           'reason': str(error) if isinstance(error, D.ConfigError) else 'Infrastructure operation failed; private evidence retained',
-                          'recovery': 'Keep this journal and all native inputs. Resume or roll back the same state. Unknown runtime changes leave normalization paused; no data restore or cursor reset is automatic.'}))
+                          'recovery': ('Keep this journal and all native inputs. Resume or roll back the same state. Unknown runtime changes leave normalization paused; no data restore or cursor reset is automatic.'
+                                       if path else 'Preparation stopped before service changes. Keep the incomplete preparation evidence and native inputs; correct the reported preparation issue, then prepare again. The existing normalization service was not paused by this command.')}))
         return 2
 
 

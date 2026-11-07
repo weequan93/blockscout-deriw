@@ -206,6 +206,18 @@ class ReleaseTests(unittest.TestCase):
   frozen=R.snapshot(model,self.rows,IMAGE,self.root/'state.json','forward')
   self.assertEqual(frozen['services']['backend']['environment']['UNASSIGNED'],SECRET)
   self.assertNotIn('MISSING',frozen['services']['backend']['environment'])
+ def test_snapshot_accepts_empty_ipam_but_refuses_explicit_network_changes(self):
+  expected=deepcopy(self.current)
+  expected['networks']['default']['external']=True
+  actual=deepcopy(expected);actual['networks']['default']['ipam']={}
+  with patch.object(T,'compose_model',return_value=actual):
+   self.assertIs(R.check_snapshot(T,self.root/'fixture.json',expected,self.manifest,self.e.f.f.live_dir),actual)
+  for changed in ({'external':False},{'ipam':{'config':[{'subnet':'172.31.0.0/24'}]}},
+                  {'name':'unapproved-network'}):
+   altered=deepcopy(actual);altered['networks']['default'].update(changed)
+   with patch.object(T,'compose_model',return_value=altered),self.assertRaises(T.ConfigError) as caught:
+    R.check_snapshot(T,self.root/'fixture.json',expected,self.manifest,self.e.f.f.live_dir)
+   self.assertIn('networks',str(caught.exception))
 
 
 class ComposeReleaseTests(ReleaseTests):

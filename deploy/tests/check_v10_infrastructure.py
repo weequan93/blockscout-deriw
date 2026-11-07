@@ -476,7 +476,8 @@ location / { proxy_pass http://mock:8081; }
         api=types.SimpleNamespace(run=run,require=D.require,ConfigError=D.ConfigError,ensure_stable=D.ensure_stable,
             inspect_project=lambda *_a,**_k:inspect(),configuration=lambda *_a:(manifest,{},{}),
             inspect_mounts=D.inspect_mounts,live_environment_differences=D.live_environment_differences,env_map=D.env_map,
-            compose_model=D.compose_model)
+            compose_model=D.compose_model,model_differences=D.model_differences)
+        model=api.compose_model(self.directory,manifest,{},[initial],True)
         path=self.directory/'state.json'
         saved=S.capture_nginx(api,self.directory)
         self.seed_files(configuration,[Path(file['source']) for file in saved['files']])
@@ -486,7 +487,9 @@ location / { proxy_pass http://mock:8081; }
                 'image_id':candidate,'tls_ca_file':str(folder/'fixture.crt')}
         for side in ('forward','rollback'):
             selected=S.nginx_snapshot(K.snapshot(model,before,'nginx',candidate,path,side),saved['files'])
-            (self.directory/(side+'.compose.json')).write_bytes(U.R.snapshot_bytes(selected))
+            snapshot=self.directory/(side+'.compose.json')
+            snapshot.write_bytes(U.R.snapshot_bytes(selected))
+            U.R.check_snapshot(api,snapshot,selected,manifest,self.directory)
         original_validation=S.validate_artifacts
         def validate_mirrored(values):
             local=deepcopy(values)
@@ -510,6 +513,7 @@ location / { proxy_pass http://mock:8081; }
             I.component_contract(api,path,inputs,'rollback',rollback)
             assert K.live_fingerprint(api,'proxy','nginx')['version']=='1.31.1'
         return {'nginx':{'status':'passed','old_version':'1.31.1','patch_version':'1.31.8',
+            'compose_snapshot_round_trip_verified':True,
             'actual_staging_and_component_contract_used':True,'frozen_configuration_and_certificates':True,
             'http_and_verified_https_routes':True,'deposits_backend_and_stats_routes':True,
             'websocket_101_upgrade':True,'source_maps_restricted':True,'static_ip_and_unrelated_containers_preserved':True,

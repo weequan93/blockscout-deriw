@@ -176,8 +176,11 @@ def snapshot_bytes(model):
 
 def check_snapshot(api,path,expected,manifest,live_directory):
  actual=api.compose_model(live_directory,manifest,{},[path],True)
- api.require(not api.model_differences(expected,actual),'Stored Compose snapshot differs from the selected release')
- for key in (set(expected)|set(actual))-{'services','version'}:
+ differences=api.model_differences(expected,actual)
+ api.require(not differences,'Stored Compose snapshot differs from the selected release'+
+  (': '+', '.join(differences[:12]) if differences else ''))
+ # model_differences checks network definitions and normalizes empty IPAM only.
+ for key in (set(expected)|set(actual))-{'services','version','networks'}:
   api.require(expected.get(key)==actual.get(key),'Stored Compose topology differs from selected release')
  return actual
 

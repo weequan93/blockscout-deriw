@@ -41,33 +41,30 @@ installation. Keep every earlier backend/frontend/native-controller worktree
 and all private journals. The new checkout becomes the controller source after
 the first successful handoff; keep it clean and pinned too.
 
-The published tag identifies the tested tools commit. Revision `r2` also
-recognizes the `.4` frontend footer release and retains the earlier frontend
-proofs. Use these tools after that footer rollout; the original tag only knew
-frontend releases through `.3`. Both tags select the same infrastructure images
-and patch operations. The original image-fixture evidence remains recorded in
-the first validation snapshot; the footer release records the updated helper's
-regression run.
+The published tag identifies the tested tools commit. Revision `r3` accepts
+Compose's empty default IPAM representation while retaining strict checks on
+network names, addresses, drivers and explicit IPAM settings. It recognizes the
+`.4` frontend footer release and retains earlier deployment proofs. The target
+infrastructure images are unchanged. The original image-fixture evidence and
+subsequent snapshot regression evidence remain separately recorded.
 
 ```bash
 bash <<'SELECT_INFRA_TOOLS'
 set -euo pipefail
-git -C /data/blockscout fetch origin tag deriw-infra-patches-2026-11-07-r2
-if ! test -e /data/blockscout-v10-infrastructure; then
-  git -C /data/blockscout worktree add --detach /data/blockscout-v10-infrastructure deriw-infra-patches-2026-11-07-r2
+git -C /data/blockscout fetch origin tag deriw-infra-patches-2026-11-07-r3
+if ! test -e /data/blockscout-v10-infrastructure-fix; then
+  git -C /data/blockscout worktree add --detach /data/blockscout-v10-infrastructure-fix deriw-infra-patches-2026-11-07-r3
 fi
-cd /data/blockscout-v10-infrastructure
-test "$(git rev-parse HEAD)" = "$(git rev-parse deriw-infra-patches-2026-11-07-r2^{commit})"
+cd /data/blockscout-v10-infrastructure-fix
+test "$(git rev-parse HEAD)" = "$(git rev-parse deriw-infra-patches-2026-11-07-r3^{commit})"
 test -z "$(git status --porcelain)"
 python3 deploy/scripts/v10_infrastructure_deploy.py --help
 SELECT_INFRA_TOOLS
 ```
 
-If `/data/blockscout-v10-infrastructure` is already pinned at the first release,
-keep it for its service/journal references. Use the clean `.4` footer tools
-checkout `/data/blockscout-v10-footer-columns` instead for the commands below;
-it contains the same `r2` helpers. Do not change a checkout used by an existing
-migration service.
+Keep all earlier infrastructure and footer checkouts pinned for their service
+and journal references. The new `-fix` checkout hosts these corrected tools. Do
+not change a checkout used by an existing migration service.
 
 ## Apply one component
 
@@ -77,7 +74,7 @@ Start with Nginx. The final JSON must say `infrastructure_finished`; its
 pauses. `service_start_requested` alone does not qualify success.
 
 ```bash
-cd /data/blockscout-v10-infrastructure
+cd /data/blockscout-v10-infrastructure-fix
 bash deploy/steps/dev-v10-infrastructure.sh --run --component nginx \
   --normalization-state /data/blockscout-dev-private/v10-native-normalization/job-20261106T103901Z-59bb4dc6/state.json
 ```
@@ -120,6 +117,13 @@ python3 deploy/scripts/v10_native_normalization.py --status \
   --state /data/blockscout-dev-private/v10-native-normalization/job-20261106T103901Z-59bb4dc6/state.json
 systemctl is-active blockscout-v10-native-normalization.service
 ```
+
+If preparation stops with `state: null`, there is no completed state journal to
+resume. A failure such as `Stored Compose snapshot differs ...: networks` can
+occur before any service change. Keep its incomplete preparation directory and
+use the corrected pinned tools to run a fresh `--run` preparation. Do not edit
+the saved snapshots or native inputs. Once a real `state.json` has been created,
+recover using that same state instead of preparing a replacement.
 
 Infrastructure `--status` reads saved files. Native status is also a checkpoint
 read; check its timestamp. The native service may be inactive when the job has
@@ -218,3 +222,10 @@ is explicitly refused.
 These are synthetic data tests, not a full-size database restore, production
 load test, downtime forecast or guarantee of remote TLS/RPC availability. Live
 qualification occurs before the migration is resumed after each operation.
+
+The [snapshot normalization regression record](../../deploy/audits/infrastructure-snapshot-fix-validation-2026-11-07.json)
+records the reproduced empty-IPAM mismatch, eight real Compose snapshot round
+trips, the expanded Nginx upgrade/rollback fixture, and unit coverage proving
+that explicit topology changes still stop validation. Preparation now prints its
+evidence directory before checking snapshots and distinguishes an uncreated
+journal from a resumable operation.
