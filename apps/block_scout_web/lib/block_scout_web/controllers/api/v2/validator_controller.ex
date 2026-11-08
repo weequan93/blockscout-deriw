@@ -13,7 +13,6 @@ defmodule BlockScoutWeb.API.V2.ValidatorController do
 
   import BlockScoutWeb.PagingHelper,
     only: [
-      delete_parameters_from_next_page_params: 1,
       stability_validators_state_options: 1,
       validators_blackfort_sorting: 1,
       validators_stability_sorting: 1
@@ -23,7 +22,7 @@ defmodule BlockScoutWeb.API.V2.ValidatorController do
     only: [
       split_list_by_page: 1,
       paging_options: 1,
-      next_page_params: 4
+      next_page_params: 5
     ]
 
   @api_true api?: true
@@ -52,7 +51,8 @@ defmodule BlockScoutWeb.API.V2.ValidatorController do
       next_page
       |> next_page_params(
         validators,
-        delete_parameters_from_next_page_params(params),
+        params,
+        false,
         &ValidatorStability.next_page_params/1
       )
 
@@ -102,7 +102,8 @@ defmodule BlockScoutWeb.API.V2.ValidatorController do
       next_page
       |> next_page_params(
         validators,
-        delete_parameters_from_next_page_params(params),
+        params,
+        false,
         &ValidatorBlackfort.next_page_params/1
       )
 
@@ -171,7 +172,8 @@ defmodule BlockScoutWeb.API.V2.ValidatorController do
       next_page
       |> next_page_params(
         validators,
-        delete_parameters_from_next_page_params(params),
+        params,
+        false,
         &ValidatorZilliqa.next_page_params/1
       )
 

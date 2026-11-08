@@ -1,6 +1,9 @@
 defmodule Explorer.Chain.Cache.Counters.TransactionsCount do
   @moduledoc """
   Cache for total transactions count.
+
+  With `:approximate?` enabled, background refreshes use the existing PostgreSQL
+  catalog estimate instead of an exact table count.
   """
 
   use Explorer.Chain.MapCache,
@@ -47,7 +50,7 @@ defmodule Explorer.Chain.Cache.Counters.TransactionsCount do
     {:ok, task} =
       Task.start_link(fn ->
         try do
-          result = Repo.aggregate(Transaction, :count, :hash, timeout: :infinity)
+          result = fetch_count()
 
           params = %{
             counter_type: @cache_key,
@@ -69,6 +72,17 @@ defmodule Explorer.Chain.Cache.Counters.TransactionsCount do
       end)
 
     {:update, task}
+  end
+
+  defp fetch_count do
+    if Application.get_env(:explorer, __MODULE__, [])[:approximate?] == true do
+      case CacheCountersHelper.estimated_count_from("transactions") do
+        count when is_integer(count) and count >= 0 -> count
+        _ -> raise "Transaction-count estimate unavailable"
+      end
+    else
+      Repo.aggregate(Transaction, :count, :hash, timeout: :infinity)
+    end
   end
 
   # By setting this as a `callback` an async task will be started each time the

@@ -1,0 +1,110 @@
+{
+  "status": "passed",
+  "checked_at_utc": "2026-11-07T11:09:51.510185+00:00",
+  "source_revision": "d30a3ebe40d6fb6a061a84afed74afe32c8a6abe",
+  "frontend_version": "2.7.2-deriw.4",
+  "layout": {
+    "desktop_columns": 3,
+    "desktop_rows": 2,
+    "column_pairs": [
+      [
+        "DeriW website",
+        "Docs"
+      ],
+      [
+        "X",
+        "Telegram"
+      ],
+      [
+        "Discord",
+        "Blog"
+      ]
+    ],
+    "mobile_columns": 2,
+    "mobile_rows": 3,
+    "separate_resources_group": false
+  },
+  "checks": {
+    "existing_footer_browser_checks": 13,
+    "desktop_mobile_screenshots_reviewed": true,
+    "typescript_passed": true,
+    "changed_file_eslint_passed": true,
+    "production_build_passed": true,
+    "build_node_heap_mib": 3072,
+    "isolated_builder_memory_limit_bytes": 6442450944,
+    "isolated_builder_stage_parallelism": 1,
+    "deployment_regression_tests": 305,
+    "native_worker_unchanged": true,
+    "container_qualification": {
+      "status": "passed",
+      "image_id": "sha256:44bd15d39c839baf1e32e28ce99c63c9eee99db8e08043cc0df8ceb1d84faf28",
+      "image_reference": "quanquanah/blockscout-frontend:deriw-v2.7.2-cols3-d30a3ebe4",
+      "source_revision": "d30a3ebe40d6fb6a061a84afed74afe32c8a6abe",
+      "platform": "linux/amd64",
+      "versions": {
+        "node": "v22.23.4",
+        "version": "2.7.2-deriw.4",
+        "next": "16.2.10",
+        "react": "19.1.4"
+      },
+      "full_entrypoint_health_passed": true,
+      "private_environment_migration_passed": true,
+      "strict_invalid_token_rejected": true,
+      "invalid_token_exit_code": 1,
+      "native_dependency_import_passed": true,
+      "deriw_footer_bundle_verified": true,
+      "docs_built_into_grid": true,
+      "legacy_resources_group_removed": true,
+      "generated_parent_current_labels": "L2/L3",
+      "browser_source_map_count": 0,
+      "staging_memory_limit_bytes": 1073741824,
+      "containers_removed": true,
+      "live_server_changed": false,
+      "network_scope": "Synthetic API origins; no dev explorer database or API requests"
+    },
+    "branding_assets": {
+      "status": "passed",
+      "asset_downloads": 5,
+      "favicon_generated": true,
+      "image_owned_sprite_reference": true,
+      "old_sprite_not_copied": true,
+      "memory_limit_bytes": 1073741824,
+      "no_live_server_requests": true
+    }
+  },
+  "registry": {
+    "status": "passed",
+    "repository": "quanquanah/blockscout-frontend",
+    "tag": "deriw-v2.7.2-cols3-d30a3ebe4",
+    "index_digest": "sha256:44bd15d39c839baf1e32e28ce99c63c9eee99db8e08043cc0df8ceb1d84faf28",
+    "platform_manifest_digest": "sha256:44bd15d39c839baf1e32e28ce99c63c9eee99db8e08043cc0df8ceb1d84faf28",
+    "config_digest": "sha256:4e34edf9cc60c4931c56d6144bb9d9be50c806e6d15b2f3fc65c7fd3c3263159",
+    "deployment_reference": "quanquanah/blockscout-frontend@sha256:44bd15d39c839baf1e32e28ce99c63c9eee99db8e08043cc0df8ceb1d84faf28",
+    "source_revision": "d30a3ebe40d6fb6a061a84afed74afe32c8a6abe",
+    "frontend_version": "2.7.2-deriw.4",
+    "platform": "linux/amd64",
+    "canonical_pull_passed": true,
+    "image_config_and_layers_match_qualified_build": true
+  },
+  "infrastructure_compatibility": {
+    "release_tag": "deriw-infra-patches-2026-11-07-r2",
+    "infrastructure_scripts_unchanged_from": "da5f01c0488f220b3bc4c8519e04abbfac7cb001",
+    "approved_frontend_history": [
+      "2.7.2-deriw.1",
+      "2.7.2-deriw.2",
+      "2.7.2-deriw.3",
+      "2.7.2-deriw.4"
+    ],
+    "helper_sha256": "8e444a466c74fb88ade108b794e43c4cfebea88226891383acae79a82d67420b"
+  },
+  "server_deployment_executed": false,
+  "scope": "Local layout, image, startup and regression qualification. Operator runs the pinned frontend helper to deploy and preserve the existing native checkpoint.",
+  "build_recovery": "Shared local builder failed with a layer-mount error. Final build passed in a separate bounded builder; no data reset or global prune was performed.",
+  "log_sha256": {
+    "build": "dc531c8c1439a4dd3aab177b8cec891258a0053e400c4324b73618104dbcd749",
+    "browser": "d3b67b7fc650b61e8ae3ce2117a1fb8a72bbb5ef8a03ae24486dc97aba5a7e04",
+    "container": "1736617eb6828c9a8372dd215244f00ab4fb174b2b3bde48d45040c37e55af0f",
+    "assets": "9fe6143c94addcf1e04982a98e3ab6a3f88c7c557cbe0631280d6d0093de0641",
+    "deployment_tests": "70e59e2e874fe7b26733a06b10ec9beccc7d31a36bf07edba2d1fd5c0dd1a5f3"
+  }
+}

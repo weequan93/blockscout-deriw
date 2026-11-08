@@ -2,7 +2,8 @@ defmodule Explorer.Chain.Token.Schema do
   @moduledoc false
   use Utils.CompileTimeEnvHelper, bridged_tokens_enabled: [:explorer, [Explorer.Chain.BridgedToken, :enabled]]
 
-  alias Explorer.Chain.{Address, Hash}
+  alias Explorer.Chain.{Address, Address.Reputation, Hash}
+  alias Explorer.Chain.Token.FiatValue
 
   if @bridged_tokens_enabled do
     @bridged_field [
@@ -28,11 +29,11 @@ defmodule Explorer.Chain.Token.Schema do
         field(:skip_metadata, :boolean)
         field(:total_supply_updated_at_block, :integer)
         field(:metadata_updated_at, :utc_datetime_usec)
-        field(:fiat_value, :decimal)
-        field(:circulating_market_cap, :decimal)
+        field(:fiat_value, FiatValue)
+        field(:circulating_market_cap, FiatValue)
         field(:icon_url, :string)
         field(:is_verified_via_admin_panel, :boolean)
-        field(:volume_24h, :decimal)
+        field(:volume_24h, FiatValue)
         field(:transfer_count, :integer)
 
         belongs_to(
@@ -44,6 +45,8 @@ defmodule Explorer.Chain.Token.Schema do
           type: Hash.Address,
           null: false
         )
+
+        has_one(:reputation, Reputation, foreign_key: :address_hash, references: :contract_address_hash)
 
         unquote_splicing(@bridged_field)
 
@@ -65,6 +68,8 @@ defmodule Explorer.Chain.Token do
   * ERC-721
   * ERC-1155
   * ERC-404
+  * ZRC-2 (for Zilliqa chain type)
+  * ERC-7984
 
   ## Token Specifications
 
@@ -73,7 +78,10 @@ defmodule Explorer.Chain.Token do
   * [ERC-777](https://github.com/ethereum/EIPs/blob/master/EIPS/eip-777.md)
   * [ERC-1155](https://github.com/ethereum/EIPs/blob/master/EIPS/eip-1155.md)
   * [ERC-404](https://github.com/Pandora-Labs-Org/erc404)
+  * [ZRC-2](https://github.com/Zilliqa/ZRC/blob/main/zrcs/zrc-2.md)
+  * [ERC-7984](https://github.com/ethereum/ERCs/blob/39197cde3e32d8fc7fde74c7d0ce5e67ad4de409/ERCS/erc-7984.md)
   """
+  require Logger
 
   use Explorer.Schema
 
@@ -84,7 +92,8 @@ defmodule Explorer.Chain.Token do
   alias Ecto.{Changeset, Multi}
   alias Explorer.{Chain, SortingHelper}
   alias Explorer.Chain.{Address, BridgedToken, Hash, Search, Token}
-  alias Explorer.Chain.Cache.BlockNumber
+  alias Explorer.Chain.Cache.{BackgroundMigrations, BlockNumber}
+  alias Explorer.Chain.Cache.Counters.{TokenHoldersCount, TokenTransfersCount}
   alias Explorer.Chain.Import.Runner
   alias Explorer.Helper, as: ExplorerHelper
   alias Explorer.Repo
@@ -141,6 +150,17 @@ defmodule Explorer.Chain.Token do
   @required_attrs ~w(contract_address_hash type)a
   @optional_attrs ~w(cataloged decimals name symbol total_supply skip_metadata total_supply_updated_at_block metadata_updated_at updated_at fiat_value circulating_market_cap icon_url is_verified_via_admin_panel volume_24h)a
 
+  @doc """
+    Returns the **ordered** list of allowed NFT type labels.
+  """
+  @spec allowed_nft_type_labels() :: [String.t()]
+  def allowed_nft_type_labels,
+    do: [
+      "ERC-721",
+      "ERC-1155",
+      "ERC-404"
+    ]
+
   @doc false
   def changeset(%Token{} = token, params \\ %{}) do
     additional_attrs = if BridgedToken.enabled?(), do: [:bridged], else: []
@@ -171,7 +191,7 @@ defmodule Explorer.Chain.Token do
         changeset
 
       property ->
-        put_change(changeset, key, Helper.sanitize_input(property))
+        put_change(changeset, key, Helper.escape_minimal(property))
     end
   end
 
@@ -197,7 +217,7 @@ defmodule Explorer.Chain.Token do
   """
   @spec stream_cataloged_tokens(
           initial :: accumulator,
-          reducer :: (entry :: Token.t(), accumulator -> accumulator),
+          reducer :: (entry :: __MODULE__.t(), accumulator -> accumulator),
           some_time_ago_updated :: integer(),
           limited? :: boolean()
         ) :: {:ok, accumulator}
@@ -205,7 +225,7 @@ defmodule Explorer.Chain.Token do
   def stream_cataloged_tokens(initial, reducer, some_time_ago_updated \\ 2880, limited? \\ false)
       when is_function(reducer, 2) do
     some_time_ago_updated
-    |> Token.cataloged_tokens()
+    |> cataloged_tokens()
     |> Chain.add_fetcher_limit(limited?)
     |> order_by(asc_nulls_first: :metadata_updated_at)
     |> Repo.stream_reduce(initial, reducer)
@@ -217,9 +237,10 @@ defmodule Explorer.Chain.Token do
   As part of updating token, an additional record is inserted for
   naming the address for reference if a name is provided for a token.
   """
-  @spec update(Token.t(), map(), boolean(), :base | :metadata_update) :: {:ok, Token.t()} | {:error, Ecto.Changeset.t()}
+  @spec update(__MODULE__.t(), map(), boolean(), :base | :metadata_update) ::
+          {:ok, __MODULE__.t()} | {:error, Ecto.Changeset.t()}
   def update(
-        %Token{contract_address_hash: address_hash} = token,
+        %__MODULE__{contract_address_hash: address_hash} = token,
         params \\ %{},
         info_from_admin_panel? \\ false,
         operation_type \\ :base
@@ -235,7 +256,7 @@ defmodule Explorer.Chain.Token do
 
     token_changeset =
       token
-      |> Token.changeset(
+      |> __MODULE__.changeset(
         filtered_params
         |> Map.put(:updated_at, DateTime.utc_now())
       )
@@ -338,7 +359,7 @@ defmodule Explorer.Chain.Token do
           | {:token_type, [String.t()]}
           | {:necessity_by_association, map()}
           | Chain.show_scam_tokens?()
-        ]) :: [Token.t()]
+        ]) :: [__MODULE__.t()]
   def list_top(filter, options \\ []) do
     paging_options = Keyword.get(options, :paging_options, Chain.default_paging_options())
     token_type = Keyword.get(options, :token_type, nil)
@@ -352,7 +373,7 @@ defmodule Explorer.Chain.Token do
     sorted_paginated_query =
       Token
       |> Chain.join_associations(necessity_by_association)
-      |> ExplorerHelper.maybe_hide_scam_addresses(:contract_address_hash, options)
+      |> ExplorerHelper.maybe_hide_scam_addresses_with_select(:contract_address_hash, options)
       |> apply_filter(token_type)
       |> SortingHelper.apply_sorting(sorting, @default_sorting)
       |> SortingHelper.page_with_sorting(paging_options, sorting, @default_sorting)
@@ -361,7 +382,7 @@ defmodule Explorer.Chain.Token do
       case filter && filter !== "" && Search.prepare_search_term(filter) do
         {:some, filter_term} ->
           sorted_paginated_query
-          |> where(fragment("to_tsvector('english', symbol || ' ' || name) @@ to_tsquery(?)", ^filter_term))
+          |> apply_fts_filter(filter_term)
 
         _ ->
           sorted_paginated_query
@@ -371,6 +392,49 @@ defmodule Explorer.Chain.Token do
     |> Chain.select_repo(options).all()
   end
 
+  @doc """
+  Applies full-text search filtering to a token query.
+
+  This function handles tokens with and without symbols differently:
+  - For tokens with a symbol, it searches across both symbol and name.
+  - For tokens without a symbol (e.g., ERC-1155), it searches only the name field.
+
+  ## Parameters
+  - `query`: The Ecto query to filter.
+  - `filter_term`: The prepared search term (from Search.prepare_search_term/1).
+
+  ## Returns
+  - An Ecto query with FTS filtering applied.
+  """
+  @spec apply_fts_filter(Ecto.Query.t(), String.t()) :: Ecto.Query.t()
+  def apply_fts_filter(query, filter_term) do
+    if BackgroundMigrations.get_heavy_indexes_create_tokens_name_partial_fts_index_finished() do
+      query
+      |> where(
+        [token],
+        (not is_nil(token.symbol) and
+           fragment(
+             "to_tsvector('english', ? || ' ' || ?) @@ to_tsquery(?)",
+             token.symbol,
+             token.name,
+             ^filter_term
+           )) or
+          (is_nil(token.symbol) and
+             fragment(
+               "to_tsvector('english', ?) @@ to_tsquery(?)",
+               token.name,
+               ^filter_term
+             ))
+      )
+    else
+      query
+      |> where(
+        [token],
+        fragment("to_tsvector('english', ? || ' ' || ?) @@ to_tsquery(?)", token.symbol, token.name, ^filter_term)
+      )
+    end
+  end
+
   defp apply_filter(query, empty_type) when empty_type in [nil, []], do: query
 
   defp apply_filter(query, token_types) when is_list(token_types) do
@@ -378,15 +442,26 @@ defmodule Explorer.Chain.Token do
   end
 
   def get_by_contract_address_hash(hash, options) do
-    Chain.select_repo(options).get_by(__MODULE__, contract_address_hash: hash)
+    necessity_by_association = Keyword.get(options, :necessity_by_association, %{})
+
+    __MODULE__
+    |> where([t], t.contract_address_hash == ^hash)
+    |> Chain.join_associations(necessity_by_association)
+    |> Chain.select_repo(options).one()
   end
 
   @doc """
     Gets tokens with given contract address hashes.
   """
-  @spec get_by_contract_address_hashes([Hash.Address.t()], [Chain.api?()]) :: [Token.t()]
+  @spec get_by_contract_address_hashes([Hash.Address.t()], [Chain.api?() | Chain.necessity_by_association_option()]) ::
+          [__MODULE__.t()]
   def get_by_contract_address_hashes(hashes, options) do
-    Chain.select_repo(options).all(from(t in __MODULE__, where: t.contract_address_hash in ^hashes))
+    necessity_by_association = Keyword.get(options, :necessity_by_association, %{})
+
+    __MODULE__
+    |> where([t], t.contract_address_hash in ^hashes)
+    |> Chain.join_associations(necessity_by_association)
+    |> Chain.select_repo(options).all()
   end
 
   @doc """
@@ -490,5 +565,172 @@ defmodule Explorer.Chain.Token do
       )
 
     Chain.select_repo(options).exists?(query)
+  end
+
+  @doc """
+  Checks if the given token is ZRC-2 token.
+
+  ## Parameters
+  - `token`: The token to check the type of.
+
+  ## Returns
+  - `true` if this is ZRC-2 token, `false` otherwise.
+  """
+  @spec zrc_2_token?(__MODULE__.t()) :: bool
+  def zrc_2_token?(token) do
+    case Map.get(token, :type) do
+      "ZRC-2" -> true
+      _ -> false
+    end
+  end
+
+  @doc """
+  Fetches token counters (transfers count and holders count) for a given token address.
+
+  This function spawns two async tasks to fetch the token transfers count and
+  token holders count concurrently. If a task times out or exits, it falls back
+  to fetching the cached value.
+
+  ## Parameters
+  - `address_hash`: The contract address hash of the token
+  - `timeout`: The timeout in milliseconds for the async tasks
+
+  ## Returns
+  - A tuple `{transfers_count, holders_count}` where each value is an integer or nil
+  """
+  @spec fetch_token_counters(Hash.Address.t(), timeout()) :: {integer() | nil, integer() | nil}
+  def fetch_token_counters(address_hash, timeout) do
+    total_token_transfers_task =
+      Task.async(fn ->
+        TokenTransfersCount.fetch(address_hash)
+      end)
+
+    total_token_holders_task =
+      Task.async(fn ->
+        TokenHoldersCount.fetch(address_hash)
+      end)
+
+    [total_token_transfers_task, total_token_holders_task]
+    |> Task.yield_many(timeout)
+    |> Enum.map(fn {task, res} ->
+      case res do
+        {:ok, result} ->
+          result
+
+        {:exit, reason} ->
+          Logger.warning("Query fetching token counters terminated: #{inspect(reason)}")
+
+          fallback_cached_value_based_on_async_task_pid(
+            task.pid,
+            total_token_transfers_task.pid,
+            total_token_holders_task.pid,
+            address_hash
+          )
+
+        nil ->
+          Logger.warning("Query fetching token counters timed out.")
+
+          fallback_cached_value_based_on_async_task_pid(
+            task.pid,
+            total_token_transfers_task.pid,
+            total_token_holders_task.pid,
+            address_hash
+          )
+      end
+    end)
+    |> List.to_tuple()
+  end
+
+  defp fallback_cached_value_based_on_async_task_pid(
+         task_pid,
+         total_token_transfers_task_pid,
+         total_token_holders_task_pid,
+         address_hash
+       ) do
+    case task_pid do
+      ^total_token_transfers_task_pid ->
+        TokenTransfersCount.fetch_count_from_cache(address_hash)
+
+      ^total_token_holders_task_pid ->
+        TokenHoldersCount.fetch_count_from_cache(address_hash)
+    end
+  end
+
+  @doc """
+  Checks if a `t:Explorer.Chain.Token.t/0` with the given `hash` exists.
+
+  Returns `:ok` if found
+
+      iex> address = insert(:address)
+      iex> insert(:token, contract_address: address)
+      iex> Explorer.Chain.Token.check_token_exists(address.hash)
+      :ok
+
+  Returns `:not_found` if not found
+
+      iex> {:ok, hash} = Explorer.Chain.string_to_address_hash("0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed")
+      iex> Explorer.Chain.Token.check_token_exists(hash)
+      :not_found
+  """
+  @spec check_token_exists(Hash.Address.t()) :: :ok | :not_found
+  def check_token_exists(hash) do
+    hash
+    |> token_exists?()
+    |> Chain.boolean_to_check_result()
+  end
+
+  # Checks if a `t:Explorer.Chain.Token.t/0` with the given `hash` exists.
+
+  # Returns `true` if found
+
+  #     iex> address = insert(:address)
+  #     iex> insert(:token, contract_address: address)
+  #     iex> Explorer.Chain.token_exists?(address.hash)
+  #     true
+
+  # Returns `false` if not found
+
+  #     iex> {:ok, hash} = Explorer.Chain.string_to_address_hash("0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed")
+  #     iex> Explorer.Chain.token_exists?(hash)
+  #     false
+  @spec token_exists?(Hash.Address.t()) :: boolean()
+  defp token_exists?(hash) do
+    query =
+      from(
+        token in Token,
+        where: token.contract_address_hash == ^hash
+      )
+
+    Repo.exists?(query)
+  end
+
+  @doc """
+  Gets the token type for a given contract address hash.
+  """
+  @spec get_token_type(Hash.Address.t()) :: String.t() | nil
+  def get_token_type(hash) do
+    query =
+      from(
+        token in __MODULE__,
+        where: token.contract_address_hash == ^hash,
+        select: token.type
+      )
+
+    Repo.one(query)
+  end
+
+  @doc """
+  Gets the token types for a list of contract address hashes.
+  """
+  @spec get_token_types([Hash.Address.t()]) :: [{Hash.Address.t(), String.t()}]
+  def get_token_types(hashes) do
+    query =
+      from(
+        token in __MODULE__,
+        where: token.contract_address_hash in ^hashes,
+        select: {token.contract_address_hash, token.type}
+      )
+
+    Repo.all(query)
   end
 end

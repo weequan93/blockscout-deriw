@@ -1,0 +1,28 @@
+{
+  "status": "passed",
+  "checked_at_utc": "2026-11-07T06:19:23.218790+00:00",
+  "change": "Add Docs through the existing footer link setting, preserving existing custom groups.",
+  "docs_url": "https://docs.deriw.com/",
+  "image_rebuild_required": false,
+  "image_reference": "quanquanah/blockscout-frontend@sha256:5e4aa57fd687f25e98a145c83d4681ad32be2b13af6c77b3ac0c0d4501b20b56",
+  "checks": {
+    "existing_v10_tests": 281,
+    "container_configuration": {
+      "status": "passed",
+      "image_unchanged": "quanquanah/blockscout-frontend@sha256:5e4aa57fd687f25e98a145c83d4681ad32be2b13af6c77b3ac0c0d4501b20b56",
+      "full_startup_healthy": true,
+      "strict_validation_enabled": true,
+      "generated_footer_asset_contains_docs": true,
+      "browser_runtime_setting_present": true,
+      "docs_url": "https://docs.deriw.com/",
+      "no_live_server_requests": true,
+      "network": "none",
+      "container_removed": true
+    }
+  },
+  "server_deployment_executed": false,
+  "log_sha256": {
+    "tests": "8c7893aac3634ca62366c307c097d44e92fe362ce4fb85f802dd276e6ff15b5d",
+    "container": "c28875479b54ec37c1cd2431ef0e871e872547704f720860c654414120319731"
+  }
+}

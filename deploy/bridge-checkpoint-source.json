@@ -1,0 +1,9 @@
+{
+  "format": "deriw-bridge-checkpoint-deployment-v1",
+  "base": "875082f41d79ef72cd9dd9a4e771953a181c6cf2",
+  "application_sha256": {
+    "apps/indexer/lib/indexer/fetcher/arbitrum/utils/db/message_scan_cursor.ex": "53012ebb51321841b6bbb591e18b3cfd89bb7905caf66f2ed16b51d6e85032d8",
+    "apps/indexer/lib/indexer/fetcher/arbitrum/tracking_messages_on_l1.ex": "fc6811286dbb7447cb0533a234113981c695e6282fb451d5867ed03f3f95a10f",
+    "apps/indexer/lib/indexer/fetcher/arbitrum/workers/new_messages_to_l2.ex": "2ed357183caa03163bb8d1030e44069fa0bcc8ab1812cd02171a1e74ead55eaf"
+  }
+}

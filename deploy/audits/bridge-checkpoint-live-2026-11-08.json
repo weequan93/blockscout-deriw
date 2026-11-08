@@ -1,0 +1,50 @@
+{
+  "format": "deriw-bridge-checkpoint-live-v1",
+  "evidence_source": "Operator-recovered saved deployment receipt and subsequent native checkpoint; no agent SSH",
+  "source_commit": "e7a16ead2bcf53da05b6e059da616ebacddbf22d",
+  "release_tag": "deriw-bridge-checkpoint-2026-11-08",
+  "source_root": "/data/blockscout-v10-bridge-checkpoint",
+  "deployment": {
+    "status": "bridge_checkpoint_finished",
+    "state": "/data/blockscout-dev-private/releases/release-20261108T040539Z-a2d3d927/state.json",
+    "observed_at_utc": "2026-11-08T04:14:19.404087+00:00",
+    "observed_at_sgt": "2026-11-08T12:14:19.404087+08:00",
+    "backend_version": "10.2.6",
+    "only_recreated_service": "backend",
+    "schema_migrations_run": false,
+    "normalization_checkpoint_preserved": true,
+    "infrastructure_and_frontend_images_preserved": true,
+    "durable_cursor_storage": "last_fetched_counters",
+    "cumulative_growth_cap_bytes": null
+  },
+  "bridge_at_deployment": {
+    "checkpoint_key_matches": true,
+    "durable_next_parent_block": 278342997,
+    "next_parent_block": 278342997,
+    "observed_at_utc": "2026-11-08T04:14:11.853666Z",
+    "tracker_running": true
+  },
+  "subsequent_normalization": {
+    "state": "/data/blockscout-dev-private/v10-native-normalization/job-20261106T103901Z-59bb4dc6/state.json",
+    "status": "native_normalization_waiting",
+    "reason": "long_transaction",
+    "observed_at_utc": "2026-11-08T04:48:41.577838+00:00",
+    "observed_at_sgt": "2026-11-08T12:48:41.577838+08:00",
+    "native_cursor": 13686814,
+    "prior_reported_cursor": 13711054,
+    "cursor_difference": 24240,
+    "native_migration_status": "started",
+    "current_data_free_bytes": 849704472576,
+    "minimum_data_free_bytes": 214748364800,
+    "normalization_complete": false,
+    "deployment_handoff_applied": true,
+    "heavy_index_and_primary_key_migrations_started": false
+  },
+  "limits": [
+    "The bridge receipt describes deployment-time progress, not a fresh bridge observation at the later normalization timestamp.",
+    "Checkpoint matching establishes the deployment handoff; independent restart persistence was exercised in the local PostgreSQL/Elixir fixture.",
+    "Normalization and bridge catch-up remain ongoing; no lifetime deposit completeness is inferred."
+  ],
+  "agent_server_access": false,
+  "original_journals_and_frozen_sources_preserved": true
+}

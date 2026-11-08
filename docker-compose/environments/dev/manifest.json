@@ -1,0 +1,113 @@
+{
+  "baseline_captured_utc": "2026-11-03T02:32:30.673008+00:00",
+  "baseline_compose_layers": [
+    "docker-compose.yml",
+    "docker-compose.rpc-repair.yml",
+    "docker-compose.nft-repair-20261102.json",
+    "docker-compose.token-scan-20261102.json",
+    "docker-compose.db-work-20261102.json",
+    "docker-compose.contract-code-backoff-20261102.json",
+    "docker-compose.revert-render-20261102.json",
+    "docker-compose.history-skip-20261102.json"
+  ],
+  "baseline_image_ids": {
+    "backend": "sha256:2a33e21665ff14d02de50c6ab265edcb01fb9c60b5c263ded9e31490ec173fb1",
+    "db": "sha256:1b92e7a80c021647bf70f5d3eb66066a998e4f5cf43c07bb9dc9f729782cf88e",
+    "db-init": "sha256:1b92e7a80c021647bf70f5d3eb66066a998e4f5cf43c07bb9dc9f729782cf88e",
+    "frontend": "sha256:4b49d1bbc0704f98bdf3fe4e6ca4181bf8bbc78d6e79870794a2dd5c8f8356e9",
+    "nft_media_handler": "sha256:574d6dd2b447537bebaa1615b95ff20a3fd9ee8df7a1faeb8875a9bf3896cfb9",
+    "proxy": "sha256:5aca99593157f4ae539a5dec1092a0ad8762f8e2eb1789085a13a0f5622369f6",
+    "redis-db": "sha256:09160599abd229764c0fb44cb6be640294e1d360a54b19985ab4843dcf2d90f1",
+    "sc-verifier": "sha256:a7580f42b55c0aafad43a2acd979b60adddc1e9985a8cf01857179962f0fe063",
+    "sig-provider": "sha256:fd9e344b22022d25c853c447d7903b98ba118e1246218d6de6817c27d55b6f70",
+    "stats": "sha256:a618847070aa0d8256b99082de882f6c5fca7cd20721e04511ee0e1bb5d0b6b5",
+    "stats-db": "sha256:1b92e7a80c021647bf70f5d3eb66066a998e4f5cf43c07bb9dc9f729782cf88e",
+    "stats-db-init": "sha256:1b92e7a80c021647bf70f5d3eb66066a998e4f5cf43c07bb9dc9f729782cf88e",
+    "user-ops-indexer": "sha256:d0ffe9c672d9c5cf1e035b2dd8e4baf9e9b28d3382822ea2d07e69a924562932",
+    "visualizer": "sha256:ffce88a765b0466824175cc8fed6e6b31d682310a96933b98451aefdfffecdc7"
+  },
+  "chain_id": "18417507517",
+  "chain_type": "arbitrum",
+  "compose_project": "docker-compose",
+  "environment": "dev",
+  "expected_database": {
+    "postgres_parameters": {
+      "effective_cache_size": "18GB",
+      "maintenance_work_mem": "512MB",
+      "max_connections": "80",
+      "max_parallel_workers": "0",
+      "max_parallel_workers_per_gather": "0",
+      "max_worker_processes": "4",
+      "shared_buffers": "4GB",
+      "work_mem": "16MB"
+    },
+    "service": "db",
+    "shm_size_bytes": 6442450944
+  },
+  "expected_ports": {
+    "backend": [],
+    "db": [
+      {
+        "mode": "ingress",
+        "protocol": "tcp",
+        "published": "7432",
+        "target": 5432
+      }
+    ],
+    "db-init": [],
+    "frontend": [],
+    "nft_media_handler": [],
+    "proxy": [
+      {
+        "mode": "ingress",
+        "protocol": "tcp",
+        "published": "80",
+        "target": 80
+      },
+      {
+        "mode": "ingress",
+        "protocol": "tcp",
+        "published": "8080",
+        "target": 8080
+      },
+      {
+        "mode": "ingress",
+        "protocol": "tcp",
+        "published": "8081",
+        "target": 8081
+      },
+      {
+        "mode": "ingress",
+        "protocol": "tcp",
+        "published": "443",
+        "target": 443
+      }
+    ],
+    "redis-db": [],
+    "sc-verifier": [],
+    "sig-provider": [],
+    "stats": [],
+    "stats-db": [
+      {
+        "mode": "ingress",
+        "protocol": "tcp",
+        "published": "7433",
+        "target": 5432
+      }
+    ],
+    "stats-db-init": [],
+    "user-ops-indexer": [],
+    "visualizer": []
+  },
+  "format": "blockscout-environment-v1",
+  "http_rpc": "http://10.0.2.11:1100/",
+  "intentional_source_change": {
+    "key": "INDEXER_UNCATALOGED_TOKEN_TRANSFERS_ENABLED",
+    "service": "backend",
+    "value": "false"
+  },
+  "mode": "review-before-adoption",
+  "private_variable_count": 133,
+  "state_range": "176114083..latest",
+  "verifier_list_revision": "5de16fa32acc6b55707188922d5366915aec21af"
+}

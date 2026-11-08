@@ -1,0 +1,287 @@
+#!/usr/bin/env python3
+"""Exercise real vacuum qualification, bounded reuse and reconciliation on PG15."""
+import contextlib
+from copy import deepcopy
+import io
+import json
+from pathlib import Path
+import shlex
+import subprocess
+import sys
+import uuid
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'deploy/scripts'))
+import check_v10_normalization_plan as F
+import check_upgrade_database as G
+from check_v10_vacuum import SETUP
+import v10_normalization_session as J
+import v10_vacuum as V
+
+
+def check(image, network, token, environment, sql, pg, directory, capacity=False, boundary=False, cycle=False):
+    capacity = capacity or boundary or cycle
+    sql("WITH seed AS MATERIALIZED (SELECT to_jsonb(t) AS row FROM internal_transactions t WHERE block_number=10 LIMIT 1), expanded AS MATERIALIZED (SELECT jsonb_populate_record(NULL::internal_transactions,seed.row||jsonb_build_object('block_number',100+g/100,'block_index',10000+g,'index',10000+g)) AS r FROM generate_series(0,2999) g CROSS JOIN seed) INSERT INTO internal_transactions SELECT (r).* FROM expanded")
+    sql("INSERT INTO internal_transactions SELECT (jsonb_populate_record(NULL::internal_transactions,to_jsonb(t)||jsonb_build_object('block_number',200,'block_index',50000,'index',50000))).* FROM internal_transactions t WHERE block_number=10")
+    sql('ANALYZE internal_transactions')
+    row = json.loads(G.run(['docker', 'inspect', pg]))[0]
+    identity = {'database': 'fixture', 'oid': int(sql("SELECT oid FROM pg_database WHERE datname='fixture'").strip()),
+                'address': row['NetworkSettings']['Networks'][network]['IPAddress'], 'port': 5432, 'postgres_major': 15}
+    manifest = {'chain_id': '18417507517'}
+    runtime = {'backend': {'Id': 'a' * 64, 'Image': image}}
+
+    def run(command, **kwargs):
+        if command[0] == 'git':
+            return ''
+        if command[:4] == ['docker', 'exec', '-i', 'backend']:
+            name = 'reuse-observer-' + uuid.uuid4().hex[:16]
+            assert command[-1] == V.RPC_SCRIPT
+            entry = V.U.RUN_SCRIPT.rsplit('exec /app/bin/blockscout eval', 1)[0]
+            entry += 'cat /tmp/upgrade/migrate.exs | sh -c ' + shlex.quote(V.RPC_SCRIPT.replace('/app/bin/blockscout rpc', '/app/bin/blockscout eval')) + '\n'
+            client_command = V.U.client_command(image, network, name, token)
+            client_command[-1] = entry
+            try:
+                observed = subprocess.run(client_command,
+                    input=V.U.archive(environment, {}, (SETUP + kwargs['input_text']).encode()), capture_output=True, timeout=30)
+                if observed.returncode:
+                    raise RuntimeError((observed.stdout + observed.stderr).decode(errors='replace')[-5000:])
+                return observed.stdout.decode()
+            finally:
+                G.cleanup_container(name, token)
+        return J.D.run(command, **kwargs)
+
+    api = type('FixtureAPI', (), {})()
+    api.require = J.P.require
+    api.configuration = lambda *a: (manifest, {}, {})
+    api.run, api.inspect_project, api.ensure_stable = run, lambda *a: deepcopy(runtime), J.D.ensure_stable
+    upgrade = {'candidate_image': image, 'candidate_source_commit': 'a' * 40, 'network': network,
+               'backend_environment': environment, 'migration_payload': {'database_identity': identity,
+                    'heap_identity': int(sql("SELECT pg_relation_filenode('internal_transactions'::regclass)").strip())},
+               'applied_result': {'applied_versions': list(map(int, sql('SELECT version FROM schema_migrations ORDER BY version').splitlines()))}}
+    base = (directory / 'reuse-check').resolve()
+    base.mkdir(mode=0o700)
+    hold = {'phase': 'held', 'inputs': {'upgrade_state': str(directory / 'upgrade.json'), 'runtime_before': runtime}}
+    with patch.object(J, 'BASE', base / 'sessions'), patch.object(V, 'BASE', base / 'vacuum'), \
+         patch.object(J.P, 'BASE', base / 'pilot'), \
+         patch.object(J.B, 'clean_source', return_value=('a' * 40, '10.2.6')), \
+         patch.object(J.P, 'context', return_value=(manifest, upgrade)), \
+         patch.object(J.P, 'free_bytes', return_value=888 * 1024**3), \
+         patch.object(J.P.N, 'collect', return_value={'blockers': [], 'selected_block': 200, 'sample_rows': 1}), \
+         patch.object(V.H, 'load', return_value=hold), patch.object(V.E, 'load', return_value=hold), \
+         patch.dict(J.LIMITS, max_batches=1, max_rows=1000), \
+         patch.dict(J.OBSERVATION_LIMITS, max_batches=1, max_rows=1000, maintenance_max_rows=1000), \
+         patch.dict(J.REUSE_LIMITS, max_batches=1, max_rows=1000), \
+         patch.dict(J.CAPACITY_LIMITS, max_batches=10 if boundary else 2, max_rows=6000 if boundary else 2000), \
+         patch.dict(J.BOUNDARY_LIMITS, {**J.CAPACITY_LIMITS, 'single_block_rows': 10000}, clear=True), \
+         patch.dict(J.CYCLE_LIMITS, max_batches=3, max_rows=5000), \
+         patch.object(J.Q, 'CYCLE_MIN_ROWS', 1000), \
+         patch.object(J.Q, 'CAPACITY_MIN_REUSE_ROWS', 1000), contextlib.redirect_stdout(io.StringIO()):
+        pilot = J.P.prepare(api, ROOT, directory / 'upgrade.json', 200, 1)
+        pilot_path = Path(pilot['state'])
+        J.P.apply(api, ROOT, pilot_path, manifest)
+        first = J.prepare(api, ROOT, pilot_path)
+        first_path = Path(first['state'])
+        assert J.execute(api, ROOT, first_path, manifest)['selected_rows_verified'] == 1000
+        observation = J.prepare(api, ROOT, first_path, after_session=True, profile='observation-v1')
+        parent_path = Path(observation['state'])
+        result = J.execute(api, ROOT, parent_path, manifest)
+        assert result['stop_reason'] == 'vacuum_review_required' and result['next_before_block'] == 110
+        parent_bytes = J.U.private(parent_path)
+        prepared = V.prepare(api, ROOT, parent_path, Path('/metrics'), Path('/empty'), profile=V.FAST_PROFILE)
+        vacuum_path = Path(prepared['state'])
+        real_sleep = V.time.sleep
+        with patch.object(V.time, 'sleep', side_effect=lambda seconds: real_sleep(min(seconds, 0.1))):
+            vacuum = V.execute(api, ROOT, vacuum_path)
+        assert vacuum['vacuum_sql_completed'] and vacuum['completion_verified']
+        reuse = J.prepare(api, ROOT, parent_path, after_session=True, profile=J.Q.PROFILE, after_vacuum=vacuum_path)
+        reuse_path = Path(reuse['state'])
+        assert reuse['reuse_review']['cleanup']['dead_item_identifiers_removed'] > 0
+        assert reuse['execution_profile'] == 'lean-v1' and reuse['maintenance_selected_rows'] == 1000
+        reservation = J.U.private(vacuum_path.parent / 'normalization-reuse.json')
+        assert json.loads(reservation)['state'] == str(reuse_path)
+        try:
+            J.prepare(api, ROOT, parent_path, after_session=True, profile=J.Q.PROFILE, after_vacuum=vacuum_path)
+            raise AssertionError('vacuum grant was reused')
+        except J.U.UpgradeError as error:
+            assert 'already reserved' in str(error)
+        original = J.Client.request
+        writes = [0]
+
+        def lose_commit_reply(client, command, payload=None):
+            result = original(client, command, payload)
+            if command == 'migrate':
+                writes[0] += 1
+                raise J.U.UpgradeError('fixture lost commit response')
+            return result
+
+        if capacity:
+            recovered = J.execute(api, ROOT, reuse_path, manifest)
+            assert recovered['wal_measurements_complete']
+        else:
+            with patch.object(J.Client, 'request', lose_commit_reply):
+                try:
+                    J.execute(api, ROOT, reuse_path, manifest)
+                    raise AssertionError('lost commit reply was not injected')
+                except J.U.UpgradeError:
+                    pass
+                pending = J.load(reuse_path, manifest)
+                assert pending['pending'] is not None and pending['cursor'] == 110
+                recovered = J.execute(api, ROOT, reuse_path, manifest)
+            assert writes[0] == 1
+            assert recovered['charged_chunk_wal_bytes'] == J.REUSE_LIMITS['wal_bytes']
+            assert not recovered['wal_measurements_complete']
+        assert recovered['selected_rows_verified'] == 1000
+        assert recovered['maintenance_selected_rows'] == 2000 and recovered['next_before_block'] == 100
+        assert recovered['stop_reason'] == 'reuse_review_required'
+        assert not recovered['pending_transaction']
+        assert J.U.private(parent_path) == parent_bytes
+        assert J.U.private(vacuum_path.parent / 'normalization-reuse.json') == reservation
+        assert sql('SELECT count(*) FROM internal_transactions WHERE block_number BETWEEN 100 AND 109 AND trace_address IS NOT NULL').strip() == '0'
+        assert sql("SELECT count(*) FROM migrations_status WHERE migration_name='empty_internal_transactions_data'").strip() == '0'
+        assert sql("SELECT status FROM migrations_status WHERE migration_name='reindex_duplicated_internal_transactions'").strip() == 'completed'
+        report = json.loads(J.U.private(reuse_path.parent / 'resources-latest.json'))
+        assert 'changes_since_post_vacuum' in report and 'changes_since_maintenance_origin' in report
+        try:
+            J.prepare(api, ROOT, reuse_path, after_session=True)
+            raise AssertionError('finite reuse phase created another successor')
+        except J.U.UpgradeError as error:
+            assert 'requires review' in str(error)
+        if capacity:
+            # A separate, finite capacity grant inherits the vacuum and original
+            # maintenance origin. The old reuse grant and parent stay frozen.
+            sql("WITH seed AS MATERIALIZED (SELECT to_jsonb(t) AS row FROM internal_transactions t WHERE block_number=10 LIMIT 1), expanded AS MATERIALIZED (SELECT jsonb_populate_record(NULL::internal_transactions,seed.row||jsonb_build_object('block_number',80+g/100,'block_index',90000+g,'index',90000+g)) AS r FROM generate_series(0,1999) g CROSS JOIN seed) INSERT INTO internal_transactions SELECT (r).* FROM expanded")
+            sql('ANALYZE internal_transactions')
+            if boundary:
+                sql("INSERT INTO internal_transactions SELECT (jsonb_populate_record(NULL::internal_transactions,to_jsonb(t)||jsonb_build_object('block_number',94,'block_index',300000+g,'index',300000+g))).* FROM (SELECT * FROM internal_transactions WHERE block_number=10 LIMIT 1) t CROSS JOIN generate_series(0,3400) g")
+                sql('ANALYZE internal_transactions')
+            reuse_bytes = J.U.private(reuse_path)
+            phase = J.prepare(api, ROOT, reuse_path, after_session=True, profile=J.Q.CAPACITY_PROFILE)
+            phase_path = Path(phase['state'])
+            assert phase['limits']['session_request_limit'] == 6000
+            assert phase['maintenance_selected_rows'] == 2000
+            assert phase['reuse_review']['cumulative_space_limit_bytes'] == 10 * 1024**3
+            capacity_reservation = J.U.private(reuse_path.parent / 'normalization-capacity.json')
+            writes[0] = 0
+            if boundary:
+                stopped = J.execute(api, ROOT, phase_path, manifest)
+                assert stopped['stop_reason'] == 'oversized_boundary_block'
+                assert stopped['selected_rows_verified'] == 500 and stopped['next_before_block'] == 95
+                phase_before = J.U.private(phase_path)
+                continued = J.prepare(api, ROOT, phase_path, after_session=True, profile=J.Q.BOUNDARY_PROFILE)
+                continued_path = Path(continued['state'])
+                assert continued['inherited_phase_rows'] == 500
+                assert continued['next_sample']['selected_rows'] == 3501
+                assert continued['next_sample']['block_rows'] == [{'block': 94, 'rows': 3501}]
+                continued_state = J.load(continued_path, manifest)
+                assert continued_state['inputs']['created_epoch'] == J.load(phase_path, manifest)['inputs']['created_epoch']
+                with patch.object(J.Client, 'request', lose_commit_reply):
+                    try:
+                        J.execute(api, ROOT, continued_path, manifest)
+                        raise AssertionError('large-block lost reply was not injected')
+                    except J.U.UpgradeError:
+                        pass
+                    assert J.load(continued_path, manifest)['rows'] == 500
+                    final = J.execute(api, ROOT, continued_path, manifest)
+                assert writes[0] == 1 and final['selected_rows_verified'] == 4001
+                assert final['next_before_block'] == 94 and not final['pending_transaction']
+                assert final['charged_chunk_wal_bytes'] == 8 * 1024**3
+                assert not final['wal_measurements_complete']
+                assert J.U.private(phase_path) == phase_before
+                assert sql('SELECT count(*) FROM internal_transactions WHERE block_number=94 AND trace_address IS NOT NULL').strip() == '0'
+                with J.Client(api, continued_path, continued_state['inputs'], read_only=True) as client:
+                    assert client.request('sample', {'before_block': 94})['selected_rows'] <= 1000
+                    sql("INSERT INTO internal_transactions SELECT (jsonb_populate_record(NULL::internal_transactions,to_jsonb(t)||jsonb_build_object('block_number',93,'block_index',400000+g,'index',400000+g))).* FROM (SELECT * FROM internal_transactions WHERE block_number=10 LIMIT 1) t CROSS JOIN generate_series(0,9900) g")
+                    blocked = client.request('sample', {'before_block': 94})
+                    assert blocked['selected_rows'] == 0 and blocked['excluded_boundary_block'] == 93
+                checkpoint = J.load(continued_path, manifest)
+                assert checkpoint['cursor'] == 94
+                window = V.load(vacuum_path)
+                observed = V.observe(api, V.observer_source(ROOT),
+                    {**window['inputs']['payload'], 'single_block_rows': 10000, 'anchor': J.target(checkpoint['last'])},
+                    window['target'], verify_anchor=True, runtime=runtime)
+                assert observed['runtime_holds_verified'] and 'anchor' not in observed
+            elif cycle:
+                final = J.execute(api, ROOT, phase_path, manifest)
+                assert final['selected_rows_verified'] == 2000
+                assert final['stop_reason'] == 'capacity_review_required' and final['wal_measurements_complete']
+            else:
+                with patch.object(J.Client, 'request', lose_commit_reply):
+                    try:
+                        J.execute(api, ROOT, phase_path, manifest)
+                        raise AssertionError('capacity lost commit reply was not injected')
+                    except J.U.UpgradeError:
+                        pass
+                    pending = J.load(phase_path, manifest)
+                    assert pending['cursor'] == 100 and pending['pending'] is not None
+                    final = J.execute(api, ROOT, phase_path, manifest)
+            if not cycle:
+                assert writes[0] == 1
+            if not boundary and not cycle:
+                assert final['selected_rows_verified'] == 1000
+                assert final['maintenance_selected_rows'] == 3000 and final['next_before_block'] == 90
+            if not cycle:
+                assert final['charged_chunk_wal_bytes'] == 8 * 1024**3
+                assert final['stop_reason'] == 'next_batch_wal_reserve_reached'
+                assert not final['pending_transaction'] and not final['wal_measurements_complete']
+            assert J.U.private(reuse_path) == reuse_bytes
+            assert J.U.private(reuse_path.parent / 'normalization-capacity.json') == capacity_reservation
+            for parent in (reuse_path, phase_path):
+                try:
+                    J.prepare(api, ROOT, parent, after_session=True, profile=J.Q.CAPACITY_PROFILE)
+                    raise AssertionError('capacity grant or review boundary was bypassed')
+                except J.U.UpgradeError:
+                    pass
+            if cycle:
+                capacity_bytes = J.U.private(phase_path)
+                sql("INSERT INTO internal_transactions SELECT (jsonb_populate_record(NULL::internal_transactions,to_jsonb(t)||jsonb_build_object('block_number',79,'block_index',500000+g,'index',500000+g))).* FROM (SELECT * FROM internal_transactions WHERE block_number=10 LIMIT 1) t CROSS JOIN generate_series(0,3500) g")
+                sql("INSERT INTO internal_transactions SELECT (jsonb_populate_record(NULL::internal_transactions,to_jsonb(t)||jsonb_build_object('block_number',78,'block_index',600000,'index',600000))).* FROM internal_transactions t WHERE block_number=10 LIMIT 1")
+                sql('ANALYZE internal_transactions')
+                cleanup = V.prepare(api, ROOT, phase_path, Path('/metrics'), Path('/empty'), profile=V.FAST_PROFILE)
+                cleanup_path = Path(cleanup['state'])
+                with patch.object(V.time, 'sleep', side_effect=lambda seconds: real_sleep(min(seconds, 0.1))):
+                    assert V.execute(api, ROOT, cleanup_path)['completion_verified']
+                prepared = J.prepare(api, ROOT, phase_path, after_session=True, profile=J.Q.CYCLE_PROFILE,
+                                     after_vacuum=cleanup_path)
+                cycle_path = Path(prepared['state'])
+                cycle_state = J.load(cycle_path, manifest)
+                assert cycle_state['inputs']['space_before'] == J.load(phase_path, manifest)['inputs']['space_before']
+                assert cycle_state['inputs']['cycle_review']['charged_wal_bytes'] == final['charged_chunk_wal_bytes']
+                parent_grant = J.U.private(phase_path.parent / 'normalization-cycle.json')
+                cleanup_grant = J.U.private(cleanup_path.parent / 'normalization-reuse.json')
+                try:
+                    J.prepare(api, ROOT, phase_path, after_session=True, profile=J.Q.CYCLE_PROFILE, after_vacuum=cleanup_path)
+                    raise AssertionError('cycle sources were spent twice')
+                except J.U.UpgradeError as error:
+                    assert 'already reserved' in str(error)
+                writes[0] = 0
+                with patch.object(J.Client, 'request', lose_commit_reply):
+                    try:
+                        J.execute(api, ROOT, cycle_path, manifest)
+                        raise AssertionError('cycle lost commit reply was not injected')
+                    except J.U.UpgradeError:
+                        pass
+                pending = J.load(cycle_path, manifest)
+                assert pending['pending'] is not None and pending['cursor'] == 80
+                recovered = J.execute(api, ROOT, cycle_path, manifest)
+                assert writes[0] == 1 and recovered['selected_rows_verified'] == 3501
+                assert recovered['next_before_block'] == 79 and not recovered['pending_transaction']
+                assert recovered['charged_chunk_wal_bytes'] == 32 * 1024**3
+                assert not recovered['wal_measurements_complete']
+                assert sql('SELECT count(*) FROM internal_transactions WHERE block_number=79 AND trace_address IS NOT NULL').strip() == '0'
+                assert sql('SELECT count(*) FROM internal_transactions WHERE block_number=78 AND trace_address IS NOT NULL').strip() == '1'
+                assert J.U.private(phase_path) == capacity_bytes
+                assert J.U.private(phase_path.parent / 'normalization-cycle.json') == parent_grant
+                assert J.U.private(cleanup_path.parent / 'normalization-reuse.json') == cleanup_grant
+    return {'status': 'passed', 'actual_pg15_vacuum_and_main_table_cleanup_verified': True,
+            'actual_lean_reuse_transaction_verified': True, 'durable_single_use_grant_checked': True,
+            'lost_commit_reconciled_without_second_update': True, 'original_baseline_and_rows_preserved': True,
+            'post_vacuum_deltas_recorded': True, 'sustained_run_enabled': False,
+            'capacity_profile_checked': capacity,
+            'large_single_block_continuation_checked': boundary,
+            'cycle_after_second_qualified_vacuum_checked': cycle,
+            'host_runtime_health_stubbed': True, 'live_services_accessed': False}
+
+
+if __name__ == '__main__':
+    raise SystemExit(F.main(pilot_check=check))

@@ -484,7 +484,8 @@ defmodule Explorer.Chain.Arbitrum.Reader.Indexer.Settlement do
         rb in BatchBlock,
         where: rb.block_number < ^block_number and is_nil(rb.confirmation_id),
         select: rb.block_number,
-        order_by: [desc: rb.block_number],
+        # Match the existing (confirmation_id, block_number DESC) partial index.
+        order_by: [asc: rb.confirmation_id, desc: rb.block_number],
         limit: 1
       )
 

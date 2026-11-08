@@ -42,6 +42,7 @@ defmodule Explorer.Market.Source do
     CryptoCompare,
     CryptoRank,
     DefiLlama,
+    DIA,
     Mobula
   }
 
@@ -234,7 +235,7 @@ defmodule Explorer.Market.Source do
     Decimal.new(value)
   end
 
-  @sources [CoinGecko, CoinMarketCap, CryptoCompare, CryptoRank, DefiLlama, Mobula]
+  @sources [CoinGecko, CoinMarketCap, CryptoCompare, CryptoRank, DefiLlama, Mobula, DIA]
 
   @doc """
   Returns a module for fetching native coin market data.
@@ -331,8 +332,10 @@ defmodule Explorer.Market.Source do
   """
   @spec market_cap_history_source() :: module
   def market_cap_history_source do
-    config(:market_cap_history_source) ||
-      Enum.find(@sources, fn source -> source.market_cap_history_fetching_enabled?() == true end)
+    unless Explorer.Market.native_coin_price_only?() do
+      config(:market_cap_history_source) ||
+        Enum.find(@sources, fn source -> source.market_cap_history_fetching_enabled?() == true end)
+    end
   end
 
   @doc """

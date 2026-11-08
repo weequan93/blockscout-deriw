@@ -1,0 +1,139 @@
+{
+  "format": "deriw-postgresql-health-recovery-validation-v1",
+  "checked_at_utc": "2026-11-07T16:19:28.220705+00:00",
+  "status": "passed",
+  "release_tag": "deriw-infra-patches-2026-11-07-r7",
+  "base_commit": "617aa8a22eedef636ded1ebe8826c6593c08ab8c",
+  "operator_evidence": {
+    "state": "/data/blockscout-dev-private/infrastructure-releases/infra-20261107T155504Z-9210c7d2/state.json",
+    "phase": "activation_requested",
+    "database_uses_target_image": true,
+    "containers": {
+      "db": {
+        "Status": "running",
+        "Running": true,
+        "ExitCode": 0,
+        "OOMKilled": false,
+        "restart_count": 0
+      },
+      "backend": {
+        "Status": "running",
+        "Running": true,
+        "ExitCode": 0,
+        "OOMKilled": false,
+        "restart_count": 0
+      },
+      "nft_media_handler": {
+        "Status": "running",
+        "Running": true,
+        "ExitCode": 0,
+        "OOMKilled": false,
+        "restart_count": 0
+      }
+    },
+    "postgresql": {
+      "version": 150019,
+      "cluster_database_extensions_libraries_verified": true,
+      "in_recovery": false,
+      "collation_review": {
+        "format": "deriw-v10-collation-review-v1",
+        "dependency_catalogs": [],
+        "direct_dependencies": 0,
+        "mismatched_collations": 808,
+        "types_using_mismatches": 0,
+        "ranges_using_mismatches": 0,
+        "default_collation_mismatch": false,
+        "index_keys_using_mismatches": 0,
+        "pinned_mismatched_collations": 0,
+        "partition_keys_using_mismatches": 0,
+        "user_functions_mentioning_collate": 0,
+        "relation_attributes_using_mismatches": 0
+      }
+    },
+    "application_health": {
+      "backend_readiness_ok": true,
+      "nft_connection_and_queue_ok": true
+    },
+    "application_runtime": {
+      "market_price_ready": true,
+      "settings_ok": true,
+      "historical_scanner_running": false,
+      "repair_disabled": true
+    },
+    "chain_rpc": {
+      "verified": true
+    },
+    "log_categories": {
+      "db": [],
+      "backend": []
+    },
+    "normalization": {
+      "status": "native_normalization_paused",
+      "reason": "infrastructure_postgresql-main",
+      "native_cursor": 14264419,
+      "observed_at_utc": "2026-11-07T15:55:17.874487+00:00"
+    }
+  },
+  "initial_failed_subprobe": "Not retained by the original combined verifier; the subsequent independent probes all passed.",
+  "change": "Before recreation, reconcile a matching owned running target through original full verification and its saved anchor. Require the same stopped native writer, source, stage proof, image/configuration and reserve. Write the ordinary receipt only after success. The recovery overlay leaves original inputs/snapshots/creator unchanged; new preparations retain the latest health report privately.",
+  "unit_tests": {
+    "v10": 337,
+    "new_recovery_cases": 9
+  },
+  "real_pg15_native_fixture": {
+    "status": "passed",
+    "live_services_accessed": false,
+    "fixture_resources_removed": true,
+    "postgresql": {
+      "status": "passed",
+      "old_version": "15.18",
+      "patch_version": "15.19",
+      "uid_gid": "2000:2000",
+      "same_named_data_volume_and_static_ip": true,
+      "cluster_oid_heap_and_migration_versions_preserved": true,
+      "original_native_worker_and_payload_used": true,
+      "committed_batch_with_lost_cursor_replayed_idempotently": true,
+      "native_cursor_advanced_on_patch": true,
+      "native_job_resumed_after_binary_rollback": true,
+      "same_job_completed_without_duplicate_updates": true,
+      "btree_gist_float_review_guard_verified": true,
+      "other_migration_completion_records_preserved": true,
+      "existing_ecto_client_reconnected_without_restart": true,
+      "failed_health_keeps_request_without_second_db_restart": true,
+      "healthy_installed_patch_receipt_reconciled_without_restart": true,
+      "empty_data_directory_refused_without_initialization": true
+    }
+  },
+  "creator_bootstrap": {
+    "original_r6_creator_imports_preserved": true,
+    "r7_helper_loaded_separately": true
+  },
+  "static_checks": {
+    "python_compile": true,
+    "operator_shell_syntax": true,
+    "operator_python_compile": true,
+    "diff_whitespace": true
+  },
+  "preservation": {
+    "native_controller_and_worker_source_changed": false,
+    "image_targets_changed": false,
+    "original_inputs_or_journal_snapshots_edited": false,
+    "running_matching_target_restart_required": false,
+    "health_checks_bypassed": false,
+    "data_restore_or_reindex_performed": false,
+    "migration_token_cursor_or_budgets_reset": false,
+    "server_services_changed_by_agent": false
+  },
+  "source_sha256": {
+    "deploy/scripts/v10_infrastructure_recovery.py": "551d40b9046356878a1b8eedfae70f948d69dd113ff8bab22a522d2018e4e2e1",
+    "deploy/scripts/v10_infrastructure_deploy.py": "5ca64c7604f78d169d6e6c1abd9181ad1f9cf52c23259963d845e52f46329c0b",
+    "deploy/tests/test_v10_infrastructure_recovery.py": "c39c227ca32138cfca396705bb4a52e3639d47e5d4fb53f6d125aa2f20f31d10",
+    "deploy/tests/check_v10_infrastructure.py": "2f5990b857349af4e6ab70bfc3c2110aa2511484890ad6b2767dfe9aa72d109d",
+    "docs/deployment/postgresql-health-recovery.md": "b81163063502470b1f0105ab57b798e6eafde74931d4ef178f04b2e1c241da02",
+    "docs/deployment/infrastructure-patches.md": "8ee77e66f4c828690aa3b78d79e42b7a5ee694013594432876fcc950bf01f58f",
+    "docs/deployment/postgresql-collation-review.md": "1034918ba1179de6da401e1b5d2c8f26bc751fc8bf20d251225391af6caf3bcd",
+    "docs/deployment/origin-certificate.md": "ed5a0159b3fff774c52a60a79f66640a3b62e8d3be68876caebc647fa7cb2dbd",
+    "docs/deployment/redis-rdb-owner-recovery.md": "a7a87cc31395f297e8b291b268fb2259a437b0fbdfc6a4a3fb14d4127840280e"
+  },
+  "limits": "Local fixture uses real PG15/Ecto/native-worker data with controlled application-health rejection. Original full server verification remains required. Missing/stopped/opposite-side services still use original activation/rollback rules, which may require restart. No initial failing subprobe is inferred from later healthy observations."
+}

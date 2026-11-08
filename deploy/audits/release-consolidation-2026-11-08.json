@@ -1,0 +1,57 @@
+{
+  "format": "deriw-source-consolidation-validation-v1",
+  "validated_at_utc": "2026-11-08T05:06:45.502606+00:00",
+  "original_worktrees_clean": true,
+  "original_stashes_present": false,
+  "deployed_refs_tags_journals_preserved": true,
+  "protected_branches_rewritten": false,
+  "server_access_performed": false,
+  "image_rebuild_performed": false,
+  "application_bytes_unchanged_from_reviewed_sources": true,
+  "public_compose_configuration_unchanged": true,
+  "configuration_values_exported": false,
+  "changed_document_links_valid": true,
+  "new_cleanup_whitespace_check": "passed",
+  "inherited_upstream_whitespace": "Preserved to avoid changing qualified application bytes",
+  "backend": {
+    "baseline": "ddfedcadd25e07367c6133d10a44e7fde4d3898e",
+    "source": "a766697c35152219ee569108e68ced1e7638427d",
+    "original_release_commit_count": 22,
+    "consolidated_commit_count": 1,
+    "production_commits_missing": 0,
+    "custom_commits_unclassified": 0,
+    "frontend_and_checkpoint_source_guards": "passed",
+    "tests": {
+      "v10": 381,
+      "current_ops": 14,
+      "dev_config": 77,
+      "release_including_real_compose_and_docker_transport": 20,
+      "bridge_metrics_including_loopback_endpoint": 14
+    },
+    "total_test_executions": 506
+  },
+  "frontend": {
+    "baseline": "25ccfdbb744365d9005e0e7b7adb16c171a4f7fd",
+    "source": "8dbd8245479df03dd0ac6478bd891846059027d7",
+    "original_release_commit_count": 287,
+    "consolidated_commit_count": 1,
+    "focused_compatibility_tests": 13,
+    "typescript": "passed",
+    "local_check_node": "22.22.3",
+    "qualified_image_node": "22.23.4",
+    "app_equal_to_image_source": "d30a3ebe40d6fb6a061a84afed74afe32c8a6abe",
+    "image_build_browser_and_startup_checks": "Existing dated qualification retained; no application code changed in cleanup"
+  },
+  "log_sha256": {
+    "v10": "8a1412fbb7dc2d3d50dd1424861d940dd77c63f32f4a2ffffc7cb20d084b965f",
+    "release": "3f785381dff8f518ae11dc2c54cd3df3854c9d3c7a0a6fe1d89fe719ad175742",
+    "metrics": "b2bc46d8eb19f1f0594899f62ddae95695fcef4dbd77073e713d2706d70ecb4a",
+    "frontend": "8ece2fbba149497350236560f2598560874d7d2f9bfdd41b79c6f499a9d8ea47",
+    "frontend_types": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "limits": [
+    "No fresh live server inventory in this cleanup. Runtime selections use dated operator receipts.",
+    "Source consolidation does not verify data backup recovery.",
+    "Historical normalization and deferred database work remain ongoing/separate."
+  ]
+}

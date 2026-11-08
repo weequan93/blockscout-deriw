@@ -1,0 +1,90 @@
+{
+  "format": "deriw-redis-rdb-owner-validation-v1",
+  "checked_at_utc": "2026-11-07T14:20:49.817549+00:00",
+  "status": "passed",
+  "release_tag": "deriw-infra-patches-2026-11-07-r5",
+  "base_commit": "d606f42b2dec7808a676812341908217b948a9e4",
+  "operator_evidence": {
+    "state": "/data/blockscout-dev-private/infrastructure-releases/infra-20261107T135833Z-0fdb1c52/state.json",
+    "phase": "activation_requested",
+    "failed_function": "stopped_redis_check",
+    "file_owner": [
+      999,
+      1000
+    ],
+    "file_mode": "0o600",
+    "directory_owner": [
+      999,
+      0
+    ],
+    "directory_mode": "0o777",
+    "original_checker": {
+      "exit_code": 1,
+      "markers": []
+    },
+    "file_owner_checker": {
+      "exit_code": 0,
+      "markers": [
+        "rdb looks ok",
+        "checksum ok"
+      ]
+    }
+  },
+  "cause": "The stopped RDB verifier dropped every capability while using the image default identity. That identity could not read a mode-0600 RDB owned by another UID. The same image and unchanged RDB pass when the verifier runs as the file owner.",
+  "change": "Select the existing RDB file UID/GID for the isolated checker; retain no network, read-only root/data and dropped capabilities. Successful checks append evidence and require unchanged file metadata. The same-journal recovery overlay replaces only this function in the unchanged original deployment process.",
+  "unit_tests": {
+    "v10": 322,
+    "new_redis_rdb_cases": 7,
+    "focused_tests_after_terminal_phase_reconciliation_change": 7
+  },
+  "real_redis_fixture": {
+    "status": "passed",
+    "live_services_accessed": false,
+    "fixture_resources_removed": true,
+    "redis": {
+      "status": "passed",
+      "old_version": "8.8.0",
+      "patch_version": "8.8.4",
+      "rdb_multitype_and_multidatabase_restored": true,
+      "ttl_preserved": true,
+      "final_rdb_backup_checksum_verified": true,
+      "old_binary_reads_new_rdb": true,
+      "protected_rdb_original_failure_reproduced": true,
+      "production_owner_checker_used_in_both_directions": true,
+      "corrupt_rdb_still_rejected": true,
+      "rdb_data_and_permissions_unchanged": true,
+      "image_rollback_preserves_post_patch_writes": true,
+      "static_ip_preserved": true,
+      "existing_redix_client_reconnected_without_restart": true
+    }
+  },
+  "original_creator_bootstrap": {
+    "original_creator_modules_preserved": true,
+    "recovery_module_loaded_separately": true,
+    "service_changes": false
+  },
+  "static_checks": {
+    "python_compile": true,
+    "operator_shell_syntax": true,
+    "operator_python_compile": true,
+    "diff_whitespace": true
+  },
+  "preservation": {
+    "original_journal_inputs_snapshots_backup_and_creator_checkout_edited": false,
+    "migration_cursor_or_token_reset": false,
+    "native_controller_and_worker_source_changed": false,
+    "image_targets_changed": false,
+    "rdb_chmod_chown_or_restore": false,
+    "server_services_changed_by_agent": false
+  },
+  "source_sha256": {
+    "deploy/scripts/v10_redis_rdb.py": "ecdc1cc33e242711cdeb46b0aeb27525e788dbe2ff11526cb6b3430c21b106fa",
+    "deploy/scripts/v10_infrastructure_deploy.py": "ffe3cd808e6e432fefdd26d295e58770f108cbe6ff8f74bccbe8453a49fa23b7",
+    "deploy/tests/test_v10_redis_rdb.py": "56432592b03804ff6c0a5b2cc5a79bfe1787bbef5f3b893f0ceec306174f025d",
+    "deploy/tests/check_v10_infrastructure.py": "32ea2d5da6284d0083e61909abd113febca12edbd73b70d7bcd66baedb4febe8",
+    "docs/deployment/redis-rdb-owner-recovery.md": "b9d182911b2f927dc5d579f0a61ffba5a7d60200553e23f4fa8724d0f6dc5d4c",
+    "docs/deployment/infrastructure-patches.md": "3bb6428cb18cdd67b32b2478eaec7ad5a26d5146e41d5c9ec0ab1cef43e6e2fc",
+    "docs/deployment/origin-certificate.md": "8d427ad1e9c0eba29a8606049e209be8b2edf6945d464bb108d3350f207b809e"
+  },
+  "limits": "Local fixtures use synthetic data. The remote comparison establishes RDB readability/checksum under its existing owner. The operator must still run the complete original deployment recovery and verify Redis/runtime/native handoff."
+}

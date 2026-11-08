@@ -3,7 +3,7 @@
 <div align="center">
 
 [![Blockscout](https://github.com/blockscout/blockscout/actions/workflows/config.yml/badge.svg)](https://github.com/blockscout/blockscout/actions)
-[![Discord](https://dcbadge.vercel.app/api/server/blockscout?style=flat)](https://discord.gg/blockscout)
+[![Discord](https://img.shields.io/badge/chat-Blockscout-green.svg)](https://discord.gg/blockscout)
 
 </div>
 
@@ -25,6 +25,14 @@ Blockscout is an open-source alternative to centralized, closed source block exp
 Blockscout currently supports several hundred chains and rollups throughout the greater blockchain ecosystem. Ethereum, Cosmos, Polkadot, Avalanche, Near and many others include Blockscout integrations. A comprehensive list is available at [chains.blockscout.com](https://chains.blockscout.com). If your project is not listed, contact the team in [Discord](https://discord.com/invite/blockscout).
 
 ## Getting Started
+
+For the Deriw installation, start with the [current dev v10 deployment and
+operations guide](docs/deployment/dev-v10.md), its
+[command/step file](deploy/steps/dev-v10-review.sh), and the
+[Compose component audit](docs/deployment/component-audit-2026-11-06.md).
+Use the [frontend v2.7.2 rollout guide](docs/deployment/frontend-v2.7.2.md)
+for the UI image and its normalization handoff.
+The deployed controller checkout stays pinned while historical normalization runs.
 
 See the [project documentation](https://docs.blockscout.com/) for instructions:
 

@@ -9,7 +9,11 @@ defmodule Indexer.Block.Fetcher.Receipts do
 
   require Logger
 
+  use Utils.CompileTimeEnvHelper, chain_type: [:explorer, :chain_type]
+
+  alias EthereumJSONRPC.Receipts
   alias Indexer.Block
+  alias Indexer.Block.Fetcher.ReceiptFallback
 
   @doc """
     Fetches transaction receipts and logs in batches with configurable concurrency.
@@ -27,7 +31,7 @@ defmodule Indexer.Block.Fetcher.Receipts do
       and logs with block numbers added where missing
     - `{:error, reason}` - Error occurred during fetch or processing
   """
-  @spec fetch(Block.Fetcher.t(), [map()]) :: {:ok, %{logs: [map()], receipts: [map()]}} | {:error, term()}
+  @spec fetch(Block.Fetcher.t(module()), [map()]) :: {:ok, %{logs: [map()], receipts: [map()]}} | {:error, term()}
   def fetch(state, transaction_params)
 
   def fetch(%Block.Fetcher{} = _state, []), do: {:ok, %{logs: [], receipts: []}}
@@ -39,9 +43,26 @@ defmodule Indexer.Block.Fetcher.Receipts do
     Logger.debug("fetching transaction receipts", count: Enum.count(transaction_params))
     stream_opts = [max_concurrency: state.receipts_concurrency, timeout: :infinity]
 
-    transaction_params
+    {block_numbers, filtered_transaction_params} =
+      if Application.get_env(:ethereum_jsonrpc, :receipts_by_block?) do
+        split_transaction_params(transaction_params)
+      else
+        {[], transaction_params}
+      end
+
+    filtered_transaction_params
     |> Enum.chunk_every(state.receipts_batch_size)
-    |> Task.async_stream(&EthereumJSONRPC.fetch_transaction_receipts(&1, json_rpc_named_arguments), stream_opts)
+    |> Enum.concat(block_numbers)
+    |> Task.async_stream(
+      fn
+        block_number when is_integer(block_number) ->
+          Receipts.fetch_by_block_numbers([block_number], json_rpc_named_arguments)
+
+        transactions when is_list(transactions) ->
+          fetch_chunk(transactions, json_rpc_named_arguments)
+      end,
+      stream_opts
+    )
     |> Enum.reduce_while({:ok, %{logs: [], receipts: []}}, fn
       {:ok, {:ok, %{logs: logs, receipts: receipts}}}, {:ok, %{logs: acc_logs, receipts: acc_receipts}} ->
         {:cont, {:ok, %{logs: acc_logs ++ logs, receipts: acc_receipts ++ receipts}}}
@@ -49,14 +70,37 @@ defmodule Indexer.Block.Fetcher.Receipts do
       {:ok, {:error, reason}}, {:ok, _acc} ->
         {:halt, {:error, reason}}
 
-      {:error, reason}, {:ok, _acc} ->
+      {:exit, reason}, {:ok, _acc} ->
         {:halt, {:error, reason}}
     end)
     |> case do
-      {:ok, receipt_params} -> {:ok, set_block_number_to_logs(receipt_params, transaction_params)}
-      other -> other
+      {:ok, receipt_params} ->
+        {:ok, set_block_number_to_logs(receipt_params, transaction_params)}
+
+      {:error, _reason} = error ->
+        # Missing data stays pending. Pace subsequent catch-up attempts instead
+        # of hammering the same historical block in a tight loop.
+        Process.sleep(Application.get_env(:indexer, :receipts_retry_delay, 5_000))
+        error
     end
   end
+
+  defp fetch_chunk(transactions, json_rpc_named_arguments) do
+    case EthereumJSONRPC.fetch_transaction_receipts(transactions, json_rpc_named_arguments) do
+      {:error, reasons} = error when is_list(reasons) ->
+        if @chain_type == :arbitrum and Enum.any?(reasons, &missing_receipt?/1) do
+          ReceiptFallback.fetch(transactions, json_rpc_named_arguments)
+        else
+          error
+        end
+
+      result ->
+        result
+    end
+  end
+
+  defp missing_receipt?(%{code: -32602, message: "Not Found"}), do: true
+  defp missing_receipt?(_), do: false
 
   @doc """
     Merges transaction receipts with their corresponding transactions.
@@ -134,6 +178,20 @@ defmodule Indexer.Block.Fetcher.Receipts do
   defp find_transaction_by_hash(transaction_params, transaction_hash) do
     Enum.find(transaction_params, fn transaction ->
       transaction[:hash] == transaction_hash
+    end)
+  end
+
+  defp split_transaction_params(transaction_params) do
+    max_receipts_by_block = Application.get_env(:ethereum_jsonrpc, :max_receipts_by_block)
+
+    transaction_params
+    |> Enum.group_by(& &1.block_number)
+    |> Enum.reduce({[], []}, fn {block_number, transaction_params}, {blocks_acc, transactions_acc} ->
+      if Enum.count(transaction_params) > max_receipts_by_block do
+        {blocks_acc, transaction_params ++ transactions_acc}
+      else
+        {[block_number | blocks_acc], transactions_acc}
+      end
     end)
   end
 end

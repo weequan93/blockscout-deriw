@@ -1,0 +1,103 @@
+{
+  "format": "deriw-consolidated-release-v1",
+  "review_date": "2026-11-08",
+  "backend": {
+    "branch": "codex/consolidated-v10-release",
+    "parent": "ddfedcadd25e07367c6133d10a44e7fde4d3898e",
+    "reviewed_tree_commit": "a766697c35152219ee569108e68ced1e7638427d",
+    "reviewed_tree": "168e7ac18a65ec9ae4fa99c57c76479b1ed87c85",
+    "deployed_source": "e7a16ead2bcf53da05b6e059da616ebacddbf22d",
+    "version": "10.2.6"
+  },
+  "frontend": {
+    "repository": "weequan93/frontend",
+    "branch": "codex/consolidated-frontend-v272",
+    "parent": "25ccfdbb744365d9005e0e7b7adb16c171a4f7fd",
+    "reviewed_tree_commit": "8dbd8245479df03dd0ac6478bd891846059027d7",
+    "image_source": "d30a3ebe40d6fb6a061a84afed74afe32c8a6abe",
+    "version": "2.7.2-deriw.4",
+    "image": "quanquanah/blockscout-frontend@sha256:44bd15d39c839baf1e32e28ce99c63c9eee99db8e08043cc0df8ceb1d84faf28",
+    "platform": "linux/amd64"
+  },
+  "infrastructure": {
+    "nginx": {
+      "version": "1.31.8",
+      "reference": "nginx@sha256:5cb45c65713151f856f6b64f6a9b6a96b74d6a10709a7aa18919a444fd00bffa",
+      "reviewed_tag": "1.31.8-trixie"
+    },
+    "redis": {
+      "version": "8.8.4",
+      "reference": "redis@sha256:b85e284e14f616937c8e94a5d0374a6cfa6eb4bc5d6ab4ce59e38eca2fcec476",
+      "reviewed_tag": "8.8.4-alpine"
+    },
+    "postgresql": {
+      "version": "15.19",
+      "reference": "postgres@sha256:61a5b377afa2f8604cf6f3e6d7b17b7bcee2ac3cc0245a7b698a43a29e9896c6",
+      "reviewed_tag": "15.19-trixie"
+    }
+  },
+  "retained_services": {
+    "nft_media_handler": {
+      "image_id": "sha256:56e1424518a81c3be86e0c607f34a3c5dc00599e635f1a0a96bcffd536c90b33",
+      "revision": "f8119a0a2f65593d184be66a57480660e3663b25",
+      "release": "10.2.6",
+      "created": "2026-11-04"
+    },
+    "stats": {
+      "image_id": "sha256:a618847070aa0d8256b99082de882f6c5fca7cd20721e04511ee0e1bb5d0b6b5",
+      "revision": "cd413c58c3469bdd442d0e7a0cebdaba79e641d5",
+      "release": "2.19.1",
+      "created": "2026-09-08"
+    },
+    "sc-verifier": {
+      "image_id": "sha256:a7580f42b55c0aafad43a2acd979b60adddc1e9985a8cf01857179962f0fe063",
+      "revision": "9457af29b9f98a5f6ad0ee289f8a3255fa4cc7ed",
+      "release": "1.11.1",
+      "created": "2026-10-28"
+    },
+    "sig-provider": {
+      "image_id": "sha256:fd9e344b22022d25c853c447d7903b98ba118e1246218d6de6817c27d55b6f70",
+      "revision": "1aff234b419265f8bdd1d3dd1056219f733592b5",
+      "release": "1.1.4",
+      "created": "2026-09-22"
+    },
+    "user-ops-indexer": {
+      "image_id": "sha256:d0ffe9c672d9c5cf1e035b2dd8e4baf9e9b28d3382822ea2d07e69a924562932",
+      "revision": "3c82877cd7ebc45360670a4fc0108923dfd059cc",
+      "release": "1.4.3",
+      "created": "2026-06-25"
+    },
+    "visualizer": {
+      "image_id": "sha256:ffce88a765b0466824175cc8fed6e6b31d682310a96933b98451aefdfffecdc7",
+      "revision": "acf11c8757f5c4cba1caddcfe6ea0ee7914f30ff",
+      "release": "0.2.1",
+      "created": "2024-07-17"
+    }
+  },
+  "configuration": {
+    "authority": "Authenticated latest private Compose snapshot via native runtime binding",
+    "public_compose_role": "Unmodified historical adoption baseline",
+    "private_values_in_git": false,
+    "rewrite_live_configuration": false,
+    "data_restore_automatic": false,
+    "new_deployment_or_rebuild_required": false
+  },
+  "normalization": {
+    "checkpoint": "Explorer.Migrator.FillingMigration / migrations_status",
+    "cumulative_growth_cap_bytes": null,
+    "minimum_free_gib": 200,
+    "pause_free_gib": 210,
+    "resume_free_gib": 220,
+    "automatic_migrations_disabled": true,
+    "deferred_schema_migrations": [
+      20260721000000,
+      20260812000000
+    ]
+  },
+  "evidence": [
+    "deploy/audits/bridge-checkpoint-live-2026-11-08.json",
+    "deploy/audits/infrastructure-rollout-status-2026-11-08.json",
+    "deploy/audits/deriw-footer-three-columns-validation-2026-11-07.json"
+  ],
+  "scope": "Source consolidation and operations cleanup. Recorded runtime selections are dated operator evidence, not a new live inventory or a new image build."
+}

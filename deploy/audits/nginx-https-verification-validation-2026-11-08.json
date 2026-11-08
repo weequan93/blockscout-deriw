@@ -1,0 +1,71 @@
+{
+  "format": "deriw-nginx-https-verification-validation-v1",
+  "date": "2026-11-08",
+  "timezone": "Asia/Singapore",
+  "published_tools_tag": "deriw-infra-patches-2026-11-08-r8",
+  "operator_request": "skip https verification",
+  "scope": "Skip only certificate verification in the direct-origin Nginx deployment probe; retain successful HTTPS response and existing route, service and native continuity checks.",
+  "unit_tests": {
+    "pattern": "test_v10*.py",
+    "count": 344,
+    "status": "passed"
+  },
+  "fixtures": {
+    "operator_skip": {
+      "status": "passed",
+      "live_services_accessed": false,
+      "fixture_resources_removed": true,
+      "nginx": {
+        "status": "passed",
+        "old_version": "1.31.1",
+        "patch_version": "1.31.8",
+        "expired_origin_rejected_by_strict_tls": true,
+        "explicit_skip_staged_upgraded_and_rolled_back": true,
+        "https_response_and_http_api_routes_checked": true,
+        "websocket_101_and_source_map_policy_checked": true,
+        "current_certificate_key_and_loaded_configuration_preserved": true,
+        "static_ip_and_unrelated_containers_preserved": true,
+        "previous_image_rollback_verified": true
+      }
+    },
+    "strict_default": {
+      "status": "passed",
+      "live_services_accessed": false,
+      "fixture_resources_removed": true,
+      "nginx": {
+        "status": "passed",
+        "old_version": "1.31.1",
+        "patch_version": "1.31.8",
+        "compose_snapshot_round_trip_verified": true,
+        "actual_staging_and_component_contract_used": true,
+        "frozen_configuration_and_private_certificate_evidence": true,
+        "directory_mounted_tls_assets_remain_renewable": true,
+        "http_and_verified_https_routes": true,
+        "deposits_backend_and_stats_routes": true,
+        "websocket_101_upgrade": true,
+        "source_maps_restricted": true,
+        "static_ip_and_unrelated_containers_preserved": true,
+        "certificate_rotation_verified_without_container_recreation": true,
+        "historical_certificate_evidence_unchanged": true,
+        "image_rollback_keeps_the_renewed_certificate": true,
+        "previous_image_rollback_verified": true
+      }
+    }
+  },
+  "tested_source_sha256": {
+    "deploy/scripts/v10_infrastructure_deploy.py": "6ec6e4f6f92f33068ee50832e5ccf1c4fd95e363f0b98746f94c9a66cee8f2fb",
+    "deploy/scripts/v10_infrastructure_stage.py": "fbab6ad4f6080f485df1841a45ea4d7b69a431ef68e740e7aa15fe86bff10065",
+    "deploy/tests/test_v10_infrastructure.py": "3aada0d4ea63231049ced80b9bd75714f17d6fd6e39e3d9d8ca145af3dd62ade",
+    "deploy/tests/check_v10_infrastructure.py": "b40aebe339ca48b08614cf0a413cabd07ca1ccc1592d21f75b25f3b9d5ebc619"
+  },
+  "migration_handoff_unit_checks": [
+    "frozen native inputs and cursor preserved",
+    "explicit HTTPS choice retained through native binding",
+    "completed native job never reopened",
+    "tampered inputs and newer deployment ownership rejected",
+    "failed activation never binds or resumes the native job"
+  ],
+  "live_nginx_upgrade_verified": false,
+  "server_journals_or_certificates_modified_by_agent": false,
+  "live_server_commands_required": true
+}

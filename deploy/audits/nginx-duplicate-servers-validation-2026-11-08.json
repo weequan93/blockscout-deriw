@@ -1,0 +1,87 @@
+{
+  "format": "deriw-nginx-duplicate-server-validation-v1",
+  "date": "2026-11-08",
+  "timezone": "Asia/Singapore",
+  "published_tools_tag": "deriw-infra-patches-2026-11-08-r9",
+  "operator_inventory": {
+    "observed_at_utc": "2026-11-08T02:46:38.642139+00:00",
+    "nginx_version": "1.31.1",
+    "loaded_http_server_blocks": 13,
+    "expected_effective_server_blocks": 5,
+    "expected_removed_server_blocks": 8,
+    "first_default_blocks": 5,
+    "repeated_default_blocks": 5,
+    "shadowed_explorer_blocks": 1,
+    "shadowed_microservices_blocks": 2,
+    "explicit_shadowed_defaults": 0,
+    "direct_server_includes": 0,
+    "native_status": "native_normalization_running",
+    "native_cursor": 13719094
+  },
+  "unit_tests": {
+    "pattern": "test_v10*.py",
+    "count": 364,
+    "status": "passed"
+  },
+  "fixtures": {
+    "upgrade_and_cleanup": {
+      "status": "passed",
+      "live_services_accessed": false,
+      "fixture_resources_removed": true,
+      "nginx": {
+        "status": "passed",
+        "old_version": "1.31.1",
+        "patch_version": "1.31.8",
+        "expired_origin_rejected_by_strict_tls": true,
+        "explicit_skip_staged_upgraded_and_rolled_back": true,
+        "https_response_and_http_api_routes_checked": true,
+        "websocket_101_and_source_map_policy_checked": true,
+        "current_certificate_and_key_preserved": true,
+        "original_configuration_retained_for_rollback": true,
+        "duplicate_name_warnings_removed": true,
+        "static_ip_and_unrelated_containers_preserved": true,
+        "previous_image_rollback_verified": true
+      }
+    },
+    "already_upgraded_cleanup": {
+      "status": "passed",
+      "live_services_accessed": false,
+      "fixture_resources_removed": true,
+      "nginx": {
+        "status": "passed",
+        "old_version": "1.31.8",
+        "patch_version": "1.31.8",
+        "expired_origin_rejected_by_strict_tls": true,
+        "explicit_skip_staged_upgraded_and_rolled_back": true,
+        "https_response_and_http_api_routes_checked": true,
+        "websocket_101_and_source_map_policy_checked": true,
+        "current_certificate_and_key_preserved": true,
+        "original_configuration_retained_for_rollback": true,
+        "duplicate_name_warnings_removed": true,
+        "configuration_only_repair_checked": true,
+        "static_ip_and_unrelated_containers_preserved": true,
+        "previous_image_rollback_verified": true
+      }
+    }
+  },
+  "tested_source_sha256": {
+    "deploy/scripts/v10_nginx_duplicates.py": "ac92dc2e23fe12e982ca3e798ab2d237d69160625d15bfb0aaf29975e205ae78",
+    "deploy/scripts/v10_infrastructure_deploy.py": "9f9495b4ae7c9357aee4092ffb1f6b1af34787026daff4cfee12dd0c989f54e6",
+    "deploy/scripts/v10_infrastructure_stage.py": "5ccd99d1136b3b2e693a7f5005e434e9f99d2bd3fb0115ee99ce79cbe5f897af",
+    "deploy/tests/test_v10_nginx_duplicates.py": "cb216ea444b27fc92fcfb5b8d76c4791c510f7631d5461055e6b7918c4a7cd4a",
+    "deploy/tests/test_v10_infrastructure.py": "57b661aa12e920412662c9f92dd3cc39ed8118dd130d6d36506ba2b165c32f0f",
+    "deploy/tests/check_v10_infrastructure.py": "d60b5848698ee4de748ee841cdbbd8dbcde636a9673d1d33a014b4203948314f"
+  },
+  "policy": {
+    "preserve_first_effective_server": true,
+    "preserve_unique_aliases": true,
+    "retain_original_config_for_rollback": true,
+    "retain_current_certificate_and_key": true,
+    "https_certificate_verification": "skipped_by_operator",
+    "https_response_check_required": true,
+    "native_inputs_and_cursor_reset": false,
+    "only_recreated_service": "proxy"
+  },
+  "live_server_upgrade_and_repair_verified": false,
+  "server_commands_required": true
+}

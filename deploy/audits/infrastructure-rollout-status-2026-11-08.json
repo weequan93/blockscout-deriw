@@ -1,0 +1,232 @@
+{
+  "format": "deriw-infrastructure-rollout-status-v1",
+  "status_date_sgt": "2026-11-08",
+  "evidence_source": "Operator-pasted final deployment JSON and hold-recovery transcript",
+  "services": {
+    "redis": {
+      "version": "8.8.4",
+      "status": "infrastructure_finished",
+      "state": "/data/blockscout-dev-private/infrastructure-releases/infra-20261107T135833Z-0fdb1c52/state.json"
+    },
+    "postgresql-stats": {
+      "version": "15.19",
+      "status": "infrastructure_finished",
+      "state": "/data/blockscout-dev-private/infrastructure-releases/infra-20261107T155237Z-37d68424/state.json"
+    },
+    "postgresql-main": {
+      "version": "15.19",
+      "status": "infrastructure_finished",
+      "state": "/data/blockscout-dev-private/infrastructure-releases/infra-20261107T155504Z-9210c7d2/state.json"
+    },
+    "nginx": {
+      "version": "1.31.8",
+      "status": "infrastructure_finished",
+      "state": "/data/blockscout-dev-private/infrastructure-releases/infra-20261108T025332Z-2683201e/state.json",
+      "source_root": "/data/blockscout-v10-nginx-cleanup",
+      "source_commit": "85ba83b90e60dd5fe28853ba03646dfaaea9df1f",
+      "https_certificate_verification": "skipped_by_operator",
+      "https_route_check_required": true,
+      "removed_duplicate_server_blocks": 8,
+      "remaining_effective_server_blocks": 5,
+      "last_reported_origin_certificate_expires_utc": "2026-10-18T02:11:54+00:00",
+      "certificate_replacement_reported": false
+    }
+  },
+  "main_finalized_at_sgt": "2026-11-08T00:42:27.909318+08:00",
+  "normalization": {
+    "state": "/data/blockscout-dev-private/v10-native-normalization/job-20261106T103901Z-59bb4dc6/state.json",
+    "status": "native_normalization_waiting",
+    "paused_cursor_before_recovery": 14264419,
+    "cursor_after_resumption": 14263999,
+    "decreasing_cursor_confirms_historical_progress": true,
+    "normalization_complete": false,
+    "cumulative_growth_cap_bytes": null,
+    "heavy_index_and_primary_key_migrations_started": false,
+    "reason": "waiting_for_autovacuum",
+    "native_cursor": 13711054,
+    "observed_at_utc": "2026-11-08T02:54:34.314648+00:00",
+    "native_checkpoint_preserved": true,
+    "deployment_handoff_applied": true
+  },
+  "hold_recovery": {
+    "observed_metrics_held": true,
+    "observed_sanitizer_running": true,
+    "automatic_migrations_disabled": true,
+    "reapplied_worker": "Indexer.Fetcher.EmptyBlocksSanitizer",
+    "original_source_root": "/data/blockscout-v10-collation-review",
+    "original_source_commit": "617aa8a22eedef636ded1ebe8826c6593c08ab8c",
+    "reconciliation_source_commit": "0b3e8ebc0d9de9dd91467ce53129be5c634045ce",
+    "runtime_holds_verified_after_reapplication": true,
+    "explicit_query_cancellation_requested": false,
+    "additional_database_restart_requested": false,
+    "checkpoint_or_token_reset": false
+  },
+  "final_main_output": {
+    "status": "infrastructure_finished",
+    "state": "/data/blockscout-dev-private/infrastructure-releases/infra-20261107T155504Z-9210c7d2/state.json",
+    "component": "postgresql-main",
+    "target_version": "15.19",
+    "image_reference": "postgres@sha256:61a5b377afa2f8604cf6f3e6d7b17b7bcee2ac3cc0245a7b698a43a29e9896c6",
+    "only_recreated_service": "db",
+    "backend_image_replaced": false,
+    "schema_migrations_run": false,
+    "normalization_state": "/data/blockscout-dev-private/v10-native-normalization/job-20261106T103901Z-59bb4dc6/state.json",
+    "frozen_normalization_inputs_preserved": true,
+    "automatic_data_restore": false,
+    "recovery_policy": {
+      "decision_date": "2026-11-04",
+      "operator_authorized_without_verification": true,
+      "recovery_verified": false,
+      "route": "operator_manual"
+    },
+    "observed_at_utc": "2026-11-07T16:42:27.909318+00:00",
+    "postgresql_collation_review": {
+      "default_collation_mismatch": false,
+      "dependency_catalogs": [],
+      "direct_dependencies": 0,
+      "format": "deriw-v10-collation-review-v1",
+      "index_keys_using_mismatches": 0,
+      "mismatched_collations": 808,
+      "partition_keys_using_mismatches": 0,
+      "pinned_mismatched_collations": 0,
+      "ranges_using_mismatches": 0,
+      "relation_attributes_using_mismatches": 0,
+      "types_using_mismatches": 0,
+      "user_functions_mentioning_collate": 0
+    },
+    "collation_versions_refreshed": false,
+    "reindex_performed": false,
+    "normalization": {
+      "status": "native_normalization_running",
+      "state": "/data/blockscout-dev-private/v10-native-normalization/job-20261106T103901Z-59bb4dc6/state.json",
+      "reason": null,
+      "observed_at_utc": "2026-11-07T16:42:27.695173+00:00",
+      "native_cursor": 14263999,
+      "native_migration_status": "started",
+      "manual_phase_rows_verified": 4999097,
+      "manual_maintenance_selected_rows": 11294954,
+      "starting_before_block": 131385496,
+      "current_data_free_bytes": 895731916800,
+      "minimum_data_free_bytes": 214748364800,
+      "cumulative_growth_cap_bytes": null,
+      "native_worker": {
+        "phase": "waiting",
+        "reason": "host_authorization_required"
+      },
+      "batch_blocks": 60,
+      "database_checkpoint_persisted_by": "Explorer.Migrator.FillingMigration",
+      "normalization_complete": false,
+      "deployment_handoff_applied": true,
+      "heavy_index_and_primary_key_migrations_started": false,
+      "note": "Native batching and database checkpoints. Automatic vacuum is configured only for internal_transactions. Other migrators remain held."
+    }
+  },
+  "remaining_action": "No further deployment is required for these recorded infrastructure patches. Native normalization continues automatically after its autovacuum wait; deferred database migrations remain separate.",
+  "agent_server_access": false,
+  "notes": "Saved observations describe the reported rollout time. Live later status may be running, waiting or completed. Original runtime checkouts and private journals remain pinned. This documentation update does not deploy software.",
+  "nginx_finalized_at_sgt": "2026-11-08T10:54:35.456369+08:00",
+  "final_nginx_output": {
+    "status": "infrastructure_finished",
+    "state": "/data/blockscout-dev-private/infrastructure-releases/infra-20261108T025332Z-2683201e/state.json",
+    "component": "nginx",
+    "target_version": "1.31.8",
+    "image_reference": "nginx@sha256:5cb45c65713151f856f6b64f6a9b6a96b74d6a10709a7aa18919a444fd00bffa",
+    "only_recreated_service": "proxy",
+    "backend_image_replaced": false,
+    "schema_migrations_run": false,
+    "normalization_state": "/data/blockscout-dev-private/v10-native-normalization/job-20261106T103901Z-59bb4dc6/state.json",
+    "frozen_normalization_inputs_preserved": true,
+    "automatic_data_restore": false,
+    "recovery_policy": {
+      "decision_date": "2026-11-04",
+      "operator_authorized_without_verification": true,
+      "recovery_verified": false,
+      "route": "operator_manual"
+    },
+    "observed_at_utc": "2026-11-08T02:54:35.456369+00:00",
+    "https_certificate_verification": "skipped_by_operator",
+    "https_route_check_required": true,
+    "nginx_duplicate_server_review": {
+      "changes": [
+        {
+          "configuration": "/etc/nginx/conf.d/default.conf",
+          "removed_name_count": 1,
+          "removed_server": true,
+          "server_ordinal": 5
+        },
+        {
+          "configuration": "/etc/nginx/conf.d/default.conf",
+          "removed_name_count": 1,
+          "removed_server": true,
+          "server_ordinal": 6
+        },
+        {
+          "configuration": "/etc/nginx/conf.d/default.conf",
+          "removed_name_count": 1,
+          "removed_server": true,
+          "server_ordinal": 7
+        },
+        {
+          "configuration": "/etc/nginx/conf.d/default.conf",
+          "removed_name_count": 1,
+          "removed_server": true,
+          "server_ordinal": 8
+        },
+        {
+          "configuration": "/etc/nginx/conf.d/default.conf",
+          "removed_name_count": 1,
+          "removed_server": true,
+          "server_ordinal": 9
+        },
+        {
+          "configuration": "/etc/nginx/conf.d/explorer.conf",
+          "removed_name_count": 1,
+          "removed_server": true,
+          "server_ordinal": 10
+        },
+        {
+          "configuration": "/etc/nginx/conf.d/microservices.conf",
+          "removed_name_count": 1,
+          "removed_server": true,
+          "server_ordinal": 11
+        },
+        {
+          "configuration": "/etc/nginx/conf.d/microservices.conf",
+          "removed_name_count": 1,
+          "removed_server": true,
+          "server_ordinal": 12
+        }
+      ],
+      "first_effective_server_preserved": true,
+      "format": "deriw-nginx-duplicate-server-review-v1",
+      "removed_server_blocks": 8,
+      "removed_server_names": 8
+    },
+    "configuration_only": false,
+    "normalization": {
+      "status": "native_normalization_waiting",
+      "state": "/data/blockscout-dev-private/v10-native-normalization/job-20261106T103901Z-59bb4dc6/state.json",
+      "reason": "waiting_for_autovacuum",
+      "observed_at_utc": "2026-11-08T02:54:34.314648+00:00",
+      "native_cursor": 13711054,
+      "native_migration_status": "started",
+      "manual_phase_rows_verified": 4999097,
+      "manual_maintenance_selected_rows": 11294954,
+      "starting_before_block": 131385496,
+      "current_data_free_bytes": 872122339328,
+      "minimum_data_free_bytes": 214748364800,
+      "cumulative_growth_cap_bytes": null,
+      "native_worker": {
+        "phase": "waiting",
+        "reason": "host_authorization_required"
+      },
+      "batch_blocks": 30,
+      "database_checkpoint_persisted_by": "Explorer.Migrator.FillingMigration",
+      "normalization_complete": false,
+      "deployment_handoff_applied": true,
+      "heavy_index_and_primary_key_migrations_started": false,
+      "note": "Native batching and database checkpoints. Automatic vacuum is configured only for internal_transactions. Other migrators remain held."
+    }
+  },
+  "recorded_infrastructure_patches_complete": true
+}

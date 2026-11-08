@@ -4,19 +4,15 @@ defmodule Utils.MixProject do
   def project do
     [
       app: :utils,
-      version: "9.0.1",
+      version: "10.2.6",
       build_path: "../../_build",
       # config_path: "../../config/config.exs",
       deps_path: "../../deps",
       lockfile: "../../mix.lock",
-      elixir: "~> 1.17",
+      elixir: "~> 1.19",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
-      deps: deps(),
-      preferred_cli_env: [
-        credo: :test,
-        dialyzer: :test
-      ]
+      deps: deps()
     ]
   end
 
@@ -27,13 +23,17 @@ defmodule Utils.MixProject do
     ]
   end
 
+  def cli do
+    [preferred_envs: [credo: :test, dialyzer: :test]]
+  end
+
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
       {:credo, "~> 1.5", only: [:test, :dev], runtime: false},
       {:httpoison, "~> 2.0"},
       {:mime, "~> 2.0"},
-      {:tesla, "~> 1.14.2"}
+      {:tesla, "~> 1.16.0"}
     ]
   end
 

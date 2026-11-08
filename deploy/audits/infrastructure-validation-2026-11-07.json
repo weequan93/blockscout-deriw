@@ -1,0 +1,128 @@
+{
+  "format": "deriw-v10-infrastructure-validation-v1",
+  "date": "2026-11-07",
+  "scope": "Local disposable Linux AMD64 fixtures and Python regression tests. No dev-server deployment performed.",
+  "release_tag": "deriw-infra-patches-2026-11-07",
+  "unit_tests": {
+    "command": "python3 -m unittest discover -s deploy/tests -p 'test_v10*.py' -q",
+    "passed": 305,
+    "infrastructure_tests_included": 24
+  },
+  "static_checks": {
+    "python_compile": true,
+    "shell_syntax": true,
+    "diff_whitespace": true
+  },
+  "candidate_image_probes": {
+    "nginx": {
+      "image_id": "sha256:5cb45c65713151f856f6b64f6a9b6a96b74d6a10709a7aa18919a444fd00bffa",
+      "os": {
+        "ID": "debian",
+        "VERSION_ID": "13"
+      },
+      "version": "1.31.8"
+    },
+    "redis": {
+      "image_id": "sha256:b85e284e14f616937c8e94a5d0374a6cfa6eb4bc5d6ab4ce59e38eca2fcec476",
+      "os": {
+        "ID": "alpine",
+        "VERSION_ID": "3.23.8"
+      },
+      "version": "8.8.4"
+    },
+    "postgresql": {
+      "image_id": "sha256:61a5b377afa2f8604cf6f3e6d7b17b7bcee2ac3cc0245a7b698a43a29e9896c6",
+      "os": {
+        "ID": "debian",
+        "VERSION_ID": "13"
+      },
+      "version": "15.19"
+    }
+  },
+  "fixtures": {
+    "postgresql": {
+      "status": "passed",
+      "live_services_accessed": false,
+      "fixture_resources_removed": true,
+      "postgresql": {
+        "status": "passed",
+        "old_version": "15.18",
+        "patch_version": "15.19",
+        "uid_gid": "2000:2000",
+        "same_named_data_volume_and_static_ip": true,
+        "cluster_oid_heap_and_migration_versions_preserved": true,
+        "original_native_worker_and_payload_used": true,
+        "committed_batch_with_lost_cursor_replayed_idempotently": true,
+        "native_cursor_advanced_on_patch": true,
+        "native_job_resumed_after_binary_rollback": true,
+        "same_job_completed_without_duplicate_updates": true,
+        "btree_gist_float_review_guard_verified": true,
+        "other_migration_completion_records_preserved": true,
+        "existing_ecto_client_reconnected_without_restart": true,
+        "empty_data_directory_refused_without_initialization": true
+      }
+    },
+    "redis": {
+      "status": "passed",
+      "live_services_accessed": false,
+      "fixture_resources_removed": true,
+      "redis": {
+        "status": "passed",
+        "old_version": "8.8.0",
+        "patch_version": "8.8.4",
+        "rdb_multitype_and_multidatabase_restored": true,
+        "ttl_preserved": true,
+        "final_rdb_backup_checksum_verified": true,
+        "old_binary_reads_new_rdb": true,
+        "image_rollback_preserves_post_patch_writes": true,
+        "static_ip_preserved": true,
+        "existing_redix_client_reconnected_without_restart": true
+      }
+    },
+    "nginx": {
+      "status": "passed",
+      "live_services_accessed": false,
+      "fixture_resources_removed": true,
+      "nginx": {
+        "status": "passed",
+        "old_version": "1.31.1",
+        "patch_version": "1.31.8",
+        "actual_staging_and_component_contract_used": true,
+        "frozen_configuration_and_certificates": true,
+        "http_and_verified_https_routes": true,
+        "deposits_backend_and_stats_routes": true,
+        "websocket_101_upgrade": true,
+        "source_maps_restricted": true,
+        "static_ip_and_unrelated_containers_preserved": true,
+        "previous_image_rollback_verified": true
+      }
+    }
+  },
+  "source_sha256": {
+    "deploy/infra/targets.json": "28ed206ebdb7ccb2aab1a4ce7d12e5db12e0f04c1dda49cfce843484a973f6cf",
+    "deploy/scripts/v10_infrastructure_checks.py": "5d89499b810f3d7a82d136fef58ca0dd9e1fa6bd8cc9b075238720c94e8d020f",
+    "deploy/scripts/v10_infrastructure_stage.py": "27acde5d2e8f8ed25f12ce21903839119309fa8c2f60abf0211f076162e8591b",
+    "deploy/scripts/v10_infrastructure_deploy.py": "fa71d242a26d76e5716f2be4ab6136f8d0312418a7ceacb981cfdae124e10336",
+    "deploy/scripts/dev_config.py": "906c5c99d47a558e2c21b49e4a4ead81c7f3ea042cfb9a350f58a0b644c45608",
+    "deploy/scripts/v10_native_normalization.py": "ef897844f1cdeed6ca58b78965822b661e4549ee816cfda89a8880737de43279",
+    "deploy/scripts/v10_frontend_deploy.py": "cb3d557bb40713c0ccc3edbd30342f765909d07934ae29b7a7d7f2d92e76c809",
+    "deploy/scripts/v10/native_normalization.exs": "54d2ee58592c6019a2f6e1c91bf4ca2419abe485089e1eac0843ed397f2dcfef",
+    "deploy/tests/check_v10_infrastructure.py": "f5d75bf398788d6c6796bdbd63ea4396e2b5ad4539c870290cccf2dff3e3c79e",
+    "deploy/tests/test_v10_infrastructure.py": "cc7d20a9f11e843e0ffddd056fcc0ba97c1d2b2fee388bbb7099b0dc54c62179",
+    "deploy/steps/dev-v10-infrastructure.sh": "437d6be1813d6722736b09b2725d9dd3342fb57f012d7bdbc871b0813528566b"
+  },
+  "native_exs_unchanged_from_base": "5196bc751ed65012722218769ade6bdf3714e2b5",
+  "migration_continuity": {
+    "new_job_created": false,
+    "frozen_payload_reset": false,
+    "same_native_code_and_payload_in_pg_fixture": true,
+    "completion_records_retained": true,
+    "cumulative_growth_cap_introduced": false
+  },
+  "limits": [
+    "Synthetic data, not a full-size restore or load test.",
+    "Remote server upgrade and live health qualification remain unapplied.",
+    "PostgreSQL backup recovery remains the prior operator-manual unverified policy.",
+    "Rollback is limited to the latest owned operation; later deployments require a new recovery review."
+  ]
+}

@@ -1,0 +1,587 @@
+{
+  "networks": {
+    "default": {
+      "name": "docker-compose_default"
+    }
+  },
+  "services": {
+    "backend": {
+      "build": {
+        "args": {
+          "ADMIN_PANEL_ENABLED": "",
+          "API_V1_READ_METHODS_DISABLED": "false",
+          "API_V1_WRITE_METHODS_DISABLED": "false",
+          "CACHE_ADDRESS_WITH_BALANCES_UPDATE_INTERVAL": "",
+          "CACHE_EXCHANGE_RATES_PERIOD": "",
+          "CACHE_TOTAL_GAS_USAGE_COUNTER_ENABLED": "",
+          "CHAIN_TYPE": "arbitrum",
+          "DISABLE_WEBAPP": "false",
+          "RELEASE_VERSION": "9.0.1"
+        }
+      },
+      "container_name": "backend",
+      "depends_on": {
+        "db": {
+          "condition": "service_started",
+          "required": true
+        },
+        "redis-db": {
+          "condition": "service_started",
+          "required": true
+        }
+      },
+      "environment": {
+        "ACCOUNT_CLOAK_KEY": "",
+        "ACCOUNT_ENABLED": "false",
+        "ACCOUNT_REDIS_URL": "${DEV_BACKEND_ACCOUNT_REDIS_URL:?Required server value DEV_BACKEND_ACCOUNT_REDIS_URL}",
+        "ADMIN_PANEL_ENABLED": "false",
+        "API_NO_RATE_LIMIT_API_KEY": "",
+        "API_RATE_LIMIT": "${DEV_BACKEND_API_RATE_LIMIT:?Required server value DEV_BACKEND_API_RATE_LIMIT}",
+        "API_RATE_LIMIT_BY_IP": "3000",
+        "API_RATE_LIMIT_BY_IP_TIME_INTERVAL": "5m",
+        "API_RATE_LIMIT_BY_KEY": "50",
+        "API_RATE_LIMIT_BY_WHITELISTED_IP": "50",
+        "API_RATE_LIMIT_IS_BLOCKSCOUT_BEHIND_PROXY": "true",
+        "API_RATE_LIMIT_STATIC_API_KEY": "",
+        "API_RATE_LIMIT_TIME_INTERVAL": "${DEV_BACKEND_API_RATE_LIMIT_TIME_INTERVAL:?Required server value DEV_BACKEND_API_RATE_LIMIT_TIME_INTERVAL}",
+        "API_RATE_LIMIT_UI_V2_WITH_TOKEN": "${DEV_BACKEND_API_RATE_LIMIT_UI_V2_WITH_TOKEN:?Required server value DEV_BACKEND_API_RATE_LIMIT_UI_V2_WITH_TOKEN}",
+        "API_RATE_LIMIT_WHITELISTED_IPS": "",
+        "API_V1_READ_METHODS_DISABLED": "false",
+        "API_V1_WRITE_METHODS_DISABLED": "false",
+        "CACHE_TXS_COUNT_APPROXIMATE": "true",
+        "CHAIN_ID": "18417507517",
+        "CHAIN_TYPE": "arbitrum",
+        "COIN": "ETH",
+        "COIN_BALANCE_HISTORY_DAYS": "90",
+        "COIN_NAME": "Ether",
+        "DATABASE_URL": "${DEV_BACKEND_DATABASE_URL:?Required server value DEV_BACKEND_DATABASE_URL}",
+        "DECODE_NOT_A_CONTRACT_CALLS": "true",
+        "DISABLE_CATCHUP_INDEXER": "false",
+        "DISABLE_INDEXER": "false",
+        "DISABLE_MARKET": "false",
+        "DISABLE_REALTIME_INDEXER": "false",
+        "ECTO_USE_SSL": "${DEV_BACKEND_ECTO_USE_SSL:?Required server value DEV_BACKEND_ECTO_USE_SSL}",
+        "ETHEREUM_JSONRPC_DISABLE_ARCHIVE_BALANCES": "true",
+        "ETHEREUM_JSONRPC_HTTP_URL": "http://10.0.2.11:1100/",
+        "ETHEREUM_JSONRPC_TRACE_URL": "http://10.0.2.11:1100/",
+        "ETHEREUM_JSONRPC_TRANSPORT": "${DEV_BACKEND_ETHEREUM_JSONRPC_TRANSPORT:?Required server value DEV_BACKEND_ETHEREUM_JSONRPC_TRANSPORT}",
+        "ETHEREUM_JSONRPC_VARIANT": "${DEV_BACKEND_ETHEREUM_JSONRPC_VARIANT:?Required server value DEV_BACKEND_ETHEREUM_JSONRPC_VARIANT}",
+        "ETHEREUM_JSONRPC_WS_URL": "${DEV_BACKEND_ETHEREUM_JSONRPC_WS_URL:?Required server value DEV_BACKEND_ETHEREUM_JSONRPC_WS_URL}",
+        "HEART_BEAT_TIMEOUT": "${DEV_BACKEND_HEART_BEAT_TIMEOUT:?Required server value DEV_BACKEND_HEART_BEAT_TIMEOUT}",
+        "INDEXER_ARBITRUM_BATCHES_TRACKING_ENABLED": "true",
+        "INDEXER_ARBITRUM_BATCHES_TRACKING_L1_FINALIZATION_CHECK_ENABLED": "true",
+        "INDEXER_ARBITRUM_BATCHES_TRACKING_RECHECK_INTERVAL": "3s",
+        "INDEXER_ARBITRUM_BRIDGE_MESSAGES_TRACKING_ENABLED": "true",
+        "INDEXER_ARBITRUM_CONFIRMATIONS_TRACKING_FINALIZED": "true",
+        "INDEXER_ARBITRUM_CONFIRMATION_BATCHES_DEPTH": "${DEV_BACKEND_INDEXER_ARBITRUM_CONFIRMATION_BATCHES_DEPTH:?Required server value DEV_BACKEND_INDEXER_ARBITRUM_CONFIRMATION_BATCHES_DEPTH}",
+        "INDEXER_ARBITRUM_L1_ROLLUP_CONTRACT": "${DEV_BACKEND_INDEXER_ARBITRUM_L1_ROLLUP_CONTRACT:?Required server value DEV_BACKEND_INDEXER_ARBITRUM_L1_ROLLUP_CONTRACT}",
+        "INDEXER_ARBITRUM_L1_ROLLUP_INIT_BLOCK": "286461007",
+        "INDEXER_ARBITRUM_L1_RPC": "${DEV_BACKEND_INDEXER_ARBITRUM_L1_RPC:?Required server value DEV_BACKEND_INDEXER_ARBITRUM_L1_RPC}",
+        "INDEXER_ARBITRUM_L1_RPC_CHUNK_SIZE": "3",
+        "INDEXER_ARBITRUM_L1_RPC_HISTORICAL_BLOCKS_RANGE": "50",
+        "INDEXER_ARBITRUM_MISSED_MESSAGES_RECHECK_INTERVAL": "10s",
+        "INDEXER_ARBITRUM_NEW_BATCHES_LIMIT": "3",
+        "INDEXER_ARBITRUM_ROLLUP_CHUNK_SIZE": "3",
+        "INDEXER_ARBITRUM_TRACKING_MESSAGES_ON_L1_RECHECK_INTERVAL": "10s",
+        "INDEXER_CATCHUP_BLOCKS_BATCH_SIZE": "1",
+        "INDEXER_CATCHUP_BLOCKS_CONCURRENCY": "1",
+        "INDEXER_COIN_BALANCES_BATCH_SIZE": "10",
+        "INDEXER_COIN_BALANCES_CONCURRENCY": "1",
+        "INDEXER_CONTRACT_CODE_CONCURRENCY": "1",
+        "INDEXER_CONTRACT_CODE_RETRY_DELAY": "60s",
+        "INDEXER_DISABLE_ADDRESS_COIN_BALANCE_FETCHER": "false",
+        "INDEXER_DISABLE_INTERNAL_TRANSACTIONS_FETCHER": "true",
+        "INDEXER_DISABLE_PENDING_TRANSACTIONS_FETCHER": "true",
+        "INDEXER_DISABLE_TOKEN_INSTANCE_LEGACY_SANITIZE_FETCHER": "${DEV_BACKEND_INDEXER_DISABLE_TOKEN_INSTANCE_LEGACY_SANITIZE_FETCHER:?Required server value DEV_BACKEND_INDEXER_DISABLE_TOKEN_INSTANCE_LEGACY_SANITIZE_FETCHER}",
+        "INDEXER_DISABLE_TOKEN_INSTANCE_REALTIME_FETCHER": "false",
+        "INDEXER_DISABLE_TOKEN_INSTANCE_RETRY_FETCHER": "false",
+        "INDEXER_DISABLE_TOKEN_INSTANCE_SANITIZE_FETCHER": "false",
+        "INDEXER_EMPTY_BLOCKS_SANITIZER_BATCH_SIZE": "100",
+        "INDEXER_EMPTY_BLOCKS_SANITIZER_INTERVAL": "30s",
+        "INDEXER_RECEIPTS_BATCH_SIZE": "50",
+        "INDEXER_RECEIPTS_CONCURRENCY": "1",
+        "INDEXER_RECEIPTS_RETRY_DELAY": "5s",
+        "INDEXER_TOKEN_BALANCES_BATCH_SIZE": "10",
+        "INDEXER_TOKEN_BALANCES_CONCURRENCY": "1",
+        "INDEXER_UNCATALOGED_TOKEN_TRANSFERS_ENABLED": "false",
+        "LOGO": "${DEV_BACKEND_LOGO:?Required server value DEV_BACKEND_LOGO}",
+        "MARKET_COIN_FETCHER_ENABLED": "true",
+        "MARKET_COINGECKO_COIN_ID": "ethereum",
+        "MARKET_HISTORY_FETCHER_ENABLED": "true",
+        "MARKET_HISTORY_FIRST_FETCH_DAY_COUNT": "2",
+        "MARKET_NATIVE_COIN_HISTORY_SOURCE": "coin_gecko",
+        "MARKET_NATIVE_COIN_PRICE_ONLY": "true",
+        "MARKET_NATIVE_COIN_SOURCE": "coin_gecko",
+        "MARKET_TOKENS_FETCHER_ENABLED": "false",
+        "MICROSERVICE_ACCOUNT_ABSTRACTION_ENABLED": "true",
+        "MICROSERVICE_ACCOUNT_ABSTRACTION_URL": "${DEV_BACKEND_MICROSERVICE_ACCOUNT_ABSTRACTION_URL:?Required server value DEV_BACKEND_MICROSERVICE_ACCOUNT_ABSTRACTION_URL}",
+        "MICROSERVICE_SC_VERIFIER_ENABLED": "true",
+        "MICROSERVICE_SC_VERIFIER_TYPE": "${DEV_BACKEND_MICROSERVICE_SC_VERIFIER_TYPE:?Required server value DEV_BACKEND_MICROSERVICE_SC_VERIFIER_TYPE}",
+        "MICROSERVICE_SC_VERIFIER_URL": "${DEV_BACKEND_MICROSERVICE_SC_VERIFIER_URL:?Required server value DEV_BACKEND_MICROSERVICE_SC_VERIFIER_URL}",
+        "MICROSERVICE_SIG_PROVIDER_ENABLED": "true",
+        "MICROSERVICE_SIG_PROVIDER_URL": "${DEV_BACKEND_MICROSERVICE_SIG_PROVIDER_URL:?Required server value DEV_BACKEND_MICROSERVICE_SIG_PROVIDER_URL}",
+        "MICROSERVICE_VISUALIZE_SOL2UML_ENABLED": "true",
+        "MICROSERVICE_VISUALIZE_SOL2UML_URL": "${DEV_BACKEND_MICROSERVICE_VISUALIZE_SOL2UML_URL:?Required server value DEV_BACKEND_MICROSERVICE_VISUALIZE_SOL2UML_URL}",
+        "NETWORK": "",
+        "NFT_MEDIA_HANDLER_ENABLED": "true",
+        "NFT_MEDIA_HANDLER_REMOTE_DISPATCHER_NODE_MODE_ENABLED": "true",
+        "POOL_SIZE": "40",
+        "POOL_SIZE_API": "20",
+        "PORT": "${DEV_BACKEND_PORT:?Required server value DEV_BACKEND_PORT}",
+        "RELEASE_COOKIE": "${DEV_BACKEND_RELEASE_COOKIE:?Required server value DEV_BACKEND_RELEASE_COOKIE}",
+        "RELEASE_DISTRIBUTION": "name",
+        "RELEASE_LINK": "",
+        "RELEASE_NODE": "producer@backend.blockscout.internal",
+        "RE_CAPTCHA_DISABLED": "false",
+        "SECRET_KEY_BASE": "${DEV_BACKEND_SECRET_KEY_BASE:?Required server value DEV_BACKEND_SECRET_KEY_BASE}",
+        "SUBNETWORK": "${DEV_BACKEND_SUBNETWORK:?Required server value DEV_BACKEND_SUBNETWORK}",
+        "TRACE_BLOCK_RANGES": "176114083..latest",
+        "TXS_STATS_DAYS_TO_COMPILE_AT_INIT": "10"
+      },
+      "image": "sha256:2a33e21665ff14d02de50c6ab265edcb01fb9c60b5c263ded9e31490ec173fb1",
+      "networks": {
+        "default": {
+          "aliases": [
+            "backend.blockscout.internal"
+          ]
+        }
+      },
+      "pull_policy": "never",
+      "restart": "always",
+      "stop_grace_period": "5m0s",
+      "volumes": [
+        {
+          "source": "/data/blockscout/docker-compose/services/logs",
+          "target": "/app/logs",
+          "type": "bind"
+        },
+        {
+          "source": "/data/blockscout/docker-compose/services/dets",
+          "target": "/app/dets",
+          "type": "bind"
+        }
+      ]
+    },
+    "db": {
+      "command": [
+        "postgres",
+        "-c",
+        "max_connections=80",
+        "-c",
+        "shared_buffers=4GB",
+        "-c",
+        "effective_cache_size=18GB",
+        "-c",
+        "work_mem=16MB",
+        "-c",
+        "maintenance_work_mem=512MB",
+        "-c",
+        "max_worker_processes=4",
+        "-c",
+        "max_parallel_workers=0",
+        "-c",
+        "max_parallel_workers_per_gather=0"
+      ],
+      "container_name": "db",
+      "depends_on": {
+        "db-init": {
+          "condition": "service_completed_successfully",
+          "required": true
+        }
+      },
+      "environment": {
+        "POSTGRES_DB": "blockscout",
+        "POSTGRES_PASSWORD": "${DEV_DB_POSTGRES_PASSWORD:?Required server value DEV_DB_POSTGRES_PASSWORD}",
+        "POSTGRES_USER": "blockscout"
+      },
+      "image": "postgres:15",
+      "networks": {
+        "default": {
+          "aliases": []
+        }
+      },
+      "restart": "always",
+      "shm_size": 6442450944,
+      "user": "2000:2000",
+      "volumes": [
+        {
+          "source": "/data/blockscout/docker-compose/services/blockscout-db-data",
+          "target": "/var/lib/postgresql/data",
+          "type": "bind"
+        }
+      ]
+    },
+    "db-init": {
+      "environment": {},
+      "image": "postgres:15",
+      "networks": {
+        "default": {
+          "aliases": []
+        }
+      },
+      "volumes": [
+        {
+          "source": "/data/blockscout/docker-compose/services/blockscout-db-data",
+          "target": "/var/lib/postgresql/data",
+          "type": "bind"
+        }
+      ]
+    },
+    "frontend": {
+      "container_name": "frontend",
+      "depends_on": {
+        "backend": {
+          "condition": "service_started",
+          "required": true
+        }
+      },
+      "environment": {
+        "NEXT_PUBLIC_AD_BANNER_PROVIDER": "${DEV_FRONTEND_NEXT_PUBLIC_AD_BANNER_PROVIDER:?Required server value DEV_FRONTEND_NEXT_PUBLIC_AD_BANNER_PROVIDER}",
+        "NEXT_PUBLIC_AD_TEXT_PROVIDER": "${DEV_FRONTEND_NEXT_PUBLIC_AD_TEXT_PROVIDER:?Required server value DEV_FRONTEND_NEXT_PUBLIC_AD_TEXT_PROVIDER}",
+        "NEXT_PUBLIC_API_BASE_PATH": "${DEV_FRONTEND_NEXT_PUBLIC_API_BASE_PATH:?Required server value DEV_FRONTEND_NEXT_PUBLIC_API_BASE_PATH}",
+        "NEXT_PUBLIC_API_HOST": "${DEV_FRONTEND_NEXT_PUBLIC_API_HOST:?Required server value DEV_FRONTEND_NEXT_PUBLIC_API_HOST}",
+        "NEXT_PUBLIC_API_PROTOCOL": "${DEV_FRONTEND_NEXT_PUBLIC_API_PROTOCOL:?Required server value DEV_FRONTEND_NEXT_PUBLIC_API_PROTOCOL}",
+        "NEXT_PUBLIC_API_SPEC_URL": "${DEV_FRONTEND_NEXT_PUBLIC_API_SPEC_URL:?Required server value DEV_FRONTEND_NEXT_PUBLIC_API_SPEC_URL}",
+        "NEXT_PUBLIC_API_WEBSOCKET_PROTOCOL": "${DEV_FRONTEND_NEXT_PUBLIC_API_WEBSOCKET_PROTOCOL:?Required server value DEV_FRONTEND_NEXT_PUBLIC_API_WEBSOCKET_PROTOCOL}",
+        "NEXT_PUBLIC_APP_HOST": "${DEV_FRONTEND_NEXT_PUBLIC_APP_HOST:?Required server value DEV_FRONTEND_NEXT_PUBLIC_APP_HOST}",
+        "NEXT_PUBLIC_APP_PROTOCOL": "${DEV_FRONTEND_NEXT_PUBLIC_APP_PROTOCOL:?Required server value DEV_FRONTEND_NEXT_PUBLIC_APP_PROTOCOL}",
+        "NEXT_PUBLIC_DERIW_API_BASE_PATH": "",
+        "NEXT_PUBLIC_DERIW_API_HOST": "${DEV_FRONTEND_NEXT_PUBLIC_DERIW_API_HOST:?Required server value DEV_FRONTEND_NEXT_PUBLIC_DERIW_API_HOST}",
+        "NEXT_PUBLIC_DERIW_USDT_ADDRESS": "${DEV_FRONTEND_NEXT_PUBLIC_DERIW_USDT_ADDRESS:?Required server value DEV_FRONTEND_NEXT_PUBLIC_DERIW_USDT_ADDRESS}",
+        "NEXT_PUBLIC_HOMEPAGE_CHARTS": "${DEV_FRONTEND_NEXT_PUBLIC_HOMEPAGE_CHARTS:?Required server value DEV_FRONTEND_NEXT_PUBLIC_HOMEPAGE_CHARTS}",
+        "NEXT_PUBLIC_IS_TESTNET": "${DEV_FRONTEND_NEXT_PUBLIC_IS_TESTNET:?Required server value DEV_FRONTEND_NEXT_PUBLIC_IS_TESTNET}",
+        "NEXT_PUBLIC_NETWORK_CURRENCY_DECIMALS": "${DEV_FRONTEND_NEXT_PUBLIC_NETWORK_CURRENCY_DECIMALS:?Required server value DEV_FRONTEND_NEXT_PUBLIC_NETWORK_CURRENCY_DECIMALS}",
+        "NEXT_PUBLIC_NETWORK_CURRENCY_NAME": "${DEV_FRONTEND_NEXT_PUBLIC_NETWORK_CURRENCY_NAME:?Required server value DEV_FRONTEND_NEXT_PUBLIC_NETWORK_CURRENCY_NAME}",
+        "NEXT_PUBLIC_NETWORK_CURRENCY_SYMBOL": "${DEV_FRONTEND_NEXT_PUBLIC_NETWORK_CURRENCY_SYMBOL:?Required server value DEV_FRONTEND_NEXT_PUBLIC_NETWORK_CURRENCY_SYMBOL}",
+        "NEXT_PUBLIC_NETWORK_ICON": "${DEV_FRONTEND_NEXT_PUBLIC_NETWORK_ICON:?Required server value DEV_FRONTEND_NEXT_PUBLIC_NETWORK_ICON}",
+        "NEXT_PUBLIC_NETWORK_ICON_DARK": "${DEV_FRONTEND_NEXT_PUBLIC_NETWORK_ICON_DARK:?Required server value DEV_FRONTEND_NEXT_PUBLIC_NETWORK_ICON_DARK}",
+        "NEXT_PUBLIC_NETWORK_ID": "${DEV_FRONTEND_NEXT_PUBLIC_NETWORK_ID:?Required server value DEV_FRONTEND_NEXT_PUBLIC_NETWORK_ID}",
+        "NEXT_PUBLIC_NETWORK_LOGO": "${DEV_FRONTEND_NEXT_PUBLIC_NETWORK_LOGO:?Required server value DEV_FRONTEND_NEXT_PUBLIC_NETWORK_LOGO}",
+        "NEXT_PUBLIC_NETWORK_LOGO_DARK": "${DEV_FRONTEND_NEXT_PUBLIC_NETWORK_LOGO_DARK:?Required server value DEV_FRONTEND_NEXT_PUBLIC_NETWORK_LOGO_DARK}",
+        "NEXT_PUBLIC_NETWORK_NAME": "${DEV_FRONTEND_NEXT_PUBLIC_NETWORK_NAME:?Required server value DEV_FRONTEND_NEXT_PUBLIC_NETWORK_NAME}",
+        "NEXT_PUBLIC_NETWORK_RPC_URL": "https://rpc.dev.deriw.com",
+        "NEXT_PUBLIC_NETWORK_SHORT_NAME": "${DEV_FRONTEND_NEXT_PUBLIC_NETWORK_SHORT_NAME:?Required server value DEV_FRONTEND_NEXT_PUBLIC_NETWORK_SHORT_NAME}",
+        "NEXT_PUBLIC_OG_DESCRIPTION": "${DEV_FRONTEND_NEXT_PUBLIC_OG_DESCRIPTION:?Required server value DEV_FRONTEND_NEXT_PUBLIC_OG_DESCRIPTION}",
+        "NEXT_PUBLIC_OG_ENHANCED_DATA_ENABLED": "${DEV_FRONTEND_NEXT_PUBLIC_OG_ENHANCED_DATA_ENABLED:?Required server value DEV_FRONTEND_NEXT_PUBLIC_OG_ENHANCED_DATA_ENABLED}",
+        "NEXT_PUBLIC_OG_IMAGE_URL": "${DEV_FRONTEND_NEXT_PUBLIC_OG_IMAGE_URL:?Required server value DEV_FRONTEND_NEXT_PUBLIC_OG_IMAGE_URL}",
+        "NEXT_PUBLIC_PROMOTE_BLOCKSCOUT_IN_TITLE": "${DEV_FRONTEND_NEXT_PUBLIC_PROMOTE_BLOCKSCOUT_IN_TITLE:?Required server value DEV_FRONTEND_NEXT_PUBLIC_PROMOTE_BLOCKSCOUT_IN_TITLE}",
+        "NEXT_PUBLIC_ROLLUP_L1_BASE_URL": "${DEV_FRONTEND_NEXT_PUBLIC_ROLLUP_L1_BASE_URL:?Required server value DEV_FRONTEND_NEXT_PUBLIC_ROLLUP_L1_BASE_URL}",
+        "NEXT_PUBLIC_ROLLUP_PARENT_CHAIN": "${DEV_FRONTEND_NEXT_PUBLIC_ROLLUP_PARENT_CHAIN:?Required server value DEV_FRONTEND_NEXT_PUBLIC_ROLLUP_PARENT_CHAIN}",
+        "NEXT_PUBLIC_ROLLUP_TYPE": "${DEV_FRONTEND_NEXT_PUBLIC_ROLLUP_TYPE:?Required server value DEV_FRONTEND_NEXT_PUBLIC_ROLLUP_TYPE}",
+        "NEXT_PUBLIC_SEO_ENHANCED_DATA_ENABLED": "${DEV_FRONTEND_NEXT_PUBLIC_SEO_ENHANCED_DATA_ENABLED:?Required server value DEV_FRONTEND_NEXT_PUBLIC_SEO_ENHANCED_DATA_ENABLED}",
+        "NEXT_PUBLIC_STATS_API_BASE_PATH": "${DEV_FRONTEND_NEXT_PUBLIC_STATS_API_BASE_PATH:?Required server value DEV_FRONTEND_NEXT_PUBLIC_STATS_API_BASE_PATH}",
+        "NEXT_PUBLIC_STATS_API_HOST": "${DEV_FRONTEND_NEXT_PUBLIC_STATS_API_HOST:?Required server value DEV_FRONTEND_NEXT_PUBLIC_STATS_API_HOST}",
+        "NEXT_PUBLIC_VIEWS_BLOCK_HIDDEN_FIELDS": "${DEV_FRONTEND_NEXT_PUBLIC_VIEWS_BLOCK_HIDDEN_FIELDS:?Required server value DEV_FRONTEND_NEXT_PUBLIC_VIEWS_BLOCK_HIDDEN_FIELDS}",
+        "NEXT_PUBLIC_VISUALIZE_API_BASE_PATH": "${DEV_FRONTEND_NEXT_PUBLIC_VISUALIZE_API_BASE_PATH:?Required server value DEV_FRONTEND_NEXT_PUBLIC_VISUALIZE_API_BASE_PATH}",
+        "NEXT_PUBLIC_VISUALIZE_API_HOST": "${DEV_FRONTEND_NEXT_PUBLIC_VISUALIZE_API_HOST:?Required server value DEV_FRONTEND_NEXT_PUBLIC_VISUALIZE_API_HOST}",
+        "NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID": "${DEV_FRONTEND_NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID:?Required server value DEV_FRONTEND_NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID}",
+        "NEXT_PUBLIC_WEB3_WALLETS": "${DEV_FRONTEND_NEXT_PUBLIC_WEB3_WALLETS:?Required server value DEV_FRONTEND_NEXT_PUBLIC_WEB3_WALLETS}"
+      },
+      "image": "quanquanah/blockscout-frontend:dev",
+      "networks": {
+        "default": {
+          "aliases": []
+        }
+      },
+      "platform": "linux/amd64",
+      "pull_policy": "always",
+      "restart": "always"
+    },
+    "nft_media_handler": {
+      "build": {
+        "args": {
+          "CHAIN_TYPE": "arbitrum",
+          "RELEASE_VERSION": "9.0.1"
+        }
+      },
+      "container_name": "nft_media_handler",
+      "depends_on": {
+        "backend": {
+          "condition": "service_started",
+          "required": true
+        }
+      },
+      "environment": {
+        "NFT_MEDIA_HANDLER_ENABLED": "true",
+        "NFT_MEDIA_HANDLER_IS_WORKER": "true",
+        "NFT_MEDIA_HANDLER_NODES_MAP": "{\"producer@backend.blockscout.internal\": \"/folder_1\"}",
+        "NFT_MEDIA_HANDLER_REMOTE_DISPATCHER_NODE_MODE_ENABLED": "true",
+        "RELEASE_COOKIE": "${DEV_NFT_MEDIA_HANDLER_RELEASE_COOKIE:?Required server value DEV_NFT_MEDIA_HANDLER_RELEASE_COOKIE}",
+        "RELEASE_DISTRIBUTION": "name",
+        "RELEASE_NODE": "worker@nft-media.blockscout.internal"
+      },
+      "image": "sha256:574d6dd2b447537bebaa1615b95ff20a3fd9ee8df7a1faeb8875a9bf3896cfb9",
+      "networks": {
+        "default": {
+          "aliases": [
+            "nft-media.blockscout.internal"
+          ]
+        }
+      },
+      "pull_policy": "never",
+      "restart": "always",
+      "stop_grace_period": "5m0s",
+      "volumes": [
+        {
+          "source": "/data/blockscout/docker-compose/services/logs",
+          "target": "/app/logs",
+          "type": "bind"
+        }
+      ]
+    },
+    "proxy": {
+      "container_name": "proxy",
+      "depends_on": {
+        "backend": {
+          "condition": "service_started",
+          "required": true
+        },
+        "frontend": {
+          "condition": "service_started",
+          "required": true
+        },
+        "stats": {
+          "condition": "service_started",
+          "required": true
+        }
+      },
+      "environment": {
+        "BACK_PROXY_PASS": "${DEV_PROXY_BACK_PROXY_PASS:?Required server value DEV_PROXY_BACK_PROXY_PASS}",
+        "FRONT_PROXY_PASS": "${DEV_PROXY_FRONT_PROXY_PASS:?Required server value DEV_PROXY_FRONT_PROXY_PASS}"
+      },
+      "image": "nginx",
+      "networks": {
+        "default": {
+          "aliases": []
+        }
+      },
+      "volumes": [
+        {
+          "source": "/data/blockscout/docker-compose/proxy",
+          "target": "/etc/nginx/templates",
+          "type": "bind"
+        }
+      ]
+    },
+    "redis-db": {
+      "container_name": "redis-db",
+      "environment": {},
+      "image": "redis:alpine",
+      "networks": {
+        "default": {
+          "aliases": []
+        }
+      },
+      "volumes": [
+        {
+          "source": "/data/blockscout/docker-compose/services/redis-data",
+          "target": "/data",
+          "type": "bind"
+        }
+      ]
+    },
+    "sc-verifier": {
+      "container_name": "smart-contract-verifier",
+      "environment": {
+        "SMART_CONTRACT_VERIFIER__COMPILERS__EXECUTION__TYPE": "native",
+        "SMART_CONTRACT_VERIFIER__JAEGER__AGENT_ENDPOINT": "${DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__JAEGER__AGENT_ENDPOINT:?Required server value DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__JAEGER__AGENT_ENDPOINT}",
+        "SMART_CONTRACT_VERIFIER__JAEGER__ENABLED": "${DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__JAEGER__ENABLED:?Required server value DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__JAEGER__ENABLED}",
+        "SMART_CONTRACT_VERIFIER__METRICS__ADDR": "${DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__METRICS__ADDR:?Required server value DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__METRICS__ADDR}",
+        "SMART_CONTRACT_VERIFIER__METRICS__ENABLED": "${DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__METRICS__ENABLED:?Required server value DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__METRICS__ENABLED}",
+        "SMART_CONTRACT_VERIFIER__METRICS__ROUTE": "${DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__METRICS__ROUTE:?Required server value DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__METRICS__ROUTE}",
+        "SMART_CONTRACT_VERIFIER__SERVER__GRPC__ADDR": "${DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SERVER__GRPC__ADDR:?Required server value DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SERVER__GRPC__ADDR}",
+        "SMART_CONTRACT_VERIFIER__SERVER__GRPC__ENABLED": "${DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SERVER__GRPC__ENABLED:?Required server value DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SERVER__GRPC__ENABLED}",
+        "SMART_CONTRACT_VERIFIER__SERVER__HTTP__ADDR": "${DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SERVER__HTTP__ADDR:?Required server value DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SERVER__HTTP__ADDR}",
+        "SMART_CONTRACT_VERIFIER__SERVER__HTTP__ENABLED": "${DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SERVER__HTTP__ENABLED:?Required server value DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SERVER__HTTP__ENABLED}",
+        "SMART_CONTRACT_VERIFIER__SERVER__HTTP__MAX_BODY_SIZE": "${DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SERVER__HTTP__MAX_BODY_SIZE:?Required server value DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SERVER__HTTP__MAX_BODY_SIZE}",
+        "SMART_CONTRACT_VERIFIER__SOLIDITY__COMPILERS_DIR": "${DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SOLIDITY__COMPILERS_DIR:?Required server value DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SOLIDITY__COMPILERS_DIR}",
+        "SMART_CONTRACT_VERIFIER__SOLIDITY__ENABLED": "${DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SOLIDITY__ENABLED:?Required server value DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SOLIDITY__ENABLED}",
+        "SMART_CONTRACT_VERIFIER__SOLIDITY__FETCHER__LIST__LIST_URL": "${DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SOLIDITY__FETCHER__LIST__LIST_URL:?Required server value DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SOLIDITY__FETCHER__LIST__LIST_URL}",
+        "SMART_CONTRACT_VERIFIER__SOLIDITY__REFRESH_VERSIONS_SCHEDULE": "${DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SOLIDITY__REFRESH_VERSIONS_SCHEDULE:?Required server value DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SOLIDITY__REFRESH_VERSIONS_SCHEDULE}",
+        "SMART_CONTRACT_VERIFIER__SOURCIFY__API_URL": "${DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SOURCIFY__API_URL:?Required server value DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SOURCIFY__API_URL}",
+        "SMART_CONTRACT_VERIFIER__SOURCIFY__ENABLED": "${DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SOURCIFY__ENABLED:?Required server value DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SOURCIFY__ENABLED}",
+        "SMART_CONTRACT_VERIFIER__SOURCIFY__REQUEST_TIMEOUT": "${DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SOURCIFY__REQUEST_TIMEOUT:?Required server value DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SOURCIFY__REQUEST_TIMEOUT}",
+        "SMART_CONTRACT_VERIFIER__SOURCIFY__VERIFICATION_ATTEMPTS": "${DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SOURCIFY__VERIFICATION_ATTEMPTS:?Required server value DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__SOURCIFY__VERIFICATION_ATTEMPTS}",
+        "SMART_CONTRACT_VERIFIER__VYPER__COMPILERS_DIR": "${DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__VYPER__COMPILERS_DIR:?Required server value DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__VYPER__COMPILERS_DIR}",
+        "SMART_CONTRACT_VERIFIER__VYPER__ENABLED": "${DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__VYPER__ENABLED:?Required server value DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__VYPER__ENABLED}",
+        "SMART_CONTRACT_VERIFIER__VYPER__FETCHER__LIST__LIST_URL": "https://raw.githubusercontent.com/blockscout/solc-bin/5de16fa32acc6b55707188922d5366915aec21af/vyper.list.json",
+        "SMART_CONTRACT_VERIFIER__VYPER__REFRESH_VERSIONS_SCHEDULE": "${DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__VYPER__REFRESH_VERSIONS_SCHEDULE:?Required server value DEV_SC_VERIFIER_SMART_CONTRACT_VERIFIER__VYPER__REFRESH_VERSIONS_SCHEDULE}"
+      },
+      "image": "ghcr.io/blockscout/smart-contract-verifier:latest",
+      "networks": {
+        "default": {
+          "aliases": []
+        }
+      },
+      "platform": "linux/amd64",
+      "pull_policy": "always",
+      "restart": "always"
+    },
+    "sig-provider": {
+      "container_name": "sig-provider",
+      "environment": {},
+      "image": "ghcr.io/blockscout/sig-provider:latest",
+      "networks": {
+        "default": {
+          "aliases": []
+        }
+      },
+      "platform": "linux/amd64",
+      "pull_policy": "always",
+      "restart": "always"
+    },
+    "stats": {
+      "container_name": "stats",
+      "depends_on": {
+        "backend": {
+          "condition": "service_started",
+          "required": true
+        },
+        "stats-db": {
+          "condition": "service_started",
+          "required": true
+        }
+      },
+      "environment": {
+        "STATS__BLOCKSCOUT_API_URL": "${DEV_STATS_STATS__BLOCKSCOUT_API_URL:?Required server value DEV_STATS_STATS__BLOCKSCOUT_API_URL}",
+        "STATS__BLOCKSCOUT_DB_URL": "${DEV_STATS_STATS__BLOCKSCOUT_DB_URL:?Required server value DEV_STATS_STATS__BLOCKSCOUT_DB_URL}",
+        "STATS__CREATE_DATABASE": "${DEV_STATS_STATS__CREATE_DATABASE:?Required server value DEV_STATS_STATS__CREATE_DATABASE}",
+        "STATS__DB_URL": "${DEV_STATS_STATS__DB_URL:?Required server value DEV_STATS_STATS__DB_URL}",
+        "STATS__DEFAULT_SCHEDULE": "${DEV_STATS_STATS__DEFAULT_SCHEDULE:?Required server value DEV_STATS_STATS__DEFAULT_SCHEDULE}",
+        "STATS__FORCE_UPDATE_ON_START": "${DEV_STATS_STATS__FORCE_UPDATE_ON_START:?Required server value DEV_STATS_STATS__FORCE_UPDATE_ON_START}",
+        "STATS__JAEGER__AGENT_ENDPOINT": "${DEV_STATS_STATS__JAEGER__AGENT_ENDPOINT:?Required server value DEV_STATS_STATS__JAEGER__AGENT_ENDPOINT}",
+        "STATS__JAEGER__ENABLED": "${DEV_STATS_STATS__JAEGER__ENABLED:?Required server value DEV_STATS_STATS__JAEGER__ENABLED}",
+        "STATS__METRICS__ADDR": "${DEV_STATS_STATS__METRICS__ADDR:?Required server value DEV_STATS_STATS__METRICS__ADDR}",
+        "STATS__METRICS__ENABLED": "${DEV_STATS_STATS__METRICS__ENABLED:?Required server value DEV_STATS_STATS__METRICS__ENABLED}",
+        "STATS__METRICS__ROUTE": "${DEV_STATS_STATS__METRICS__ROUTE:?Required server value DEV_STATS_STATS__METRICS__ROUTE}",
+        "STATS__RUN_MIGRATIONS": "${DEV_STATS_STATS__RUN_MIGRATIONS:?Required server value DEV_STATS_STATS__RUN_MIGRATIONS}",
+        "STATS__SERVER__GRPC__ADDR": "${DEV_STATS_STATS__SERVER__GRPC__ADDR:?Required server value DEV_STATS_STATS__SERVER__GRPC__ADDR}",
+        "STATS__SERVER__GRPC__ENABLED": "${DEV_STATS_STATS__SERVER__GRPC__ENABLED:?Required server value DEV_STATS_STATS__SERVER__GRPC__ENABLED}",
+        "STATS__SERVER__HTTP__ADDR": "${DEV_STATS_STATS__SERVER__HTTP__ADDR:?Required server value DEV_STATS_STATS__SERVER__HTTP__ADDR}",
+        "STATS__SERVER__HTTP__ENABLED": "${DEV_STATS_STATS__SERVER__HTTP__ENABLED:?Required server value DEV_STATS_STATS__SERVER__HTTP__ENABLED}",
+        "STATS__SERVER__HTTP__MAX_BODY_SIZE": "${DEV_STATS_STATS__SERVER__HTTP__MAX_BODY_SIZE:?Required server value DEV_STATS_STATS__SERVER__HTTP__MAX_BODY_SIZE}",
+        "STATS__TRACING__ENABLED": "${DEV_STATS_STATS__TRACING__ENABLED:?Required server value DEV_STATS_STATS__TRACING__ENABLED}",
+        "STATS__TRACING__FORMAT": "${DEV_STATS_STATS__TRACING__FORMAT:?Required server value DEV_STATS_STATS__TRACING__FORMAT}"
+      },
+      "image": "ghcr.io/blockscout/stats:latest",
+      "networks": {
+        "default": {
+          "aliases": []
+        }
+      },
+      "platform": "linux/amd64",
+      "pull_policy": "always",
+      "restart": "always"
+    },
+    "stats-db": {
+      "container_name": "stats-db",
+      "depends_on": {
+        "stats-db-init": {
+          "condition": "service_completed_successfully",
+          "required": true
+        }
+      },
+      "environment": {
+        "POSTGRES_DB": "stats",
+        "POSTGRES_PASSWORD": "${DEV_STATS_DB_POSTGRES_PASSWORD:?Required server value DEV_STATS_DB_POSTGRES_PASSWORD}",
+        "POSTGRES_USER": "stats"
+      },
+      "image": "postgres:15",
+      "networks": {
+        "default": {
+          "aliases": []
+        }
+      },
+      "restart": "always",
+      "user": "2000:2000",
+      "volumes": [
+        {
+          "source": "/data/blockscout/docker-compose/services/stats-db-data",
+          "target": "/var/lib/postgresql/data",
+          "type": "bind"
+        }
+      ]
+    },
+    "stats-db-init": {
+      "environment": {},
+      "image": "postgres:15",
+      "networks": {
+        "default": {
+          "aliases": []
+        }
+      },
+      "volumes": [
+        {
+          "source": "/data/blockscout/docker-compose/services/stats-db-data",
+          "target": "/var/lib/postgresql/data",
+          "type": "bind"
+        }
+      ]
+    },
+    "user-ops-indexer": {
+      "container_name": "user-ops-indexer",
+      "depends_on": {
+        "backend": {
+          "condition": "service_started",
+          "required": true
+        },
+        "db": {
+          "condition": "service_started",
+          "required": true
+        }
+      },
+      "environment": {
+        "USER_OPS_INDEXER__API__MAX_PAGE_SIZE": "${DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__API__MAX_PAGE_SIZE:?Required server value DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__API__MAX_PAGE_SIZE}",
+        "USER_OPS_INDEXER__DATABASE__CONNECT__URL": "${DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__DATABASE__CONNECT__URL:?Required server value DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__DATABASE__CONNECT__URL}",
+        "USER_OPS_INDEXER__DATABASE__CREATE_DATABASE": "${DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__DATABASE__CREATE_DATABASE:?Required server value DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__DATABASE__CREATE_DATABASE}",
+        "USER_OPS_INDEXER__DATABASE__RUN_MIGRATIONS": "${DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__DATABASE__RUN_MIGRATIONS:?Required server value DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__DATABASE__RUN_MIGRATIONS}",
+        "USER_OPS_INDEXER__INDEXER__CONCURRENCY": "${DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__INDEXER__CONCURRENCY:?Required server value DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__INDEXER__CONCURRENCY}",
+        "USER_OPS_INDEXER__INDEXER__ENTRYPOINTS__V06": "${DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__INDEXER__ENTRYPOINTS__V06:?Required server value DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__INDEXER__ENTRYPOINTS__V06}",
+        "USER_OPS_INDEXER__INDEXER__ENTRYPOINTS__V07": "${DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__INDEXER__ENTRYPOINTS__V07:?Required server value DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__INDEXER__ENTRYPOINTS__V07}",
+        "USER_OPS_INDEXER__INDEXER__PAST_DB_LOGS_INDEXER__ENABLED": "${DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__INDEXER__PAST_DB_LOGS_INDEXER__ENABLED:?Required server value DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__INDEXER__PAST_DB_LOGS_INDEXER__ENABLED}",
+        "USER_OPS_INDEXER__INDEXER__PAST_DB_LOGS_INDEXER__END_BLOCK": "${DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__INDEXER__PAST_DB_LOGS_INDEXER__END_BLOCK:?Required server value DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__INDEXER__PAST_DB_LOGS_INDEXER__END_BLOCK}",
+        "USER_OPS_INDEXER__INDEXER__PAST_DB_LOGS_INDEXER__START_BLOCK": "${DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__INDEXER__PAST_DB_LOGS_INDEXER__START_BLOCK:?Required server value DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__INDEXER__PAST_DB_LOGS_INDEXER__START_BLOCK}",
+        "USER_OPS_INDEXER__INDEXER__PAST_RPC_LOGS_INDEXER__BLOCK_RANGE": "${DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__INDEXER__PAST_RPC_LOGS_INDEXER__BLOCK_RANGE:?Required server value DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__INDEXER__PAST_RPC_LOGS_INDEXER__BLOCK_RANGE}",
+        "USER_OPS_INDEXER__INDEXER__PAST_RPC_LOGS_INDEXER__ENABLED": "${DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__INDEXER__PAST_RPC_LOGS_INDEXER__ENABLED:?Required server value DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__INDEXER__PAST_RPC_LOGS_INDEXER__ENABLED}",
+        "USER_OPS_INDEXER__INDEXER__REALTIME__ENABLED": "${DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__INDEXER__REALTIME__ENABLED:?Required server value DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__INDEXER__REALTIME__ENABLED}",
+        "USER_OPS_INDEXER__INDEXER__RPC_URL": "http://10.0.2.11:1100/",
+        "USER_OPS_INDEXER__JAEGER__AGENT_ENDPOINT": "${DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__JAEGER__AGENT_ENDPOINT:?Required server value DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__JAEGER__AGENT_ENDPOINT}",
+        "USER_OPS_INDEXER__JAEGER__ENABLED": "${DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__JAEGER__ENABLED:?Required server value DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__JAEGER__ENABLED}",
+        "USER_OPS_INDEXER__METRICS__ADDR": "${DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__METRICS__ADDR:?Required server value DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__METRICS__ADDR}",
+        "USER_OPS_INDEXER__METRICS__ENABLED": "${DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__METRICS__ENABLED:?Required server value DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__METRICS__ENABLED}",
+        "USER_OPS_INDEXER__METRICS__ROUTE": "${DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__METRICS__ROUTE:?Required server value DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__METRICS__ROUTE}",
+        "USER_OPS_INDEXER__SERVER__GRPC__ADDR": "${DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__SERVER__GRPC__ADDR:?Required server value DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__SERVER__GRPC__ADDR}",
+        "USER_OPS_INDEXER__SERVER__GRPC__ENABLED": "${DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__SERVER__GRPC__ENABLED:?Required server value DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__SERVER__GRPC__ENABLED}",
+        "USER_OPS_INDEXER__SERVER__HTTP__ADDR": "${DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__SERVER__HTTP__ADDR:?Required server value DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__SERVER__HTTP__ADDR}",
+        "USER_OPS_INDEXER__SERVER__HTTP__ENABLED": "${DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__SERVER__HTTP__ENABLED:?Required server value DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__SERVER__HTTP__ENABLED}",
+        "USER_OPS_INDEXER__SERVER__HTTP__MAX_BODY_SIZE": "${DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__SERVER__HTTP__MAX_BODY_SIZE:?Required server value DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__SERVER__HTTP__MAX_BODY_SIZE}",
+        "USER_OPS_INDEXER__TRACING__ENABLED": "${DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__TRACING__ENABLED:?Required server value DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__TRACING__ENABLED}",
+        "USER_OPS_INDEXER__TRACING__FORMAT": "${DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__TRACING__FORMAT:?Required server value DEV_USER_OPS_INDEXER_USER_OPS_INDEXER__TRACING__FORMAT}"
+      },
+      "image": "ghcr.io/blockscout/user-ops-indexer:latest",
+      "networks": {
+        "default": {
+          "aliases": []
+        }
+      },
+      "platform": "linux/amd64",
+      "pull_policy": "always",
+      "restart": "always"
+    },
+    "visualizer": {
+      "container_name": "visualizer",
+      "environment": {
+        "VISUALIZER__SERVER__GRPC__ENABLED": "${DEV_VISUALIZER_VISUALIZER__SERVER__GRPC__ENABLED:?Required server value DEV_VISUALIZER_VISUALIZER__SERVER__GRPC__ENABLED}"
+      },
+      "image": "ghcr.io/blockscout/visualizer:latest",
+      "networks": {
+        "default": {
+          "aliases": []
+        }
+      },
+      "platform": "linux/amd64",
+      "pull_policy": "always",
+      "restart": "always"
+    }
+  }
+}

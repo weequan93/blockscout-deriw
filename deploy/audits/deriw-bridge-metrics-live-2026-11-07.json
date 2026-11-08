@@ -1,0 +1,96 @@
+{
+  "format": "deriw-bridge-metrics-live-v1",
+  "implementation_commit": "74f2bed18440fad335b5e66ff87174467b2261cd",
+  "release_tag": "deriw-bridge-metrics-2026-11-07",
+  "evidence_source": "operator-provided installation stdout and cached /metrics response; no agent SSH",
+  "evidence_sha256": "881612d12fc22993b1980c4881ac6ead74be6b101f5815525648fa62f7b5ebe8",
+  "observed_at_utc": "2026-11-07T08:15:33+00:00",
+  "observed_at_sgt": "2026-11-07T16:15:33+08:00",
+  "qualification": "exporter_endpoint_verified",
+  "service": {
+    "name": "deriw-bridge-metrics.service",
+    "state": "active",
+    "source_root": "/data/blockscout-bridge-metrics",
+    "bind": "127.0.0.1",
+    "port": 9160
+  },
+  "checks": {
+    "preflight_ready": true,
+    "exporter_up": 1,
+    "query_success": {
+      "deposits": 1,
+      "withdrawals": 1,
+      "rollup": 1,
+      "published": 1,
+      "confirmed": 1
+    }
+  },
+  "indexed_bridge_snapshot": {
+    "l2_to_l3": {
+      "indexed_messages": 328,
+      "indexed_sample_complete": true,
+      "states": {
+        "initiated": 4,
+        "sent": 0,
+        "confirmed": 0,
+        "relayed": 324
+      },
+      "missing_origination_records": 4,
+      "completion_recorded": 324,
+      "oldest_pending_age_seconds": 52379688
+    },
+    "l3_to_l2": {
+      "indexed_messages": 512,
+      "indexed_sample_complete": true,
+      "states": {
+        "initiated": 0,
+        "sent": 0,
+        "confirmed": 55,
+        "relayed": 457
+      },
+      "missing_origination_records": 0,
+      "completion_recorded": 457,
+      "oldest_pending_age_seconds": 45792144
+    }
+  },
+  "rollup_stage_l3_block_numbers": {
+    "processed": 177849792,
+    "sent": 177848635,
+    "confirmed": 177842892
+  },
+  "stage_parent_transaction_finalized": {
+    "sent": false,
+    "confirmed": true
+  },
+  "latest_published_batch_number": 175992,
+  "live_discovery_next_parent_l2_block": {
+    "deposits": 278488347,
+    "settlement": 326880945
+  },
+  "reported_effects": {
+    "backend_restarted": false,
+    "database_writes": false,
+    "normalization_changed": false
+  },
+  "implementation_file_sha256": {
+    "deploy/scripts/deriw_bridge_metrics.py": "b7a5d588ec7d5e5b791d50d84a21dd780757bc356372d27aad5198c36de21510",
+    "deploy/scripts/v10/bridge_metrics.exs": "8108659bba9c97cc713d132e13106b330230745b75f0ee302ba998e4e9a460cd",
+    "deploy/scripts/v10/bridge_metrics_queries.json": "2cb04854838e25cdd9dd6fe5a00d67e90ec3ff5d8eb3b59cf6e22b17f1fb3c78"
+  },
+  "not_verified": [
+    "Prometheus scrape job and private network route",
+    "Grafana dashboard installation",
+    "Complete onchain bridge discovery or withdrawal claim status beyond native indexed records",
+    "Current normalization completion; this observation did not query it"
+  ],
+  "note": "Dated deployment evidence. Counts cover all indexed messages at this snapshot, not all onchain activity. Preserve the existing pinned implementation checkout and all prior journals.",
+  "finalization_validation": {
+    "exporter_and_query_hashes_match_deployed_implementation": true,
+    "bash_syntax": "passed",
+    "cached_endpoint_check_mode": "passed_with_stubbed_host_tools",
+    "install_mode_calls_only_exporter_installer": "passed_with_stubbed_host_tools",
+    "invalid_arguments_rejected": true,
+    "inactive_service_reported": true,
+    "actual_host_systemd_or_docker_operations_during_step_checks": false
+  }
+}

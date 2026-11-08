@@ -1,0 +1,53 @@
+{
+  "status": "deployment_tooling_validated",
+  "checked_at_utc": "2026-11-07T03:30:22.673490+00:00",
+  "frontend_revision": "27a4139d09ac57d975cc8c2bd4f1d804c8589f20",
+  "backend_application_revision": "875082f41d79ef72cd9dd9a4e771953a181c6cf2",
+  "checks": {
+    "v10_unit_tests_passed": 270,
+    "new_frontend_deployment_tests": 14,
+    "configuration_tests_passed": 73,
+    "release_checks": {
+      "tests": 76,
+      "unit_and_compose_checks_passed": 75,
+      "docker_transport_retest_passed": 1,
+      "note": "The initial Docker transport invocation lacked socket access. Its isolated rerun passed with local Docker access."
+    },
+    "python_compile": true,
+    "shell_syntax": true,
+    "diff_whitespace": true,
+    "native_worker_source_unchanged": true
+  },
+  "verified_behaviors": [
+    "Settings migration preserves Deriw values and parent explorer properties",
+    "Only frontend is selected for recreation; other containers and literal environment values are preserved",
+    "Unqualified images, changed snapshots/receipts and another backend change are rejected",
+    "Native cursor/token/inputs/worker and the original bridge binding remain intact",
+    "Rollback receives a separate immutable binding; unknown systemd definitions are refused"
+  ],
+  "scope": "Local tooling unit/Compose checks and the Linux AMD64 image startup/settings validation passed. Actual server-private environment staging and deployment have not yet run.",
+  "log_sha256": {
+    "v10": "2d578f6c8dfafbb913834ebe0296744a95fc7cf4ef87f1078603af13333051f6",
+    "configuration": "c6c6a113a83059e2a666fc5c2a49cf734bd4210c43c2bd567c0fd4df8ccc4d61",
+    "release": "e0dd66f4614099dce307a44c8bb0e0b8f4edb0787ed6933a6180deb0c0344bf5",
+    "docker_transport": "0ca923be1ef919e18c4283feecdf98856da93a3fd208e86282d011491f4f1e21"
+  },
+  "qualified_image": {
+    "repository": "quanquanah/blockscout-frontend",
+    "tag": "deriw-v2.7.2-27a4139d09ac",
+    "index_digest": "sha256:dd4bc22416bffde578b6885d39d766fd41ba545642c46b23903c34609ba3355d",
+    "platform": "linux/amd64",
+    "platform_manifest_digest": "sha256:76a170d12b74183e3df77dbfa4d047aa0937ad66ed43615ca0d278b4c67429a9",
+    "config_digest": "sha256:c44200bf03d0b5ad6c66dac0992b8737ec2ab75bb8ce3e502bfe1b5d80e81788",
+    "deployment_reference": "quanquanah/blockscout-frontend@sha256:76a170d12b74183e3df77dbfa4d047aa0937ad66ed43615ca0d278b4c67429a9",
+    "registry_verified": true,
+    "frontend_source_commit": "27a4139d09ac57d975cc8c2bd4f1d804c8589f20",
+    "full_entrypoint_health_passed": true,
+    "native_dependency_import_passed": true,
+    "strict_invalid_token_rejected": true,
+    "anonymous_pull_confirmed": true,
+    "digest_matches": true,
+    "canonical_reference_pull_passed": true,
+    "container_image_identity_matches": true
+  }
+}

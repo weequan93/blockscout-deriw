@@ -1,0 +1,58 @@
+{
+  "format": "deriw-bridge-checkpoint-validation-v1",
+  "date": "2026-11-08",
+  "timezone": "Asia/Singapore",
+  "release_tag": "deriw-bridge-checkpoint-2026-11-08",
+  "base_backend_source": "875082f41d79ef72cd9dd9a4e771953a181c6cf2",
+  "problem": "The live deposit scan cursor previously advanced only in worker memory through empty ranges; initialization restarted from the last stored deposit origin.",
+  "storage": "Existing last_fetched_counters table, one identity-scoped row; no schema migration.",
+  "elixir_tests": {
+    "count": 11,
+    "status": "passed",
+    "storage": "Real PostgreSQL 15 and Ecto; synthetic local data"
+  },
+  "fresh_process_and_live_handoff_fixture": {
+    "status": "passed",
+    "live_services_accessed": false,
+    "fixture_resources_removed": true,
+    "real_postgresql_and_ecto": true,
+    "bridge_cursor_restart_tests": true,
+    "live_cursor_handoff_matches_native_key": true,
+    "fresh_beam_process_resumes_saved_cursor": true
+  },
+  "v10_deployment_unit_tests": {
+    "count": 381,
+    "pattern": "test_v10*.py",
+    "status": "passed"
+  },
+  "recovery_checks": [
+    "native input bytes and cursor retained",
+    "completed native job not reopened",
+    "changed seed, receipt, inputs and newer ownership rejected",
+    "source/owner mismatch rejected before pause",
+    "health failure does not bind or resume normalization",
+    "activation journal precedes recreation",
+    "worker holds restored before qualification",
+    "healthy owned target reconciles without another restart",
+    "patched database init declarations and unrelated service images retained"
+  ],
+  "tested_source_sha256": {
+    "apps/indexer/lib/indexer/fetcher/arbitrum/utils/db/message_scan_cursor.ex": "53012ebb51321841b6bbb591e18b3cfd89bb7905caf66f2ed16b51d6e85032d8",
+    "apps/indexer/lib/indexer/fetcher/arbitrum/tracking_messages_on_l1.ex": "fc6811286dbb7447cb0533a234113981c695e6282fb451d5867ed03f3f95a10f",
+    "apps/indexer/lib/indexer/fetcher/arbitrum/workers/new_messages_to_l2.ex": "2ed357183caa03163bb8d1030e44069fa0bcc8ab1812cd02171a1e74ead55eaf",
+    "deploy/scripts/v10_bridge_checkpoint_deploy.py": "828f4b94b57c7dff1dd08afe4947e416f6084563ac3c2f612b5436980ddbdb8b",
+    "deploy/scripts/v10_bridge_deploy.py": "7e09a1868169f7283fe8d3baddfb943fbdc4c647c197eae0f946008a8ae6d151",
+    "deploy/scripts/v10_native_normalization.py": "d38c89ac7ddfcfa0b1e8bef0bfb6f96338e254a0b8eb98fd2d125d67853c6014",
+    "deploy/scripts/v10_frontend_deploy.py": "1565092095d961e1ef84d756237a0014f62cdec81ad7f6b6583f93cc5cf2b864",
+    "deploy/scripts/release.py": "e850e84d2f9b366dd9d1f467d6467429d74b554172efad8da2a00e5ea7180f1f",
+    "apps/indexer/test/indexer/fetcher/arbitrum/workers/new_messages_to_l2_test.exs": "0038b64118bde11cca3e6acfe7de3c6d97097cfda866eb8d7ac196bcdd5b1e70",
+    "deploy/tests/check_arbitrum_message_checkpoint.py": "68f5c8b8b621501ea9c25258657a004a1c86cff4c872a60f3062b771edee1eb8",
+    "deploy/tests/check_arbitrum_message_cursor.py": "9caced9038e958808d1fef050262fc186c749e3700e5864c0684074d16b2f3d4",
+    "deploy/tests/test_v10_bridge_checkpoint_deploy.py": "315a6bbaf9b76b395de287d7069383dc382e90df81bdbd31c47557b11cdaf5d9"
+  },
+  "bash_syntax": "passed",
+  "source_formatting": "Elixir formatter checked in cached v10 compilation image",
+  "full_backend_image_build": "Server helper builds and validates the committed image before activation; not yet performed on dev.",
+  "live_server_deployment_verified": false,
+  "live_server_writes_or_restarts_by_agent": false
+}
