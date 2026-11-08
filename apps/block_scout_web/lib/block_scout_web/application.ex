@@ -61,6 +61,7 @@ defmodule BlockScoutWeb.Application do
     :ok
   end
 
+  alias Indexer.Prometheus.ArbitrumBridgeMetrics
   alias Indexer.Prometheus.Metrics, as: IndexerMetrics
 
   defp indexer_metric_worker do
@@ -74,7 +75,7 @@ defmodule BlockScoutWeb.Application do
   if @disable_api? do
     defp setup_and_define_children do
       BlockScoutWeb.Prometheus.Exporter.setup()
-      {indexer_metric_worker(), []}
+      {indexer_metric_worker() ++ [{ArbitrumBridgeMetrics, []}], []}
     end
   else
     defp setup_and_define_children do
@@ -118,7 +119,7 @@ defmodule BlockScoutWeb.Application do
 
       # Define workers and child supervisors to be supervised
       {
-        base_workers ++ indexer_metric_worker(),
+        base_workers ++ indexer_metric_worker() ++ [{ArbitrumBridgeMetrics, []}],
         [
           {Absinthe.Subscription, Endpoint}
         ]

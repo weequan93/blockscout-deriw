@@ -1698,6 +1698,9 @@ config :indexer, Indexer.Prometheus.Metrics,
       ConfigHelper.parse_bool_env_var("INDEXER_METRICS_ENABLED_MISSING_ARCHIVAL_TOKEN_BALANCES_COUNT", "true")
   }
 
+config :indexer, Indexer.Prometheus.ArbitrumBridgeMetrics,
+  enabled: ConfigHelper.parse_bool_env_var("ARBITRUM_BRIDGE_METRICS_ENABLED", "false")
+
 config :ex_aws,
   json_codec: Jason,
   access_key_id: System.get_env("NFT_MEDIA_HANDLER_AWS_ACCESS_KEY_ID"),

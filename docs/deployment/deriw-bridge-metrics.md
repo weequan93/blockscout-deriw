@@ -1,5 +1,9 @@
 # DeriW bridge and rollup settlement metrics
 
+For bridge metrics served inside the backend's existing `/metrics` endpoint,
+see [native bridge metrics](native-bridge-metrics.md). The host service below
+remains available while existing installations move to the native collector.
+
 The `deriw-bridge-metrics.service` exporter observes L2 → L3 deposits, L3 → L2
 withdrawals, and the settlement stages shown on explorer blocks/transactions.
 It serves Prometheus text at `http://127.0.0.1:9160/metrics` on the dev host.

@@ -1,0 +1,97 @@
+{
+  "observed_at_unix": 1000,
+  "sections": {
+    "deposits": {
+      "ok": true,
+      "data": {
+        "complete": true,
+        "size": 3,
+        "highest_message_id": 12,
+        "highest_relayed_message_id": 10,
+        "oldest_pending_timestamp": 900,
+        "pending_without_timestamp": 1,
+        "missing_origination": 1,
+        "completion_recorded": 1,
+        "states": {
+          "initiated": 2,
+          "relayed": 1
+        }
+      }
+    },
+    "withdrawals": {
+      "ok": true,
+      "data": {
+        "complete": true,
+        "size": 3,
+        "highest_message_id": 12,
+        "highest_relayed_message_id": 10,
+        "oldest_pending_timestamp": 900,
+        "pending_without_timestamp": 1,
+        "missing_origination": 1,
+        "completion_recorded": 1,
+        "states": {
+          "initiated": 2,
+          "relayed": 1
+        }
+      }
+    },
+    "rollup": {
+      "ok": true,
+      "data": {
+        "size": 3,
+        "lowest_block": 100,
+        "highest_block": 102,
+        "latest_block_timestamp": 999,
+        "states": [
+          {
+            "stage": "processed",
+            "parent_finality": "not_applicable",
+            "count": 1,
+            "highest_block": 102
+          },
+          {
+            "stage": "sent",
+            "parent_finality": "unfinalized",
+            "count": 1,
+            "highest_block": 101
+          },
+          {
+            "stage": "confirmed",
+            "parent_finality": "finalized",
+            "count": 1,
+            "highest_block": 100
+          }
+        ]
+      }
+    },
+    "published": {
+      "ok": true,
+      "data": {
+        "block_number": 101,
+        "batch_number": 20,
+        "parent_timestamp": 980,
+        "parent_finality": "unfinalized"
+      }
+    },
+    "confirmed": {
+      "ok": true,
+      "data": {
+        "block_number": 100,
+        "parent_timestamp": 990,
+        "parent_finality": "finalized"
+      }
+    }
+  },
+  "trackers": {
+    "deposits": {
+      "ok": true,
+      "running": true,
+      "next_parent_block": 200
+    },
+    "settlement": {
+      "ok": true,
+      "running": false,
+      "next_parent_block": null
+    }
+  }
+}
