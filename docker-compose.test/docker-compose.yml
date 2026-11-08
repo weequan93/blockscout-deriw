@@ -1,8 +1,0 @@
-name: ${COMPOSE_PROJECT_NAME:-deriw-test}
-
-include:
-  - path:
-      - ../deploy/compose/docker-compose.yml
-      - ./docker-compose.local.yml
-    project_directory: .
-    env_file: ./.env

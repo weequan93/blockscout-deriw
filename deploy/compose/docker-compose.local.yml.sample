@@ -1,4 +1,0 @@
-# Host-specific adjustments for this network. This file is merged with the
-# shared definitions before they are included in this environment's project.
-# Retain existing service commands, resource limits, aliases and extra mounts.
-services: {}
