@@ -11,3 +11,8 @@ erl_crash.dump
 logs
 apps/*/test
 .devcontainer
+
+# Server-only configuration, credentials and TLS keys must stay outside builds.
+docker-compose.dev
+docker-compose.test
+docker-compose.prod
