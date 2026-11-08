@@ -63,6 +63,10 @@ dump.rdb
 /docker-compose/tmp
 /docker-compose/docker-compose.override.yml
 /docker-compose/.env
+# Server-owned deployment directories
+/docker-compose.dev/
+/docker-compose.test/
+/docker-compose.prod/
 /docker-compose/environments/**/private.json
 /docker-compose/environments/**/*.private.json
 /deploy/**/private.json
