@@ -63,6 +63,14 @@ dump.rdb
 /docker-compose/tmp
 /docker-compose/docker-compose.override.yml
 /docker-compose/.env
+/docker-compose.dev/.env
+/docker-compose.test/.env
+/docker-compose.prod/.env
+/docker-compose.*/docker-compose.override.yml
+/docker-compose.*/docker-compose.local.yml
+/docker-compose.*/data/
+/docker-compose.*/logs/
+/docker-compose.*/dets/
 /docker-compose/environments/**/private.json
 /docker-compose/environments/**/*.private.json
 /deploy/**/private.json

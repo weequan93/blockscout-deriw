@@ -1,0 +1,175 @@
+# Included by docker-compose.dev, docker-compose.test and docker-compose.prod.
+# Relative paths resolve within the selected environment directory.
+x-service: &service
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: 100m
+      max-file: "3"
+
+x-backend-build: &backend-build
+  context: ..
+  dockerfile: docker/Dockerfile
+  args:
+    CHAIN_TYPE: arbitrum
+    RELEASE_VERSION: "10.2.6"
+    BLOCKSCOUT_VERSION: ${BLOCKSCOUT_VERSION:?Set the backend source revision in this directory's .env}
+    MIGRATION_BACKGROUND_AUTOSTART_DISABLED: "true"
+
+services:
+  db:
+    <<: *service
+    image: ${POSTGRES_IMAGE:?Set the existing main database image in .env}
+    env_file: ./envs/common-db.env
+    volumes:
+      - type: bind
+        source: ${BLOCKSCOUT_DB_DATA_DIR:?Set the main database data directory in .env}
+        target: /var/lib/postgresql/data
+        bind:
+          create_host_path: false
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis-db:
+    <<: *service
+    image: ${REDIS_IMAGE:?Set the existing Redis image in .env}
+    command: [redis-server]
+    volumes:
+      - type: bind
+        source: ${REDIS_DATA_DIR:?Set the Redis data directory in .env}
+        target: /data
+        bind:
+          create_host_path: false
+
+  backend:
+    <<: *service
+    image: ${BACKEND_IMAGE:?Set the backend release image in .env}
+    build: *backend-build
+    command: [bin/blockscout, start]
+    stop_grace_period: 5m
+    env_file: ./envs/common-blockscout.env
+    environment:
+      CHAIN_TYPE: arbitrum
+      CHAIN_ID: ${CHAIN_ID:?Set this network's chain ID in .env}
+      RELEASE_VERSION: "10.2.6"
+      BLOCKSCOUT_VERSION: ${BLOCKSCOUT_VERSION:?Set the backend source revision in .env}
+      MIGRATION_BACKGROUND_AUTOSTART_DISABLED: "true"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis-db:
+        condition: service_started
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    volumes:
+      - type: bind
+        source: ${BACKEND_LOG_DIR:?Set the backend log directory in .env}
+        target: /app/logs
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${BACKEND_DETS_DIR:?Set the existing backend DETS directory in .env}
+        target: /app/dets
+        bind:
+          create_host_path: false
+    networks:
+      default:
+        aliases: [backend.blockscout.internal]
+
+  nft_media_handler:
+    <<: *service
+    image: ${NFT_MEDIA_HANDLER_IMAGE:?Set the compatible NFT worker image in .env}
+    command: [bin/blockscout, start]
+    stop_grace_period: 5m
+    env_file: ./envs/common-nft-media-handler.env
+    environment:
+      CHAIN_TYPE: arbitrum
+      RELEASE_VERSION: "10.2.6"
+      MIGRATION_BACKGROUND_AUTOSTART_DISABLED: "true"
+    depends_on: [backend]
+    networks:
+      default:
+        aliases: [nft-media.blockscout.internal]
+
+  frontend:
+    <<: *service
+    image: ${FRONTEND_IMAGE:?Set the DeriW frontend image in .env}
+    platform: linux/amd64
+    env_file: ./envs/common-frontend.env
+    environment:
+      ENVS_PRESET: none
+      NEXT_PUBLIC_NETWORK_ID: ${CHAIN_ID:?Set this network's chain ID in .env}
+      NEXT_PUBLIC_IS_TESTNET: ${IS_TESTNET:?Set IS_TESTNET in .env}
+    depends_on: [backend]
+
+  stats-db:
+    <<: *service
+    image: ${STATS_POSTGRES_IMAGE:?Set the existing stats database image in .env}
+    env_file: ./envs/common-stats-db.env
+    volumes:
+      - type: bind
+        source: ${STATS_DB_DATA_DIR:?Set the stats database data directory in .env}
+        target: /var/lib/postgresql/data
+        bind:
+          create_host_path: false
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  stats:
+    <<: *service
+    image: ${STATS_IMAGE:?Set the stats service image in .env}
+    env_file: ./envs/common-stats.env
+    depends_on:
+      stats-db:
+        condition: service_healthy
+      backend:
+        condition: service_started
+
+  visualizer:
+    <<: *service
+    image: ${VISUALIZER_IMAGE:?Set the visualizer image in .env}
+    env_file: ./envs/common-visualizer.env
+
+  sig-provider:
+    <<: *service
+    image: ${SIG_PROVIDER_IMAGE:?Set the signature provider image in .env}
+
+  sc-verifier:
+    <<: *service
+    image: ${SMART_CONTRACT_VERIFIER_IMAGE:?Set the verifier image in .env}
+    env_file: ./envs/common-smart-contract-verifier.env
+
+  user-ops-indexer:
+    <<: *service
+    image: ${USER_OPS_INDEXER_IMAGE:?Set the user-ops indexer image in .env}
+    env_file: ./envs/common-user-ops-indexer.env
+    depends_on: [db, backend]
+
+  proxy:
+    <<: *service
+    image: ${NGINX_IMAGE:?Set the Nginx image in .env}
+    environment:
+      BACK_PROXY_PASS: http://backend:4000
+      FRONT_PROXY_PASS: http://frontend:3000
+    ports:
+      - "${HTTP_BIND_ADDRESS:-0.0.0.0}:${HTTP_PORT:-80}:80"
+      - "${HTTPS_BIND_ADDRESS:-0.0.0.0}:${HTTPS_PORT:-443}:443"
+    volumes:
+      - type: bind
+        source: ${NGINX_CONFIG_DIR:?Set this network's existing Nginx configuration directory in .env}
+        target: ${NGINX_CONFIG_TARGET:-/etc/nginx/templates}
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on: [backend, frontend, stats, visualizer]
+
+networks:
+  default:
+    name: ${NETWORK_NAME:?Set this deployment's Docker network name in .env}

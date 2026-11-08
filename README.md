@@ -26,6 +26,10 @@ Blockscout currently supports several hundred chains and rollups throughout the 
 
 ## Getting Started
 
+For separate devnet, testnet and production working directories, see the
+[environment-directory Compose guide](deploy/compose/README.md). Each directory
+has its own private settings; the original `docker-compose/` defaults are preserved.
+
 For the Deriw installation, start with the [current dev v10 deployment and
 operations guide](docs/deployment/dev-v10.md), its
 [command/step file](deploy/steps/dev-v10-review.sh), and the
