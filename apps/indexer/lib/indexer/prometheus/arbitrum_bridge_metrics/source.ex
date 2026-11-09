@@ -4,6 +4,7 @@ defmodule Indexer.Prometheus.ArbitrumBridgeMetrics.Source do
   """
 
   alias Explorer.Repo
+  alias Indexer.Prometheus.ArbitrumBridgeMetrics.Verification
 
   @queries_file Path.expand("../../../../priv/arbitrum_bridge_metrics_queries.json", __DIR__)
   @external_resource @queries_file
@@ -28,8 +29,15 @@ defmodule Indexer.Prometheus.ArbitrumBridgeMetrics.Source do
       "sections" => Map.new(@sections, &{&1, sample(Map.fetch!(@queries, &1))}),
       "trackers" => %{
         "deposits" => tracker(Indexer.Fetcher.Arbitrum.TrackingMessagesOnL1, :check_new),
-        "settlement" => tracker(Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses, :new_batches)
-      }
+        "settlement" => tracker(Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses, :new_batches),
+        "withdrawals" => tracker(Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses, :new_executions),
+        "confirmations" => tracker(Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses, :new_confirmations)
+      },
+      "finality_tracking_enabled" =>
+        Application.get_env(:indexer, Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses, [])[
+          :track_l1_transaction_finalization
+        ] == true,
+      "verification" => Verification.collect()
     }
   end
 
@@ -39,7 +47,8 @@ defmodule Indexer.Prometheus.ArbitrumBridgeMetrics.Source do
       number?(data["observed_at_unix"]) and
         Enum.sort(Map.keys(data["sections"])) == Enum.sort(@sections) and
         Enum.all?(data["sections"], fn {name, section} -> valid_section?(name, section) end) and
-        Enum.sort(Map.keys(data["trackers"])) == ~w(deposits settlement) and
+        Enum.all?(~w(deposits settlement), &Map.has_key?(data["trackers"], &1)) and
+        Enum.all?(Map.keys(data["trackers"]), &(&1 in ~w(deposits settlement withdrawals confirmations))) and
         Enum.all?(data["trackers"], fn {_, tracker} ->
           is_boolean(tracker["ok"]) and
             (not tracker["ok"] or
@@ -47,6 +56,8 @@ defmodule Indexer.Prometheus.ArbitrumBridgeMetrics.Source do
         end)
 
     unless valid?, do: raise(ArgumentError, "Invalid bridge metrics snapshot")
+    if Map.has_key?(data, "finality_tracking_enabled"), do: true = is_boolean(data["finality_tracking_enabled"])
+    if Map.has_key?(data, "verification"), do: Verification.validate!(data["verification"])
     :ok
   end
 

@@ -38,6 +38,25 @@ defmodule BlockScoutWeb.Prometheus.ArbitrumBridgeMetricsTest do
     owner = self()
     data = Map.put(fixture(), "observed_at_unix", System.system_time(:second))
 
+    verification =
+      Map.new(
+        ~w(deposits withdrawals batches parent_latest parent_safe parent_finalized batch_head),
+        &{&1, %{"ok" => false}}
+      )
+      |> Map.put("withdrawals", %{
+        "ok" => true,
+        "data" => %{
+          "size" => 1,
+          "truncated" => 1,
+          "onchain_relayed" => 1,
+          "missing_relay" => 1,
+          "unexpected_relay" => 0,
+          "missing_completion" => 1
+        }
+      })
+
+    data = Map.put(data, "verification", verification)
+
     worker =
       start_supervised!(
         {ArbitrumBridgeMetrics,
@@ -61,6 +80,8 @@ defmodule BlockScoutWeb.Prometheus.ArbitrumBridgeMetricsTest do
       assert conn.resp_body =~ "native_bridge_existing_metric_fixture 7"
       assert conn.resp_body =~ "deriw_bridge_exporter_up 1"
       assert conn.resp_body =~ "deriw_rollup_stage_block_number"
+      assert conn.resp_body =~ "deriw_bridge_withdrawal_sample_missing_relay 1"
+      assert conn.resp_body =~ "deriw_bridge_verification_success{section=\"batches\"} 0"
     end
 
     refute_receive :sampled, 20

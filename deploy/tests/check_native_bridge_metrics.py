@@ -43,6 +43,39 @@ Application.put_env(:explorer, Explorer.Repo,
   url: System.fetch_env!("DATABASE_URL"), pool_size: 2, log: false)
 {:ok, _} = Explorer.Repo.start_link()
 data = Source.collect()
+fixture_rpc = fn _url, requests ->
+  hex = fn n -> "0x" <> Integer.to_string(n, 16) end
+  hash = fn n -> "0x" <> String.pad_leading(Integer.to_string(n, 16), 64, "0") end
+  inbox = "0x" <> String.duplicate("2", 40)
+  replies = Enum.map(requests, fn request ->
+    result = case request do
+      %{id: id} when id in 1..3 ->
+        number = %{1 => 150, 2 => 100, 3 => 80}[id]
+        %{"number" => hex.(number), "hash" => hash.(number)}
+      %{id: 4} -> "0x" <> String.duplicate("0", 24) <> String.duplicate("1", 40)
+      %{id: 5} -> "0x" <> String.duplicate("0", 24) <> String.duplicate("2", 40)
+      %{id: 6} -> "0x3"
+      %{id: id, params: [%{data: data}, _]} when id >= 100 and id < 200 ->
+        {message_id, ""} = data |> String.slice(10..-1//1) |> Integer.parse(16)
+        if message_id in [3,4], do: "0x1", else: "0x0"
+      %{id: id, params: [transaction_hash]} when id >= 200 and id < 300 ->
+        {batch, ""} = transaction_hash |> String.slice(2..-1//1) |> Integer.parse(16)
+        batch = if batch >= 1000, do: batch - 1000, else: batch
+        block = if batch == 1, do: 90, else: 110
+        %{"transactionHash" => transaction_hash, "blockHash" => hash.(block), "blockNumber" => hex.(block),
+          "status" => "0x1", "logs" => [%{"address" => inbox,
+            "topics" => [EthereumJSONRPC.Arbitrum.Constants.Events.sequencer_batch_delivered(), hash.(batch)]}]}
+      %{params: [number, false]} ->
+        {n, ""} = number |> String.slice(2..-1//1) |> Integer.parse(16)
+        %{"number" => number, "hash" => hash.(n)}
+    end
+    {request.id, {:ok, result}}
+  end)
+  Map.new(replies)
+end
+verification = Indexer.Prometheus.ArbitrumBridgeMetrics.Verification.collect(
+  url: "http://fixture.invalid", rollup: "0x" <> String.duplicate("3",40), rpc: fixture_rpc)
+data = Map.put(data, "verification", verification)
 :ok = Source.validate!(data)
 Application.put_env(:explorer, :chain_type, :arbitrum)
 Application.put_env(:nft_media_handler, :standalone_media_worker?, false)
@@ -69,7 +102,9 @@ def archive(script):
         *ROOT.glob('apps/indexer/lib/indexer/prometheus/arbitrum_bridge_metrics/**/*.ex'),
         ROOT / 'apps/indexer/lib/indexer/prometheus/arbitrum_bridge_metrics.ex',
         ROOT / 'apps/indexer/priv/arbitrum_bridge_metrics_queries.json',
+        ROOT / 'apps/indexer/priv/arbitrum_bridge_verification_queries.json',
         ROOT / 'apps/indexer/test/indexer/prometheus/arbitrum_bridge_metrics_test.exs',
+        ROOT / 'apps/indexer/test/indexer/prometheus/arbitrum_bridge_verification_test.exs',
         ROOT / 'apps/indexer/test/indexer/prometheus/fixtures/arbitrum_bridge_metrics.json',
         ROOT / 'apps/block_scout_web/lib/block_scout_web/application.ex',
         ROOT / 'apps/block_scout_web/test/block_scout_web/prometheus/arbitrum_bridge_metrics_test.exs',
@@ -131,7 +166,7 @@ def main():
             raise RuntimeError('Native metrics fixture failed; private details: ' + log.name)
         return completed.stdout.decode()
 
-    unit_output = execute('ExUnit.start()\nCode.require_file("/tmp/native/apps/indexer/test/indexer/prometheus/arbitrum_bridge_metrics_test.exs")\nCode.require_file("/tmp/native/apps/block_scout_web/test/block_scout_web/prometheus/arbitrum_bridge_metrics_test.exs")\n')
+    unit_output = execute('ExUnit.start()\nCode.require_file("/tmp/native/apps/indexer/test/indexer/prometheus/arbitrum_bridge_metrics_test.exs")\nCode.require_file("/tmp/native/apps/indexer/test/indexer/prometheus/arbitrum_bridge_verification_test.exs")\nCode.require_file("/tmp/native/apps/block_scout_web/test/block_scout_web/prometheus/arbitrum_bridge_metrics_test.exs")\n')
     print(unit_output.strip(), flush=True)
     try:
         run(['docker', 'network', 'create', '--internal', '--label', LABEL + '=' + token, network])
@@ -155,22 +190,39 @@ def main():
                         '-At', '-U', 'fixture', '-d', 'fixture'], input=text)
 
         sql(SCHEMA)
+        sql("ALTER TABLE arbitrum_crosslevel_messages ADD originator_address bytea, ADD originating_transaction_block_number integer; "
+            "UPDATE arbitrum_crosslevel_messages SET originator_address=decode(repeat('11',20),'hex'),originating_transaction_block_number=80 WHERE originating_transaction_hash IS NOT NULL; "
+            "ALTER TABLE arbitrum_lifecycle_l1_transactions ADD hash bytea, ADD block_number integer; "
+            "UPDATE arbitrum_lifecycle_l1_transactions SET hash=decode(lpad(to_hex(id),64,'0'),'hex'),block_number=CASE WHEN id=1 THEN 90 ELSE 110 END;")
         for truncated in (False, True):
             if truncated:
-                sql("INSERT INTO arbitrum_crosslevel_messages SELECT 'to_l2',n,'initiated',to_timestamp(1700000000),decode('01','hex'),NULL FROM generate_series(4,10002) n; UPDATE arbitrum_batch_l2_blocks SET confirmation_id=NULL WHERE block_number>1500; UPDATE arbitrum_lifecycle_l1_transactions SET status='finalized' WHERE id=2;")
+                sql("INSERT INTO arbitrum_crosslevel_messages(direction,message_id,status,origination_timestamp,originating_transaction_hash,completion_transaction_hash) SELECT 'to_l2',n,'initiated',to_timestamp(1700000000),decode('01','hex'),NULL FROM generate_series(4,10002) n; UPDATE arbitrum_batch_l2_blocks SET confirmation_id=NULL WHERE block_number>1500; UPDATE arbitrum_lifecycle_l1_transactions SET status='finalized' WHERE id=2;")
             output = execute(OBSERVE, network, True)
             result = json.loads(next(line.split('=', 1)[1] for line in output.splitlines()
                                      if line.startswith('NATIVE_BRIDGE_METRICS=')))
             data = result['data']
-            legacy.validate(data)
+            old_data = {**data, 'trackers': {k: data['trackers'][k] for k in ('deposits', 'settlement')}}
+            legacy.validate(old_data)
             assert all(s['ok'] for s in data['sections'].values()), data['sections']
-            expected = legacy.render(data, data['observed_at_unix'], True, now=data['observed_at_unix'])
+            expected = legacy.render(old_data, data['observed_at_unix'], True, now=data['observed_at_unix'])
             # Collection and registration can straddle a Unix second.
             actual = series(result['text'])
             expected_series = series(expected)
             timestamp = ('deriw_bridge_exporter_last_success_timestamp_seconds', ())
             actual[timestamp] = expected_series[timestamp]
-            assert actual == expected_series, 'Native endpoint differs from the legacy metric series'
+            assert {k: actual[k] for k in expected_series} == expected_series, 'An existing metric changed'
+            assert all(row['ok'] for row in data['verification'].values()), data['verification']
+            verification = data['verification']
+            assert verification['deposits']['data']['incomplete_relayed'] == 1
+            assert verification['deposits']['data']['truncated'] == int(truncated)
+            assert verification['withdrawals']['data']['missing_relay'] == 1
+            assert verification['batches']['data']['posted'] == 2
+            assert verification['batches']['data']['finality_mismatch'] == int(truncated)
+            assert verification['batches']['data']['latest_safe'] == 0
+            assert verification['batch_head']['data']['indexing_lag'] == 0
+            assert actual[('deriw_bridge_withdrawal_sample_missing_relay', ())] == 1
+            assert actual[('deriw_rollup_latest_batch_onchain_posted', ())] == 1
+            assert actual[('deriw_rollup_batch_sample_finality_mismatch', ())] == int(truncated)
             assert data['sections']['deposits']['data']['complete'] is not truncated
             assert data['sections']['confirmed']['data']['block_number'] == (1500 if truncated else 1600)
             assert result['failed']['write']['reason'] == 'read_only_denied'
@@ -178,9 +230,23 @@ def main():
             assert result['failed']['budget']['reason'] == 'plan_budget'
             assert result['failed']['missing']['reason'] == 'query_failed'
             assert sql('SELECT count(*) FROM blocks WHERE number=3000;').strip() == '0'
+        sql("INSERT INTO arbitrum_crosslevel_messages(direction,message_id,status,origination_timestamp,originating_transaction_hash) "
+            "SELECT 'from_l2',n,'confirmed',now(),decode(lpad(to_hex(n),64,'0'),'hex') FROM generate_series(5,40) n; "
+            "INSERT INTO arbitrum_lifecycle_l1_transactions(id,timestamp,status,hash,block_number) "
+            "SELECT n,now(),'unfinalized',decode(lpad(to_hex(n+998),64,'0'),'hex'),110 FROM generate_series(5,27) n; "
+            "INSERT INTO arbitrum_l1_batches(number,end_block,commitment_id) SELECT n,n*100,n+2 FROM generate_series(3,25) n;")
+        output = execute(OBSERVE, network, True)
+        bounded = json.loads(next(line.split('=', 1)[1] for line in output.splitlines()
+                                 if line.startswith('NATIVE_BRIDGE_METRICS=')))['data']['verification']
+        assert bounded['withdrawals']['ok'] and bounded['withdrawals']['data']['size'] == 32
+        assert bounded['withdrawals']['data']['truncated'] == 1
+        assert bounded['batches']['ok'] and bounded['batches']['data']['size'] == 16
+        assert bounded['batches']['data']['truncated'] == 1
+        assert bounded['batches']['data']['posted'] == 16
         print(json.dumps({'status': 'passed', 'postgres_major': 15,
                           'native_endpoint_matches_legacy_series': True, 'read_only_and_query_budgets': True,
                           'sample_truncation_and_reorg_regression': True,
+                          'deposit_completeness_relay_and_batch_rpc_comparisons': True,
                           'live_services_accessed': False, 'backend_application_started': False}, indent=2))
     finally:
         for identity in run(['docker', 'ps', '-aq', '--filter', 'label=' + LABEL + '=' + token]).split():

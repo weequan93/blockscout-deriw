@@ -82,7 +82,19 @@ defmodule Indexer.Prometheus.ArbitrumBridgeMetrics.Collector do
       rollup_metrics(sections["rollup"]) ++
       stage_metrics(sections["published"], "sent") ++
       stage_metrics(sections["confirmed"], "confirmed") ++
-      tracker_metrics(data["trackers"])
+      tracker_metrics(data["trackers"]) ++
+      verification_metrics(Map.get(data, "verification"), data["trackers"]) ++
+      if Map.has_key?(data, "finality_tracking_enabled") do
+        [
+          metric(
+            :deriw_rollup_finality_tracking_enabled,
+            "1 when Blockscout's lifecycle finality updater is enabled; it uses the parent safe tag.",
+            data["finality_tracking_enabled"]
+          )
+        ]
+      else
+        []
+      end
   end
 
   defp message_metrics(%{"ok" => false}, _direction, _now), do: []
@@ -231,38 +243,224 @@ defmodule Indexer.Prometheus.ArbitrumBridgeMetrics.Collector do
   end
 
   defp tracker_metrics(trackers) do
-    Enum.flat_map(~w(deposits settlement), fn name ->
-      row = trackers[name]
-      labels = [tracker: name]
+    Enum.flat_map(
+      Enum.filter(~w(deposits settlement withdrawals confirmations), &Map.has_key?(trackers, &1)),
+      fn name ->
+        row = trackers[name]
+        labels = [tracker: name]
 
-      [
+        [
+          metric(
+            :deriw_bridge_tracker_observation_success,
+            "1 when tracker process state could be read.",
+            row["ok"],
+            labels
+          )
+        ] ++
+          if row["ok"] do
+            [
+              metric(
+                :deriw_bridge_tracker_running,
+                "1 when the tracker process exists; does not prove its cursor advances.",
+                row["running"],
+                labels
+              )
+            ] ++
+              optional_metrics(
+                row,
+                labels,
+                [{:deriw_bridge_tracker_next_parent_block, "next_parent_block"}],
+                "Next parent L2 block requested by the live discovery task; historical/backfill work is separate."
+              )
+          else
+            []
+          end
+      end
+    )
+  end
+
+  defp verification_metrics(nil, _trackers), do: []
+
+  defp verification_metrics(verification, trackers) do
+    health =
+      Enum.map(Enum.sort(Map.keys(verification)), fn name ->
         metric(
-          :deriw_bridge_tracker_observation_success,
-          "1 when tracker process state could be read.",
-          row["ok"],
-          labels
+          :deriw_bridge_verification_success,
+          "1 when this independent metadata or bounded parent-chain comparison completed; check before interpreting comparison values.",
+          verification[name]["ok"],
+          section: name
         )
-      ] ++
-        if row["ok"] do
+      end)
+
+    heads =
+      Enum.flat_map(~w(latest safe finalized), fn tag ->
+        verified(verification["parent_" <> tag], fn row ->
           [
             metric(
-              :deriw_bridge_tracker_running,
-              "1 when the tracker process exists; does not prove its cursor advances.",
-              row["running"],
-              labels
+              :deriw_bridge_parent_block_number,
+              "Parent RPC block number for this tag; safe and finalized are separate checkpoints.",
+              row["block_number"],
+              tag: tag
             )
-          ] ++
-            optional_metrics(
-              row,
-              labels,
-              [{:deriw_bridge_tracker_next_parent_block, "next_parent_block"}],
-              "Next parent L2 block requested by the live discovery task; historical/backfill work is separate."
+          ]
+        end)
+      end)
+
+    lag =
+      verified(verification["parent_latest"], fn head ->
+        Enum.flat_map(Enum.sort(Map.keys(trackers)), fn name ->
+          row = trackers[name]
+          next = row["next_parent_block"]
+
+          if row["ok"] and row["running"] and is_integer(next) do
+            [
+              metric(
+                :deriw_bridge_tracker_lag_blocks,
+                "Parent blocks not yet scanned by this live task, head minus next cursor plus one; does not prove gap-free history.",
+                max(head["block_number"] - next + 1, 0),
+                tracker: name
+              )
+            ]
+          else
+            []
+          end
+        end)
+      end)
+
+    deposits =
+      verified(verification["deposits"], fn row ->
+        [
+          metric(
+            :deriw_bridge_deposit_sample_size,
+            "Indexed deposits checked for metadata, at most 10000.",
+            row["size"]
+          ),
+          metric(
+            :deriw_bridge_deposit_sample_truncated,
+            "1 when older indexed deposits are outside the metadata sample.",
+            row["truncated"]
+          ),
+          metric(
+            :deriw_bridge_deposit_sample_fully_linked,
+            "Relayed sampled deposits with all four origin fields and a completion hash; not an RPC execution check.",
+            row["fully_linked"]
+          ),
+          metric(
+            :deriw_bridge_deposit_sample_incomplete_relayed,
+            "Relayed sampled deposits missing origin metadata or their completion hash.",
+            row["incomplete_relayed"]
+          )
+        ] ++
+          Enum.map(~w(hash block timestamp sender completion), fn field ->
+            metric(
+              :deriw_bridge_deposit_sample_missing_field,
+              "Sampled deposits missing this indexed field; pending deposits can legitimately lack completion.",
+              row["missing_" <> field],
+              field: field
             )
-        else
-          []
-        end
-    end)
+          end)
+      end)
+
+    withdrawals =
+      verified(verification["withdrawals"], fn row ->
+        Enum.map(~w(size truncated onchain_relayed missing_relay unexpected_relay missing_completion), fn field ->
+          metric(String.to_atom("deriw_bridge_withdrawal_sample_" <> field), withdrawal_help(field), row[field])
+        end)
+      end)
+
+    batches =
+      verified(verification["batches"], fn row ->
+        Enum.map(~w(size truncated posted publication_mismatch finality_mismatch), fn field ->
+          metric(String.to_atom("deriw_rollup_batch_sample_" <> field), batch_help(field), row[field])
+        end) ++
+          Enum.map(~w(safe finalized), fn tag ->
+            metric(
+              :deriw_rollup_batch_sample_parent_finalized,
+              "Sampled batches with a canonical successful publication event at or below this parent RPC checkpoint.",
+              row[tag],
+              tag: tag
+            )
+          end) ++
+          if row["size"] > 0 do
+            [
+              metric(
+                :deriw_rollup_latest_verified_batch_number,
+                "Newest indexed batch in this successful on-chain comparison.",
+                row["latest_number"]
+              ),
+              metric(
+                :deriw_rollup_latest_batch_onchain_posted,
+                "1 when the newest indexed batch has a successful canonical SequencerBatchDelivered receipt.",
+                row["latest_posted"]
+              )
+            ] ++
+              Enum.map(~w(safe finalized), fn tag ->
+                metric(
+                  :deriw_rollup_latest_batch_parent_finalized,
+                  "1 when the newest indexed batch publication is canonical and at or below this parent RPC checkpoint.",
+                  row["latest_" <> tag],
+                  tag: tag
+                )
+              end)
+          else
+            []
+          end
+      end)
+
+    batch_head =
+      verified(verification["batch_head"], fn row ->
+        [
+          metric(
+            :deriw_rollup_onchain_latest_batch_number,
+            "Parent SequencerInbox batchCount minus one at the observed parent head.",
+            row["batch_number"]
+          ),
+          metric(
+            :deriw_rollup_batch_indexing_lag,
+            "Published parent-chain batches beyond the highest indexed batch; not an internal-gap audit.",
+            row["indexing_lag"]
+          ),
+          metric(
+            :deriw_rollup_batch_index_ahead,
+            "Indexed batches ahead of the observed SequencerInbox count; investigate RPC lag, configuration or a reorg.",
+            row["index_ahead"]
+          )
+        ]
+      end)
+
+    health ++ heads ++ lag ++ deposits ++ withdrawals ++ batches ++ batch_head
   end
+
+  defp verified(%{"ok" => true, "data" => data}, fun), do: fun.(data)
+  defp verified(_, _fun), do: []
+
+  defp withdrawal_help("size"), do: "Latest indexed withdrawals compared with Outbox.isSpent, at most 32."
+  defp withdrawal_help("truncated"), do: "1 when older indexed withdrawals are outside the on-chain comparison sample."
+
+  defp withdrawal_help("onchain_relayed"),
+    do: "Sampled withdrawals whose parent Outbox.isSpent is true at the observed parent head."
+
+  defp withdrawal_help("missing_relay"),
+    do: "Sampled withdrawals already spent on-chain but not marked relayed in the explorer."
+
+  defp withdrawal_help("unexpected_relay"),
+    do: "Sampled withdrawals marked relayed in the explorer but not spent at the observed parent head."
+
+  defp withdrawal_help("missing_completion"),
+    do: "Sampled spent withdrawals whose explorer record lacks a relay transaction hash."
+
+  defp batch_help("size"), do: "Latest indexed batches checked against canonical publication receipts, at most 16."
+  defp batch_help("truncated"), do: "1 when older indexed batches are outside the publication comparison sample."
+
+  defp batch_help("posted"),
+    do: "Sampled batches with a successful canonical SequencerBatchDelivered receipt for their batch number."
+
+  defp batch_help("publication_mismatch"),
+    do: "Sampled batches whose canonical publication event or recorded parent block does not match."
+
+  defp batch_help("finality_mismatch"),
+    do:
+      "Sampled batches whose indexed finalized flag differs from canonical publication at the parent SAFE head, matching Blockscout's UI rule."
 
   defp stage_help do
     "L3 block number recorded for this cumulative stage: indexed head, published batch end, or confirmed block; not a contiguous coverage proof."
