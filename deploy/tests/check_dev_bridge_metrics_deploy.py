@@ -7,7 +7,7 @@ No Docker application containers are started and no remote repository is used.
 """
 
 
-def main():
+def main(catchup=False, fail_handoff=False):
     from copy import deepcopy
     import contextlib,importlib.util,io,json,os,subprocess,sys,tarfile,tempfile
     from pathlib import Path
@@ -19,8 +19,10 @@ def main():
     sys.path.insert(0,str(root/'deploy/scripts'))
     import dev_config as D
     import release as R
+    import deploy_dev_bridge_catchup as C
+    C.M=m
     real_run=subprocess.run;real_popen=subprocess.Popen;real_euid=os.geteuid
-    commands=[];built_names=[];deployed=False
+    commands=[];built_names=[];deployed=False;seeded=False
     with tempfile.TemporaryDirectory(prefix='native-deploy-flow-') as temporary:
      base=Path(temporary);checkout=base/'blockscout'
      def git(*args):return real_run(['git','-C',str(checkout),*args],capture_output=True,text=True,check=True).stdout.strip()
@@ -42,6 +44,7 @@ def main():
         Path(mount['source']).mkdir(parents=True,exist_ok=True)
      b=before['services']['backend'];b['command']=['bin/blockscout','start'];b['platform']='linux/amd64'
      b['environment'].update(MIGRATION_BACKGROUND_AUTOSTART_DISABLED='true',INDEXER_METRICS_ENABLED='false',INDEXER_DISABLE_EMPTY_BLOCKS_SANITIZER='true')
+     b['environment']['BLOCKSCOUT_VERSION']='1'*40
      secret='example$literal'+'$'+'{do_not_expand}'+'$$pair\nsecond-line';b['environment']['FIXTURE_SECRET']=secret
      b['build']={'context':str(checkout),'dockerfile':'docker/Dockerfile','args':{'CHAIN_TYPE':'arbitrum','RELEASE_VERSION':'10.2.6','MIGRATION_BACKGROUND_AUTOSTART_DISABLED':'true'}}
      config=m.COMPOSE/'docker-compose.yml';config.write_bytes(R.snapshot_bytes(before))
@@ -52,7 +55,7 @@ def main():
       current=D.compose_model(m.COMPOSE,{'compose_project':'docker-compose'},{},[config],True) if deployed else before
       return [{'Id':('f'*64 if deployed and name=='backend' else ident),'Image':'sha256:'+'a'*64,'Config':{'Labels':{'com.docker.compose.service':name},'Env':[k+'='+str(v) for k,v in current['services'][name].get('environment',{}).items()]},'State':{'Running':True}} for name,ident in ids.items()]
      def fake_run(command,*args,**kwargs):
-      nonlocal deployed
+      nonlocal deployed,seeded
       commands.append(command)
       if command[:3]==['docker','ps','-aq']:return subprocess.CompletedProcess(command,0,'\n'.join(ids.values()),'')
       if command[:2]==['docker','inspect']:return subprocess.CompletedProcess(command,0,json.dumps(metadata()),'')
@@ -62,7 +65,20 @@ def main():
       if command[:2]==['docker','compose'] and 'up' in command:
        assert command[-1]=='backend' and '--no-deps' in command and '--no-build' in command
        assert kwargs['timeout']==360
+       if catchup:assert seeded
        deployed=True;return subprocess.CompletedProcess(command,0,'','')
+      if catchup and command[:5]==['docker','exec','backend','bin/blockscout','rpc']:
+       if 'INSERT INTO' in command[-1]:
+        assert not deployed
+        if fail_handoff:return subprocess.CompletedProcess(command,1,'','synthetic handoff failure')
+        seeded=True
+        handoff={'common_range':50,'cursors':[
+          {'tracker':'deposits','counter_key':'fixture-deposits','live_next_parent_block':280421247,'saved_next_parent_block':280421247,'interval_ms':10000},
+          {'tracker':'withdrawals','counter_key':'fixture-withdrawals','live_next_parent_block':324655961,'saved_next_parent_block':324655961,'interval_ms':3000}]}
+        return subprocess.CompletedProcess(command,0,C.MARKER+json.dumps(handoff)+'\n','')
+       assert seeded and deployed
+       assert 'state.config[key_field]' in command[-1]
+       return subprocess.CompletedProcess(command,0,C.MARKER+json.dumps({'cursors':[],'resumed_from_handoff':True})+'\n','')
       if command[:3]==['docker','exec','backend']:
        body='deriw_bridge_exporter_up 1\n'+''.join('deriw_bridge_query_success{section="'+s+'"} 1\n' for s in m.SECTIONS)+''.join('deriw_bridge_verification_success{section="'+s+'"} 1\n' for s in m.VERIFICATION)
        return subprocess.CompletedProcess(command,0,body,'')
@@ -82,11 +98,21 @@ def main():
       return real_popen(command,*args,**kwargs)
      subprocess.run=fake_run;subprocess.Popen=fake_popen;os.geteuid=lambda:0
      try:
-      with contextlib.redirect_stdout(io.StringIO()) as output,contextlib.redirect_stderr(io.StringIO()) as errors:result=m.main()
-      if result:
+      options=dict(prepare=C.prepare_model,before_replace=C.before_replace,after_ready=C.after_ready,
+        success_phase='bridge_catchup_deployed') if catchup else {}
+      with contextlib.redirect_stdout(io.StringIO()) as output,contextlib.redirect_stderr(io.StringIO()) as errors:result=m.main(**options)
+      if fail_handoff:assert result==1
+      elif result:
        logs=list(m.PRIVATE.glob('*/error.private.log'))
        print(logs[-1].read_text() if logs else errors.getvalue());raise SystemExit(1)
      finally:subprocess.run=real_run;subprocess.Popen=real_popen;os.geteuid=real_euid
+     if fail_handoff:
+      assert not seeded and not deployed
+      assert config.read_bytes()==R.snapshot_bytes(before)
+      assert not (m.COMPOSE/'.native-metrics-prepared.yml').exists()
+      assert data.read_text()=='database sentinel' and m.NATIVE.read_text()==native_bytes
+      print(json.dumps({'failed_handoff_prevents_recreation':True,'original_compose_preserved':True,'staged_file_removed':True}))
+      return
      after=D.compose_model(m.COMPOSE,{'compose_project':'docker-compose'},{},[config],True)
      normalized_before=D.compose_model(m.COMPOSE,{'compose_project':'docker-compose'},{},[next(m.PRIVATE.glob('*/before-docker-compose.yml'))],True)
      assert all(s==normalized_before['services'][n] for n,s in after['services'].items() if n not in ('backend','nft_media_handler'))
@@ -100,7 +126,13 @@ def main():
      assert all(not n.startswith(('docker-compose.dev/','old-repair-archive/')) for n in built_names)
      assert config.stat().st_mode & 0o777==0o600
      assert all(c[0]!='systemctl' for c in commands)
-     print(json.dumps({'git_source_deployment_simulation':'passed','committed_source_identity':'passed','only_backend_recreated':True,'other_services_and_private_values':'preserved','private_data_excluded_from_build_archive':True,'normalization_checkpoint':'unchanged','real_containers_started':False}))
+     if catchup:
+      assert seeded
+      assert all(after['services']['backend']['environment'][key]=='10000' for key in (C.DEPOSITS,C.WITHDRAWALS))
+      assert (next(m.PRIVATE.glob('*/bridge-cursor-handoff.json'))).is_file()
+      assert (next(m.PRIVATE.glob('*/bridge-cursor-resumed.json'))).is_file()
+      assert 'bridge_catchup_deployed' in output.getvalue()
+     print(json.dumps({'git_source_deployment_simulation':'passed','committed_source_identity':'passed','only_backend_recreated':True,'other_services_and_private_values':'preserved','private_data_excluded_from_build_archive':True,'normalization_checkpoint':'unchanged','real_containers_started':False,'bridge_cursor_handoff_before_recreation':catchup}))
 
 
 if __name__ == '__main__':

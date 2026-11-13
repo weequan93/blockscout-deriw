@@ -26,6 +26,7 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewL1Executions do
   import Explorer.Helper, only: [decode_data: 2]
 
   alias Indexer.Fetcher.Arbitrum.Utils.Db.Messages, as: DbMessages
+  alias Indexer.Fetcher.Arbitrum.Utils.Db.MessageScanCursor
   alias Indexer.Fetcher.Arbitrum.Utils.Db.ParentChainTransactions, as: DbParentChainTransactions
   alias Indexer.Fetcher.Arbitrum.Utils.Helper, as: ArbitrumHelper
   alias Indexer.Fetcher.Arbitrum.Utils.Rpc
@@ -76,11 +77,14 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewL1Executions do
     L2-to-L1 messages to match them with any newly recorded executions and updates
     their status to `:relayed`.
 
+    Successful chunks, including empty ones, persist their next block in the
+    scoped execution checkpoint. Unsafe blocks are revisited at the chain head.
+
     ## Parameters
     - A map containing:
       - `config`: Configuration settings including the Arbitrum outbox contract
                   address, JSON RPC arguments, and the block range for fetching
-                  logs.
+                  logs, the execution range override and durable checkpoint key.
       - `data`: Contains the starting block number for new execution discovery.
 
     ## Returns
@@ -93,26 +97,41 @@ defmodule Indexer.Fetcher.Arbitrum.Workers.NewL1Executions do
         %{
           config: %{
             l1_rpc: l1_rpc_config,
-            l1_outbox_address: outbox_address
+            l1_outbox_address: outbox_address,
+            l1_executions_scan_cursor_key: scan_cursor_key
           },
-          task_data: %{new_executions: %{start_block: start_block}}
+          task_data: %{
+            new_executions: %{start_block: start_block},
+            historical_executions: %{end_block: historical_end_block}
+          }
         } = state
       ) do
-    # Requesting the "latest" block instead of "safe" allows to catch executions
-    # without latency.
-    {:ok, latest_block} =
-      IndexerHelper.get_block_number_by_tag(
-        "latest",
+    block_range = Map.get(state.config, :l1_executions_block_range, l1_rpc_config.logs_block_range)
+
+    # Follow latest without waiting for finality, but replay the unsafe window
+    # when near the head, including after resuming a durable checkpoint.
+    {safe_start_block, end_block} =
+      Rpc.safe_start_and_end_blocks(
+        start_block,
+        historical_end_block,
         l1_rpc_config.json_rpc_named_arguments,
-        Rpc.get_resend_attempts()
+        block_range
       )
 
-    end_block = min(start_block + l1_rpc_config.logs_block_range - 1, latest_block)
+    if safe_start_block <= end_block do
+      log_info("Block range for new l2-to-l1 messages executions discovery: #{safe_start_block}..#{end_block}")
 
-    if start_block <= end_block do
-      log_info("Block range for new l2-to-l1 messages executions discovery: #{start_block}..#{end_block}")
-
-      discover(outbox_address, start_block, end_block, l1_rpc_config)
+      ArbitrumHelper.execute_for_block_range_in_chunks(
+        safe_start_block,
+        end_block,
+        block_range,
+        fn chunk_start, chunk_end ->
+          discover(outbox_address, chunk_start, chunk_end, l1_rpc_config)
+          # Persist empty chunks too, only after RPC, execution import and
+          # message matching all succeed. Partial failures replay safely.
+          MessageScanCursor.advance(scan_cursor_key, chunk_end + 1)
+        end
+      )
 
       # The next iteration will start from the next block after the last processed block
       {:ok, ArbitrumHelper.update_fetcher_task_data(state, :new_executions, %{start_block: end_block + 1})}

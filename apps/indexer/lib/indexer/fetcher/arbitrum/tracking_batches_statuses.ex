@@ -93,6 +93,7 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses do
   alias EthereumJSONRPC.Arbitrum, as: ArbitrumRpc
   alias EthereumJSONRPC.Utility.RangesHelper
   alias Indexer.Fetcher.Arbitrum.Utils.Db.Messages, as: DbMessages
+  alias Indexer.Fetcher.Arbitrum.Utils.Db.MessageScanCursor
   alias Indexer.Fetcher.Arbitrum.Utils.Db.Settlement, as: DbSettlement
   alias Indexer.Fetcher.Arbitrum.Utils.Rpc
   alias Indexer.Helper, as: IndexerHelper
@@ -203,6 +204,7 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses do
       l1_start_block: l1_start_block,
       l1_rollup_init_block: l1_rollup_init_block,
       new_batches_limit: new_batches_limit,
+      l1_executions_block_range: config_tracker[:l1_executions_block_range] || l1_rpc_block_range,
       missing_batches_range: missing_batches_range,
       messages_to_blocks_shift: messages_to_blocks_shift,
       confirmation_batches_depth: confirmation_batches_depth,
@@ -378,7 +380,12 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses do
 
     new_confirmations_start_block = DbSettlement.l1_block_of_latest_confirmed_block(l1_start_block)
 
-    new_executions_start_block = DbMessages.l1_block_to_discover_latest_execution(l1_start_block)
+    {:ok, parent_chain_id} = EthereumJSONRPC.fetch_chain_id(json_l1_rpc_named_arguments)
+    executions_cursor_key = MessageScanCursor.execution_key(parent_chain_id, l1_rollup_address, outbox_address)
+
+    new_executions_start_block =
+      MessageScanCursor.resume(executions_cursor_key, DbMessages.l1_block_to_discover_latest_execution(l1_start_block))
+
     historical_executions_end_block = DbMessages.l1_block_to_discover_earliest_execution(l1_start_block - 1)
 
     {lowest_batch, missing_batches_end_batch} = DbSettlement.get_min_max_batch_numbers()
@@ -387,6 +394,7 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses do
       Map.merge(state.config, %{
         l1_start_block: l1_start_block,
         l1_outbox_address: outbox_address,
+        l1_executions_scan_cursor_key: executions_cursor_key,
         l1_sequencer_inbox_address: sequencer_inbox_address,
         lowest_batch: lowest_batch
       })

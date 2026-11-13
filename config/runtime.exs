@@ -1468,6 +1468,11 @@ config :indexer, Indexer.Fetcher.Arbitrum,
   rollup_chunk_size: ConfigHelper.parse_integer_env_var("INDEXER_ARBITRUM_ROLLUP_CHUNK_SIZE", 20)
 
 config :indexer, Indexer.Fetcher.Arbitrum.TrackingMessagesOnL1,
+  l1_rpc_block_range:
+    ConfigHelper.parse_integer_env_var(
+      "INDEXER_ARBITRUM_DEPOSITS_L1_BLOCKS_RANGE",
+      ConfigHelper.parse_integer_env_var("INDEXER_ARBITRUM_L1_RPC_HISTORICAL_BLOCKS_RANGE", 1_000)
+    ),
   recheck_interval: ConfigHelper.parse_time_env_var("INDEXER_ARBITRUM_TRACKING_MESSAGES_ON_L1_RECHECK_INTERVAL", "20s"),
   failure_interval_threshold:
     ConfigHelper.parse_time_env_var("INDEXER_ARBITRUM_MESSAGES_TRACKING_FAILURE_THRESHOLD", "10m"),
@@ -1477,6 +1482,11 @@ config :indexer, Indexer.Fetcher.Arbitrum.TrackingMessagesOnL1.Supervisor,
   enabled: ConfigHelper.parse_bool_env_var("INDEXER_ARBITRUM_BRIDGE_MESSAGES_TRACKING_ENABLED")
 
 config :indexer, Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses,
+  l1_executions_block_range:
+    ConfigHelper.parse_integer_env_var(
+      "INDEXER_ARBITRUM_WITHDRAWALS_L1_BLOCKS_RANGE",
+      ConfigHelper.parse_integer_env_var("INDEXER_ARBITRUM_L1_RPC_HISTORICAL_BLOCKS_RANGE", 1_000)
+    ),
   recheck_interval: ConfigHelper.parse_time_env_var("INDEXER_ARBITRUM_BATCHES_TRACKING_RECHECK_INTERVAL", "20s"),
   track_l1_transaction_finalization:
     ConfigHelper.parse_bool_env_var("INDEXER_ARBITRUM_BATCHES_TRACKING_L1_FINALIZATION_CHECK_ENABLED", "false"),

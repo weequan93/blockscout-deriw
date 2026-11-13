@@ -128,7 +128,8 @@ def metrics_ready(text):
         'deriw_bridge_verification_success{section="' + section + '"} 1' in lines for section in VERIFICATION)
 
 
-def main():
+def main(*, prepare=prepare_model, before_replace=None, after_ready=None, image_check='',
+         success_phase='bridge_verification_metrics_deployed'):
     require(os.geteuid() == 0 and ROOT.is_dir() and COMPOSE.is_dir(),
             'Run on the existing dev Linux server as root.')
     revision = run(['git', '-C', str(ROOT), 'rev-parse', 'HEAD']).strip()
@@ -158,7 +159,9 @@ def main():
         import release as R
         contract = {'compose_project': PROJECT}
         before = D.compose_model(COMPOSE, contract, {}, [COMPOSE / 'docker-compose.yml'], True)
-        candidate = prepare_model(before, revision, initial['nft_media_handler']['Image'])
+        require(not D.live_environment_differences(before, initial),
+                'Compose service environments differ from the running containers.')
+        candidate = prepare(before, revision, initial['nft_media_handler']['Image'])
         selected = saved / 'candidate.compose.json'
         private_write(selected, R.snapshot_bytes(candidate))
         resolved = D.compose_model(COMPOSE, contract, {}, [selected], True)
@@ -196,6 +199,7 @@ true = Explorer.Migrator.StartupControl.disabled?()
 nil = Process.whereis(Explorer.Repo)
 IO.puts("NATIVE_METRICS_IMAGE_OK")
 '''
+        smoke += image_check
         checked = run(['docker', 'run', '--rm', '--pull', 'never', '--network', 'none',
                        '--read-only', '--cap-drop', 'ALL', '--tmpfs', '/tmp:rw,mode=1777',
                        '-e', 'RELEASE_DISTRIBUTION=none', '-e', 'RELEASE_TMP=/tmp',
@@ -212,6 +216,8 @@ IO.puts("NATIVE_METRICS_IMAGE_OK")
                 'Compose changed while building; the running backend was left unchanged.')
         require({name: row['Id'] for name, row in project_rows().items() if name != 'backend'} == other_ids,
                 'Another service changed while building.')
+        require(project_rows()['backend']['Id'] == initial['backend']['Id'],
+                'The backend changed while building; rerun against its current progress.')
         rendered = D.run(['docker', 'compose', '-p', PROJECT, '--project-directory', str(COMPOSE),
                           '--env-file', os.devnull, '-f', str(selected), 'config'],
                          environment=D.compose_environment({}))
@@ -220,7 +226,13 @@ IO.puts("NATIVE_METRICS_IMAGE_OK")
         private_write(staged, ('# Private DeriW dev configuration; active environment values are here.\n' + rendered).encode())
         actual = D.compose_model(COMPOSE, contract, {}, [staged], True)
         require(not D.model_differences(resolved, actual), 'Rendered configuration differs from the candidate.')
-        os.replace(staged, COMPOSE / 'docker-compose.yml')
+        try:
+            if before_replace:
+                before_replace(saved, initial)
+            os.replace(staged, COMPOSE / 'docker-compose.yml')
+        except Exception:
+            staged.unlink(missing_ok=True)
+            raise
 
         emit('recreating_backend')
         run(['docker', 'compose', '-p', PROJECT, '--project-directory', str(COMPOSE),
@@ -254,6 +266,8 @@ IO.puts("NATIVE_METRICS_IMAGE_OK")
         env = D.env_map(after['backend'])
         require(env.get('BLOCKSCOUT_VERSION') == revision and env.get('ARBITRUM_BRIDGE_METRICS_ENABLED') == 'true',
                 'Running backend source or native flag differs from the candidate.')
+        if after_ready:
+            after_ready(saved, initial, after)
         paused()
         for line in text.splitlines():
             if line.startswith(('deriw_bridge_exporter_up ', 'deriw_bridge_query_success{',
@@ -263,7 +277,7 @@ IO.puts("NATIVE_METRICS_IMAGE_OK")
                                 'deriw_rollup_latest_batch_', 'deriw_rollup_batch_sample_finality_mismatch ',
                                 'deriw_rollup_batch_sample_publication_mismatch ', 'deriw_rollup_batch_indexing_lag ')):
                 print(line)
-        emit('bridge_verification_metrics_deployed', source_revision=revision, image=backend['image'],
+        emit(success_phase, source_revision=revision, image=backend['image'],
              configuration_backup=str(saved), only_recreated_service='backend',
              native_normalization_resumed=False, old_exporter_stopped=False)
         return 0

@@ -111,6 +111,7 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingMessagesOnL1 do
     l1_rpc_chunk_size = config_common[:l1_rpc_chunk_size]
 
     config_tracker = Application.get_all_env(:indexer)[__MODULE__]
+    l1_rpc_block_range = config_tracker[:l1_rpc_block_range] || l1_rpc_block_range
     recheck_interval = config_tracker[:recheck_interval]
     missed_message_ids_range = config_tracker[:missed_message_ids_range]
 

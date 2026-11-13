@@ -55,6 +55,10 @@ of withdrawals and batches with the configured `INDEXER_ARBITRUM_L1_RPC` and
 repair records, advance any scanner cursor or execute bridge transactions.
 All RPC work happens during polling; scrapes continue to read the cached snapshot.
 
+For scanners that are running but far behind, see the
+[dev bridge catchup procedure](bridge-catchup.md). The metrics identify gaps;
+changing collection settings does not accelerate indexing.
+
 Check `deriw_bridge_verification_success{section="..."}=1` before interpreting
 the corresponding values. Sections are `deposits`, `withdrawals`, `batches`,
 `batch_head`, `parent_latest`, `parent_safe` and `parent_finalized`. RPC failure,

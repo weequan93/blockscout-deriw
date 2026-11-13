@@ -1,5 +1,13 @@
 # Changelog
 
+## DeriW — 2026-11-13 (based on 10.2.6)
+
+- Add independent deposit and withdrawal parent log ranges for faster catchup.
+- Persist withdrawal progress through empty ranges and restarts, with unsafe
+  block overlap and a dev deployment that hands off both live scanner cursors.
+- Add a bounded read-only dev RPC probe; see the
+  [deployment and verification guide](docs/deployment/bridge-catchup.md).
+
 ## 10.2.6
 
 ### 🐛 Bug Fixes

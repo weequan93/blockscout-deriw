@@ -344,7 +344,7 @@ defmodule Indexer.Fetcher.Arbitrum.Utils.Rpc do
   """
   @spec safe_start_and_end_blocks(
           non_neg_integer(),
-          non_neg_integer(),
+          integer(),
           EthereumJSONRPC.json_rpc_named_arguments(),
           non_neg_integer()
         ) :: {non_neg_integer(), non_neg_integer()}
@@ -356,7 +356,7 @@ defmodule Indexer.Fetcher.Arbitrum.Utils.Rpc do
       )
       when is_integer(new_entities_start_block) and new_entities_start_block >= 0 and
              is_integer(historical_entities_end_block) and
-             historical_entities_end_block >= 0 and is_integer(rpc_logs_block_range) and rpc_logs_block_range > 0 do
+             historical_entities_end_block >= -1 and is_integer(rpc_logs_block_range) and rpc_logs_block_range > 0 do
     # It is necessary to revisit some of the previous blocks to ensure that
     # no information is missed due to reorgs or RPC node inconsistency behind
     # a load balancer. The number of blocks to revisit depends on the current safe
