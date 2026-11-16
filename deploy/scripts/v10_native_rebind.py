@@ -20,6 +20,10 @@ def require(condition, message):
 
 
 def stable_runtime(rows):
+    def mounts(row):
+        return sorted((item.get('Type'), item.get('Source'), item.get('Destination'), item.get('RW'))
+                      for item in row.get('Mounts') or [])
+
     return {
         name: {
             'Id': row.get('Id'),
@@ -32,7 +36,7 @@ def stable_runtime(rows):
                 'PortBindings': (row.get('HostConfig') or {}).get('PortBindings'),
                 'NetworkMode': (row.get('HostConfig') or {}).get('NetworkMode'),
             },
-            'Mounts': row.get('Mounts'),
+            'Mounts': mounts(row),
             'Networks': {
                 network: {
                     key: values.get(key)
