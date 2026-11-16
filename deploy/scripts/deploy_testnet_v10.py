@@ -565,8 +565,7 @@ rows = for row <- handoff["cursors"] do
   actual_key = if is_map(config), do: Map.get(config, field), else: nil
   intervals = if is_map(data), do: Map.get(data, :intervals, %{}), else: %{}
   interval = if is_map(intervals), do: Map.get(intervals, task), else: nil
-  rpc_config = if is_map(config), do: Map.get(config, :l1_rpc, %{}), else: %{}
-  range = if row["tracker"] == "deposits", do: Map.get(rpc_config, :block_range),
+  range = if row["tracker"] == "deposits", do: Map.get(config, :l1_rpc_block_range),
     else: Map.get(config, :l1_executions_block_range)
   saved = Explorer.Chain.Cache.Counters.LastFetchedCounter.get(row["counter_key"], nullable: true)
   durable = if is_nil(saved), do: nil, else: Decimal.to_integer(saved)
