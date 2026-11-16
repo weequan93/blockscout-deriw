@@ -90,8 +90,9 @@ def main(argv=None):
         previous = json.loads(target.read_text())
         require(previous.get('format') == N.CURRENT_RUNTIME_FORMAT
                 and stable_runtime(previous.get('runtime_before', {})) == stable_runtime(runtime)
-                and previous.get('database_anchor') == anchor,
+                and previous.get('database_anchor') is not None,
                 'Existing current runtime binding differs from the live runtime')
+        K.check_anchor(previous['database_anchor'], anchor, progress=True)
         binding['previous_source_root'] = previous.get('source_root')
         temporary = target.with_name('.current-runtime-binding-' + commit[:12] + '.tmp')
         R.write_new(temporary, data)
