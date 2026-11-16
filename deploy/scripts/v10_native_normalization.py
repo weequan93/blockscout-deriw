@@ -552,6 +552,9 @@ def install_service(api, path, start=True):
             expected = [render_service(path, Path(inputs['source_root']), inputs['python_executable']).encode()]
             if binding and 'previous_source_root' in binding:
                 expected.append(render_service(path, Path(binding['previous_source_root']), inputs['python_executable']).encode())
+            if binding and binding.get('format') == CURRENT_RUNTIME_FORMAT:
+                expected.append(render_service(path, Path('/data/blockscout-v10-bridge-checkpoint'),
+                                                inputs['python_executable']).encode())
             J.P.require(binding is not None and previous in expected,
                         'Another native service definition exists')
             backup_name = ('service-before-checkpoint-' + state['runtime_binding_sha256'][:12] + '.private'
