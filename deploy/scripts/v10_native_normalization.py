@@ -122,8 +122,7 @@ def runtime_binding(path, state):
         J.P.require(R.digest(raw) == state.get('runtime_binding_sha256')
                     and binding.get('format') == CURRENT_RUNTIME_FORMAT
                     and binding.get('native_inputs_sha256') == state['inputs_sha256']
-                    and binding.get('native_worker_script_sha256') == state['inputs']['script_sha256']
-                    and binding.get('source_root') == str(ROOT),
+                    and binding.get('native_worker_script_sha256') == state['inputs']['script_sha256'],
                     'Current runtime binding changed')
         return binding
     J.P.require(filename == 'bridge-runtime-binding.json', 'Unexpected runtime binding file')
@@ -375,7 +374,9 @@ def run(api, root, path):
     inputs = state['inputs']
     binding = runtime_binding(path, state)
     context = binding or inputs
-    J.P.require(B.clean_source(api, root) == (context['tool_source_commit'], '10.2.6'), 'Use native job creation/deployment commit')
+    J.P.require(context.get('source_root') == str(root)
+                and B.clean_source(api, root) == (context['tool_source_commit'], '10.2.6'),
+                'Use native job creation/deployment commit and source root')
     reserve_sources(path, state)
     manifest, _, _ = api.configuration(root, 'dev')
     upgrade_path = Path(inputs['upgrade_state'])
