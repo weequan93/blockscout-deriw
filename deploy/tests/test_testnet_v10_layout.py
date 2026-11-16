@@ -80,6 +80,89 @@ def state_fixture(root):
 
 
 class RuntimeLayoutTests(unittest.TestCase):
+    def repair_fixture(self, state, rows, base):
+        model = {'services': {}, 'networks': base['networks']}
+        for name, row in rows.items():
+            service = deepcopy(base['services']['backend'])
+            service['image'] = row['Image']
+            service['volumes'][0]['source'] = row['Mounts'][0]['Source']
+            model['services'][name] = service
+        verifier = deepcopy(model['services']['db'])
+        verifier['environment'][L.VYPER_LIST_KEY] = 'https://raw.githubusercontent.com/blockscout/solc-bin/main/vyper.list.json'
+        verifier['entrypoint'] = []
+        model['services']['sc-verifier'] = verifier
+        state['before']['sc-verifier'] = deepcopy(rows['db'])
+        state['before']['sc-verifier']['Config']['Entrypoint'] = None
+        return model
+
+    def test_startup_repair_is_limited_to_vyper_list_and_entrypoint_representation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            _, state, rows, base = state_fixture(Path(temporary))
+            model = self.repair_fixture(state, rows, base)
+            before = deepcopy(model)
+            repaired = L.startup_repair_model(model, state['before'])
+            self.assertEqual(model, before)
+            expected = deepcopy(model)
+            expected['services']['sc-verifier']['environment'][L.VYPER_LIST_KEY] = L.VYPER_LIST
+            expected['services']['sc-verifier']['entrypoint'] = None
+            self.assertEqual(repaired, expected)
+            model['services']['sc-verifier']['environment'][L.VYPER_LIST_KEY] = 'https://custom.invalid/list.json'
+            with self.assertRaises(T.P.PreflightError): L.startup_repair_model(model, state['before'])
+
+    def test_startup_repair_preserves_original_snapshot_and_resumes_atomic_selection(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path, state, rows, base = state_fixture(Path(temporary))
+            model = self.repair_fixture(state, rows, base)
+            original = path.parent / 'relocated.compose.json'
+            original.write_bytes(T.R.snapshot_bytes(model))
+            digest = T.R.digest(original.read_bytes())
+            state.update(format=L.FORMAT, relocated_sha256=digest)
+            state['layout']['directory_moved'] = True
+            os.rename(state['layout']['old'], state['layout']['new'])
+            target = Path(state['layout']['new']) / 'docker-compose.yml'
+            target.write_bytes(original.read_bytes())
+            resolved = L.startup_repair_model(model, state['before'])
+            with patch.object(T.D, 'compose_model', return_value=resolved), contextlib.redirect_stdout(io.StringIO()):
+                L.prepare_startup_repair(path, state)
+                # Simulate interruption before replacing the active Compose.
+                L.prepare_startup_repair(path, state)
+                L.write_config(path, state)
+                L.prepare_startup_repair(path, state)
+                L.write_config(path, state)
+            self.assertEqual(T.R.digest(original.read_bytes()), digest)
+            self.assertEqual(state['relocated_sha256'], digest)
+            self.assertEqual(target.read_bytes(), T.R.snapshot_bytes(resolved))
+            self.assertEqual(state['startup_repair']['sha256'], T.R.digest(target.read_bytes()))
+            target.write_text('operator edit')
+            with self.assertRaises(T.P.PreflightError): L.prepare_startup_repair(path, state)
+            self.assertEqual(target.read_text(), 'operator edit')
+
+    def test_unassigned_restarting_service_is_held_until_static_addresses_are_occupied(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path, state, rows, base = state_fixture(Path(temporary))
+            model = {'services': {}, 'networks': base['networks']}
+            for name, row in rows.items():
+                model['services'][name] = {'restart': 'always', 'networks': {'default': {
+                    'ipv4_address': row['NetworkSettings']['Networks']['fixture_default']['IPAddress']}}}
+                row['State']['Running'] = True
+            rows['user-ops-indexer'] = deepcopy(rows['db'])
+            rows['user-ops-indexer']['Id'] = '9' * 64
+            rows['user-ops-indexer']['Config']['Labels'][L.LABEL] = str(path)
+            rows['user-ops-indexer']['HostConfig']['RestartPolicy']['Name'] = 'no'
+            state['before']['user-ops-indexer'] = deepcopy(rows['user-ops-indexer'])
+            state['layout']['running_services'].append('user-ops-indexer')
+            model['services']['user-ops-indexer'] = {'restart': 'always', 'networks': {'default': {}}}
+            with patch.object(T, 'current', return_value=rows), patch.object(T, 'change') as change, \
+                 patch.object(L, 'up') as up, contextlib.redirect_stdout(io.StringIO()):
+                dynamic = L.hold_dynamic_services(path, state, model)
+                self.assertEqual(dynamic, {'user-ops-indexer'})
+                held = [c.args[0] for c in change.call_args_list]
+                self.assertEqual(held[0], ['docker', 'update', '--restart=no', '9' * 64])
+                self.assertEqual(held[1], ['docker', 'stop', '-t', '30', '9' * 64])
+                L.restore_dynamic_services(path, state, Path('compose'), dynamic, model)
+                up.assert_called_once_with(path, state, Path('compose'), dynamic)
+                self.assertEqual(change.call_args.args[0], ['docker', 'update', '--restart=always', '9' * 64])
+
     def test_all_bind_sources_move_but_credentials_commands_and_images_survive(self):
         with tempfile.TemporaryDirectory() as temporary:
             path, state, rows, base = state_fixture(Path(temporary))

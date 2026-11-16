@@ -180,7 +180,10 @@ The release performs these stages:
 9. Remove only the captured, already stopped DB initializer containers, retaining
    their updated declarations. Recreate the databases/Redis first; check health
    and the original database identity, heap and migration state; then recreate
-   remaining services and the new backend. Start the proxy after API readiness.
+   remaining fixed-address services and the new backend. Start the proxy after
+   API readiness. A service captured without an IP while restarting is held
+   with automatic restarts disabled until every saved fixed address is occupied;
+   start it last and explicitly restore its selected restart policy.
 10. Verify the new mount paths, image selections, environments, runtime version,
     held migrators, resumed cursors/ranges/intervals, five native DB metric
     sections and seven on-chain verification sections.
@@ -216,6 +219,35 @@ Final success is `phase="test_v10_deployed"`, including `source_branch`,
 Use `docker-compose.test/docker-compose.yml` for subsequent test operations.
 
 ## Resume and recovery
+
+If the moved runtime stops at `recreate-services` because a restarting dynamic
+service claimed a saved IP, use the updated tool with the **same journal**.
+The startup recovery also supports the observed verifier failure parsing the
+upstream Vyper version `0.5.0b1+commit.577d2534`:
+
+```bash
+python3 -I /PATH/TO/UPDATED/deploy/scripts/deploy_testnet_v10.py \
+  --resume /data/blockscout-test-private/upgrade-REPLACE/state.json \
+  --repair-startup
+```
+
+This requires completed schema migration and runtime relocation. It preserves
+the original `relocated.compose.json` and its hash, creates a separate private
+`startup-repair.compose.json`, and atomically selects it in `.test`. The only
+configuration amendments are the existing verifier's Vyper list URL, pinned to
+dev's reviewed `5de16fa32acc6b55707188922d5366915aec21af` list, and exact preservation
+of its captured null/list entrypoint representation. A custom Vyper URL or a
+later runtime Compose edit stops recovery for review. Verifier images, Vyper
+enablement, Solidity settings and all other environments remain preserved.
+The original database/schema inspection and final service/API/metric checks
+still run. The original checkout target is retained; fetch the updated tools
+without pulling the checked-out branch forward during recovery.
+
+The address fix pauses only journal-owned dynamic services. It preserves all
+saved static IPs and does not disconnect foreign containers or rebuild the
+Docker network. A retry skips schema writes and the completed directory rename;
+it can reuse the saved backend image without another build. The pre-existing
+user-ops restart loop may continue after its restart policy is restored.
 
 The private journal records stages atomically. On failure, share only the
 sanitized `STOP:`/phase report; command, schema and metrics details stay private.

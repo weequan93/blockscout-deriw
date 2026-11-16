@@ -19,6 +19,9 @@ import deploy_testnet_v10 as T
 FORMAT = 'deriw-test-v10-relocated-v2'
 LABEL = 'org.deriw.test-runtime-layout'
 INIT = {'db-init', 'stats-db-init'}
+VYPER_LIST_KEY = 'SMART_CONTRACT_VERIFIER__VYPER__FETCHER__LIST__LIST_URL'
+VYPER_LIST = ('https://raw.githubusercontent.com/blockscout/solc-bin/'
+              '5de16fa32acc6b55707188922d5366915aec21af/vyper.list.json')
 
 
 def git(repo, *args):
@@ -299,12 +302,67 @@ def switch_branch(path, state):
     T.emit('test_source_selected', branch='deriw-dev', checkout_revision=target, application_revision=T.SOURCE)
 
 
-def write_config(path, state):
+def selected_configuration(path, state):
     selected = path.parent / 'relocated.compose.json'
     T.require(T.R.digest(selected.read_bytes()) == state['relocated_sha256'], 'The prepared relocated configuration changed.')
+    repair = state.get('startup_repair')
+    if repair:
+        selected = path.parent / 'startup-repair.compose.json'
+        T.require(T.R.digest(selected.read_bytes()) == repair['sha256'], 'The startup repair configuration changed.')
+    return selected
+
+
+def startup_repair_model(original, before):
+    model = deepcopy(original)
+    service = model['services']['sc-verifier']
+    T.require(service['image'] == before['sc-verifier']['Image'], 'The verifier image differs from the captured test image.')
+    env = service['environment']
+    previous = env.get(VYPER_LIST_KEY)
+    T.require(previous in (None, VYPER_LIST,
+              'https://raw.githubusercontent.com/blockscout/solc-bin/main/vyper.list.json'),
+              'The verifier uses a custom Vyper list; preserve that selection for review.')
+    T.require(env.get('SMART_CONTRACT_VERIFIER__VYPER__ENABLED', 'true').lower() == 'true',
+              'The captured verifier does not have Vyper enabled.')
+    env[VYPER_LIST_KEY] = VYPER_LIST
+    # Preserve null versus [] as well as the effective process command.
+    service['entrypoint'] = deepcopy(before['sc-verifier']['Config'].get('Entrypoint'))
+    return model
+
+
+def prepare_startup_repair(path, state):
+    T.require(state.get('format') == FORMAT and state.get('schema_complete')
+              and state['layout'].get('directory_moved'), 'Startup repair requires this completed schema/directory relocation.')
+    new = Path(state['layout']['new'])
+    T.require(identity(new) == state['layout']['root_identity'], 'The moved runtime directory identity changed.')
+    original = path.parent / 'relocated.compose.json'
+    T.require(T.R.digest(original.read_bytes()) == state['relocated_sha256'], 'The original selected configuration changed.')
+    model = startup_repair_model(json.loads(original.read_text().replace('$$', '$')), state['before'])
+    data = T.R.snapshot_bytes(model)
+    target = new / 'docker-compose.yml'
+    T.require(target.read_bytes() in (original.read_bytes(), data), 'Preserve later runtime Compose edits before startup repair.')
+    selected = path.parent / 'startup-repair.compose.json'
+    if selected.exists():
+        T.require(selected.read_bytes() == data, 'An existing startup repair differs from this bounded selection.')
+    else:
+        T.R.write_new(selected, data)
+    resolved = T.D.compose_model(new, {'compose_project': state['project']}, {}, [selected], True)
+    T.require(not T.D.model_differences(model, resolved), 'Compose changed the startup repair selection.')
+    state['startup_repair'] = {'sha256': T.R.digest(data), 'original_sha256': state['relocated_sha256'],
+                               'vyper_list_revision': '5de16fa32acc6b55707188922d5366915aec21af'}
+    state['tool_script'] = str(Path(__file__).resolve())
+    T.save(path, state, 'startup_repair_prepared')
+    T.emit('test_startup_repair_prepared', original_snapshot_preserved=True, verifier_image_changed=False,
+           schema_writes=False, directory_move_required=False)
+
+
+def write_config(path, state):
+    selected = selected_configuration(path, state)
     target = Path(state['layout']['new']) / 'docker-compose.yml'
     if target.read_bytes() != selected.read_bytes():
-        T.require(T.R.digest(target.read_bytes()) == state['layout']['original_main_sha256'],
+        allowed = {state['layout']['original_main_sha256']}
+        if state.get('startup_repair'):
+            allowed.add(state['relocated_sha256'])
+        T.require(T.R.digest(target.read_bytes()) in allowed,
                   'The runtime Compose file was edited after preparation; preserve that edit before resuming.')
         backup = path.parent / 'moved-original-compose.private.yml'
         if not backup.exists():
@@ -327,6 +385,57 @@ def up(path, state, target, names):
         T.change(['docker', 'compose', '-p', state['project'], '--project-directory', str(target.parent),
                   '--env-file', os.devnull, '-f', str(target), 'up', '-d', '--no-deps', '--no-build', '--pull', 'never',
                   *sorted(names)], path, 'recreate-services', timeout=360)
+
+
+def hold_dynamic_services(path, state, model):
+    # A service captured while restarting may have no address to preserve.
+    # Keep its allocator idle until every saved static address is occupied.
+    dynamic = {name for name in state['layout']['running_services']
+               if any(not (options or {}).get('ipv4_address')
+                      for options in model['services'][name].get('networks', {}).values())}
+    T.require(not dynamic & {'backend', 'proxy', 'db', 'stats-db', 'redis-db'},
+              'A core service lacks a saved IPv4 address; review its startup order.')
+    rows = T.current(state['project'])
+    for name in sorted(dynamic):
+        row = rows[name]
+        T.require(row['Image'] == state['before'][name]['Image'] and (
+            row['Id'] == state['before'][name]['Id'] or row['Config']['Labels'].get(LABEL) == str(path)),
+            'A dynamic service changed outside this deployment.')
+        T.save(path, state, 'holding_dynamic_addresses')
+        T.change(['docker', 'update', '--restart=no', row['Id']], path, 'hold-dynamic-restart')
+        T.change(['docker', 'stop', '-t', '30', row['Id']], path, 'stop-dynamic-service', timeout=45)
+    if dynamic:
+        T.emit('test_dynamic_services_held', services=sorted(dynamic))
+    return dynamic
+
+
+def restore_dynamic_services(path, state, target, names, model):
+    if not names:
+        return
+    deadline = time.monotonic() + 120
+    fixed = set(state['layout']['running_services']) - names
+    while True:
+        rows = T.current(state['project'])
+        occupied = all(rows[name]['State']['Running'] and not rows[name]['State'].get('Restarting')
+                       and all(rows[name]['NetworkSettings']['Networks'][model['networks'][key]['name']].get('IPAddress')
+                               == options['ipv4_address']
+                               for key, options in model['services'][name].get('networks', {}).items())
+                       for name in fixed)
+        if occupied:
+            break
+        T.require(time.monotonic() < deadline, 'Keep dynamic services held until every fixed-address service is running.')
+        T.emit('waiting_for_fixed_addresses')
+        time.sleep(5)
+    up(path, state, target, names)
+    rows = T.current(state['project'])
+    for name in sorted(names):
+        row = rows[name]
+        T.require(row['Config']['Labels'].get(LABEL) == str(path), 'The selected dynamic service was not recreated.')
+        # Compose's config hash does not detect docker update --restart=no.
+        policy = model['services'][name].get('restart') or 'no'
+        T.change(['docker', 'update', '--restart=' + policy, row['Id']], path, 'restore-dynamic-restart')
+    if names:
+        T.emit('test_dynamic_services_resumed', services=sorted(names))
 
 
 def wait_databases(state):
@@ -390,6 +499,8 @@ def apply(path, state):
     move_directory(path, state)
     switch_branch(path, state)
     target = write_config(path, state)
+    model = json.loads(selected_configuration(path, state).read_text().replace('$$', '$'))
+    dynamic = hold_dynamic_services(path, state, model)
     rows = T.current(state['project'])
     for name in layout['stopped_init_services']:
         if name in rows:
@@ -399,7 +510,7 @@ def apply(path, state):
     up(path, state, target, ['db', 'stats-db', 'redis-db'])
     wait_databases(state)
     T.client(state, path, 'inspect', state['schema_before'])
-    remaining = set(layout['running_services']) - {'db', 'stats-db', 'redis-db', 'backend', 'proxy'}
+    remaining = set(layout['running_services']) - {'db', 'stats-db', 'redis-db', 'backend', 'proxy'} - dynamic
     up(path, state, target, remaining)
     up(path, state, target, ['backend'])
     deadline = time.monotonic() + 180
@@ -414,6 +525,7 @@ def apply(path, state):
             T.emit('waiting_for_test_backend')
             time.sleep(5)
     up(path, state, target, ['proxy'] if 'proxy' in layout['running_services'] else [])
+    restore_dynamic_services(path, state, target, dynamic, model)
     runtime = T.verify_backend(path, state, verify_layout)
     T.save(path, state, 'active')
     T.emit('test_v10_deployed', source_revision=T.SOURCE, image=state['image_tag'], state=str(path),
@@ -428,6 +540,7 @@ def main(argv=None):
     parser.add_argument('--existing-backup', action='store_true')
     parser.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--resume', type=Path)
+    parser.add_argument('--repair-startup', action='store_true', help='Resume a moved runtime using the compatible Vyper list.')
     args = parser.parse_args(argv)
     os.umask(0o077)
     path, state, journal = None, None, {}
@@ -446,7 +559,10 @@ def main(argv=None):
                 T.require(state.get('format') == FORMAT and state.get('source') == T.SOURCE
                           and state.get('existing_backup_recorded') and state.get('layout', {}).get('preparation_complete'),
                           'Select a completed v2 relocation preparation; earlier backend-only journals cannot move data.')
+                if args.repair_startup:
+                    prepare_startup_repair(path, state)
             else:
+                T.require(not args.repair_startup, '--repair-startup requires --resume with the existing relocation journal.')
                 T.require(args.preflight is not None, 'Select the successful test preflight with --preflight.')
                 path, state = prepare(args.repo.resolve(), args.preflight.resolve(), args.existing_backup, journal)
             if not args.prepare_only:
