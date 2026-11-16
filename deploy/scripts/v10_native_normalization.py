@@ -176,15 +176,21 @@ def current_runtime_health(api, binding):
     rows = api.inspect_project(manifest)
     api.ensure_stable(binding['runtime_before'], rows, 'Runtime changed; native cursor retained')
     backend = rows['backend']
-    ready = api.run(['docker', 'exec', backend['Id'], 'curl', '-fsS', '--max-time', '5',
-                     'http://127.0.0.1:4000/api/health/readiness'], timeout=10).strip() == 'OK'
+    def direct(command, stage):
+        result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            raise D.ConfigError('Native health probe failed at ' + stage)
+        return result.stdout
+
+    ready = direct(['docker', 'exec', backend['Id'], 'curl', '-fsS', '--max-time', '5',
+                    'http://127.0.0.1:4000/api/health/readiness'], 'readiness').strip() == 'OK'
     expression = '''
 "10.2.6" = to_string(Application.spec(:explorer, :vsn))
 true = Explorer.Migrator.StartupControl.disabled?()
 false = Application.get_env(:indexer, Indexer.Prometheus.Metrics)[:enabled]
 IO.puts("BLOCKSCOUT_DEPLOY_CHECK=" <> Jason.encode!(%{runtime_ok: true}))
 '''
-    raw = api.run(['docker', 'exec', backend['Id'], 'bin/blockscout', 'rpc', expression], timeout=20)
+    raw = direct(['docker', 'exec', backend['Id'], 'bin/blockscout', 'rpc', expression], 'runtime_rpc')
     probe = V.C.marked_json(api, raw)
     J.P.require(ready and probe.get('runtime_ok') is True, 'Current backend runtime is not qualified')
     return {'status': 'verified', 'backend_readiness_ok': ready, 'runtime_ok': True}
