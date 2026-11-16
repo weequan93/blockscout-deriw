@@ -309,6 +309,11 @@ def selected_configuration(path, state):
     if repair:
         selected = path.parent / 'startup-repair.compose.json'
         T.require(T.R.digest(selected.read_bytes()) == repair['sha256'], 'The startup repair configuration changed.')
+    user_ops_repair = state.get('user_ops_rpc_repair')
+    if user_ops_repair:
+        selected = path.parent / 'user-ops-rpc-repair.compose.json'
+        T.require(T.R.digest(selected.read_bytes()) == user_ops_repair['sha256'],
+                  'The user-ops RPC repair configuration changed.')
     return selected
 
 
@@ -355,6 +360,46 @@ def prepare_startup_repair(path, state):
            schema_writes=False, directory_move_required=False)
 
 
+def prepare_user_ops_rpc_repair(path, state):
+    T.require(state.get('format') == FORMAT and state.get('schema_complete')
+              and state['layout'].get('directory_moved'),
+              'User-ops RPC repair requires this completed schema/directory relocation.')
+    new = Path(state['layout']['new'])
+    T.require(identity(new) == state['layout']['root_identity'], 'The moved runtime directory identity changed.')
+    original = selected_configuration(path, state)
+    model = json.loads(original.read_text().replace('$$', '$'))
+    service = model['services'].get('user-ops-indexer') or {}
+    environment = service.get('environment') or {}
+    key = 'USER_OPS_INDEXER__INDEXER__RPC_URL'
+    previous = environment.get(key)
+    T.require(isinstance(previous, str) and previous, 'The saved user-ops RPC setting is unavailable.')
+    rows = T.current(state['project'])
+    backend_env = T.D.env_map(rows['backend'])
+    rpc = backend_env.get('ETHEREUM_JSONRPC_WS_URL')
+    T.require(isinstance(rpc, str) and rpc.startswith(('ws://', 'wss://')) and ',' not in rpc
+              and rpc != previous, 'A distinct live backend WebSocket RPC is not available.')
+    environment[key] = rpc
+    service['environment'] = environment
+    model['services']['user-ops-indexer'] = service
+    data = T.R.snapshot_bytes(model)
+    target = new / 'docker-compose.yml'
+    T.require(target.read_bytes() == original.read_bytes(),
+              'Preserve the current selected Compose configuration before user-ops RPC repair.')
+    selected = path.parent / 'user-ops-rpc-repair.compose.json'
+    if selected.exists():
+        T.require(selected.read_bytes() == data, 'An existing user-ops RPC repair differs from this selection.')
+    else:
+        T.R.write_new(selected, data)
+    resolved = T.D.compose_model(new, {'compose_project': state['project']}, {}, [selected], True)
+    T.require(not T.D.model_differences(model, resolved), 'Compose changed the user-ops RPC repair selection.')
+    state['user_ops_rpc_repair'] = {'sha256': T.R.digest(data), 'previous_rpc': previous,
+                                    'live_backend_rpc': rpc}
+    state['tool_script'] = str(Path(__file__).resolve())
+    T.save(path, state, 'user_ops_rpc_repair_prepared')
+    T.emit('test_user_ops_rpc_repair_prepared', source_rpc='live_backend_websocket',
+           original_snapshot_preserved=True, schema_writes=False, directory_move_required=False)
+
+
 def write_config(path, state):
     selected = selected_configuration(path, state)
     target = Path(state['layout']['new']) / 'docker-compose.yml'
@@ -362,6 +407,9 @@ def write_config(path, state):
         allowed = {state['layout']['original_main_sha256']}
         if state.get('startup_repair'):
             allowed.add(state['relocated_sha256'])
+            allowed.add(state['startup_repair']['sha256'])
+        if state.get('user_ops_rpc_repair'):
+            allowed.add(state['user_ops_rpc_repair']['sha256'])
         T.require(T.R.digest(target.read_bytes()) in allowed,
                   'The runtime Compose file was edited after preparation; preserve that edit before resuming.')
         backup = path.parent / 'moved-original-compose.private.yml'
@@ -541,6 +589,8 @@ def main(argv=None):
     parser.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--resume', type=Path)
     parser.add_argument('--repair-startup', action='store_true', help='Resume a moved runtime using the compatible Vyper list.')
+    parser.add_argument('--repair-user-ops-rpc', action='store_true',
+                        help='Resume a moved runtime using the live backend WebSocket RPC for user-ops-indexer.')
     args = parser.parse_args(argv)
     os.umask(0o077)
     path, state, journal = None, None, {}
@@ -559,10 +609,16 @@ def main(argv=None):
                 T.require(state.get('format') == FORMAT and state.get('source') == T.SOURCE
                           and state.get('existing_backup_recorded') and state.get('layout', {}).get('preparation_complete'),
                           'Select a completed v2 relocation preparation; earlier backend-only journals cannot move data.')
-                if args.repair_startup:
+                if args.repair_startup and args.repair_user_ops_rpc:
                     prepare_startup_repair(path, state)
+                    prepare_user_ops_rpc_repair(path, state)
+                elif args.repair_startup:
+                    prepare_startup_repair(path, state)
+                elif args.repair_user_ops_rpc:
+                    prepare_user_ops_rpc_repair(path, state)
             else:
-                T.require(not args.repair_startup, '--repair-startup requires --resume with the existing relocation journal.')
+                T.require(not args.repair_startup and not args.repair_user_ops_rpc,
+                          'Repair options require --resume with the existing relocation journal.')
                 T.require(args.preflight is not None, 'Select the successful test preflight with --preflight.')
                 path, state = prepare(args.repo.resolve(), args.preflight.resolve(), args.existing_backup, journal)
             if not args.prepare_only:
