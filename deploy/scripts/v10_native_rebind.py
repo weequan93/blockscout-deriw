@@ -19,6 +19,16 @@ def require(condition, message):
         raise D.ConfigError(message)
 
 
+def stable_runtime(rows):
+    return {
+        name: {
+            key: row.get(key)
+            for key in ('Id', 'Image', 'Config', 'HostConfig', 'Mounts', 'NetworkSettings')
+        }
+        for name, row in rows.items()
+    }
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--state', type=Path, required=True)
@@ -59,7 +69,7 @@ def main(argv=None):
     if target.exists():
         previous = json.loads(target.read_text())
         require(previous.get('format') == N.CURRENT_RUNTIME_FORMAT
-                and previous.get('runtime_before') == runtime
+                and stable_runtime(previous.get('runtime_before', {})) == stable_runtime(runtime)
                 and previous.get('database_anchor') == anchor,
                 'Existing current runtime binding differs from the live runtime')
         binding['previous_source_root'] = previous.get('source_root')
