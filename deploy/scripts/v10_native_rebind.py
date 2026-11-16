@@ -22,8 +22,24 @@ def require(condition, message):
 def stable_runtime(rows):
     return {
         name: {
-            key: row.get(key)
-            for key in ('Id', 'Image', 'Config', 'HostConfig', 'Mounts', 'NetworkSettings')
+            'Id': row.get('Id'),
+            'Image': row.get('Image'),
+            'Config': {
+                key: (row.get('Config') or {}).get(key)
+                for key in ('Cmd', 'Entrypoint', 'WorkingDir', 'User', 'Env')
+            },
+            'HostConfig': {
+                'PortBindings': (row.get('HostConfig') or {}).get('PortBindings'),
+                'NetworkMode': (row.get('HostConfig') or {}).get('NetworkMode'),
+            },
+            'Mounts': row.get('Mounts'),
+            'Networks': {
+                network: {
+                    key: values.get(key)
+                    for key in ('IPAddress', 'GlobalIPv6Address', 'Aliases')
+                }
+                for network, values in (row.get('NetworkSettings', {}).get('Networks') or {}).items()
+            },
         }
         for name, row in rows.items()
     }
