@@ -77,7 +77,10 @@ def main(argv=None):
     require(os.geteuid() == 0 and sys.platform.startswith('linux'), 'Run on the dev Linux server as root')
     path = args.state.resolve(strict=True)
     state = N.load(path)
-    require(state['phase'] == 'needs_attention' and state.get('reason') == 'native_batch_requires_smaller_range',
+    stopped_on_guard = (state['phase'] == 'needs_attention'
+                        and state.get('reason') == 'native_batch_requires_smaller_range')
+    rebound_paused = state['phase'] == 'paused' and state.get('worker_repair') is None
+    require(stopped_on_guard or rebound_paused,
             'Native job is not stopped on the expected oversized-block guard')
     require(N.owned(D, path, state['inputs']) is None, 'The native worker must be stopped before repair preparation')
     binding = N.runtime_binding(path, state)
