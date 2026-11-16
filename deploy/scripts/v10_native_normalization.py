@@ -167,8 +167,8 @@ def public(path, state):
 
 
 def rpc(api, code):
-    return V.C.marked_json(api, api.run(
-        ['docker', 'exec', '-i', 'backend', 'sh', '-c', V.RPC_SCRIPT], input_text=code, timeout=20))
+    raw = api.run(['docker', 'exec', 'backend', 'bin/blockscout', 'rpc', code], timeout=30)
+    return V.C.marked_json(api, raw)
 
 
 def current_runtime_health(api, binding):
