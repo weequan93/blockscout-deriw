@@ -83,9 +83,9 @@ def stable(state, rows):
     require(D.env_map(rows['backend']).get('CHAIN_ID') == '2885', 'The current backend is not test chain 2885.')
 
 
-def validate_topology(model, row):
+def validate_topology(model, row, name='backend'):
     """Reject stale backend mounts, addresses, ports and host settings before stopping it."""
-    service = model['services']['backend']
+    service = model['services'][name]
     host = row['HostConfig']
     require(not any(service.get(k) for k in ('network_mode', 'volumes_from', 'configs', 'secrets', 'links', 'devices')),
             'Backend topology uses an unsupported special attachment; review before rollout.')
@@ -551,12 +551,21 @@ def apply(path, state):
             '-f', str(target), 'up', '-d', '--no-deps', '--no-build', '--pull', 'never', 'backend'],
            path, 'recreate-test-backend', timeout=360)
     save(path, state, 'backend_started')
+    runtime = verify_backend(path, state)
+    save(path, state, 'active')
+    emit('test_v10_deployed', source_revision=SOURCE, image=state['image_tag'], state=str(path),
+         private_compose=str(target), only_recreated_service='backend', source_checkout_changed=False,
+         background_migrators_autostart=False, **runtime)
+
+
+def verify_backend(path, state, stability=stable):
+    project = state['project']
     deadline = time.monotonic() + 240
     runtime = None
     while time.monotonic() < deadline:
         try:
             live = current(project)
-            stable(state, live)
+            stability(state, live)
             require(live['backend']['Image'] == state['image_id'] and live['backend']['State']['Running'],
                     'The selected backend image is not running.')
             ready = P.run(['docker', 'exec', live['backend']['Id'], 'curl', '-fsS', '--max-time', '5',
@@ -580,10 +589,7 @@ def apply(path, state):
             time.sleep(5)
     else:
         raise P.PreflightError('Test backend verification did not complete; review the journal/private logs.')
-    save(path, state, 'active')
-    emit('test_v10_deployed', source_revision=SOURCE, image=state['image_tag'], state=str(path),
-         private_compose=str(target), only_recreated_service='backend', source_checkout_changed=False,
-         background_migrators_autostart=False, **runtime)
+    return runtime
 
 
 def check_host():
@@ -592,7 +598,7 @@ def check_host():
             'Use the existing private test preflight directory.')
 
 
-def main(argv=None):
+def backend_only_main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--repo', type=Path, default=Path('/data/blockscout'))
     parser.add_argument('--preflight', type=Path)
@@ -634,6 +640,13 @@ def main(argv=None):
             emit('test_release_needs_attention', state=str(path), failed_phase=state['failed_phase'])
         print('STOP:', str(error) if isinstance(error, P.PreflightError) else 'Release failed; raw diagnostics withheld.', file=sys.stderr)
         return 1
+
+
+def main(argv=None):
+    # The operator selected the same layout as dev: source on deriw-dev and
+    # runtime configuration plus data together under docker-compose.test.
+    from testnet_v10_layout import main as relocated_main
+    return relocated_main(argv)
 
 
 if __name__ == '__main__':

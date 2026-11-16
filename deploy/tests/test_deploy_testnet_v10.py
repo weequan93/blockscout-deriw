@@ -119,7 +119,7 @@ class TestnetUpgradeTests(unittest.TestCase):
                 raise T.P.PreflightError('deliberate build failure')
             with patch.object(T, 'BASE', base), patch.object(T, 'check_host'), patch.object(T, 'prepare', side_effect=fail), \
                  contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                self.assertEqual(T.main(['--preflight', directory, '--existing-backup']), 1)
+                self.assertEqual(T.backend_only_main(['--preflight', directory, '--existing-backup']), 1)
             saved = json.loads(path.read_text())
             self.assertEqual(saved['phase'], 'needs_attention')
             self.assertEqual(saved['failed_phase'], 'preparing')

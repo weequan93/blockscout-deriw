@@ -81,81 +81,137 @@ write attempts and enforced statement deadlines. Python fixtures check wrong-cha
 rejection, separate repository routing, private-value preservation and a complete
 read-only container/configuration capture.
 
-## Deploy the qualified backend
+## Deploy with the same runtime layout as dev
 
-The supplied preflight selected a 13.37 TB main database, a 6.20 TB historical
+The operator selected the dev layout for test too: **source on `deriw-dev`,
+configuration and data together under `docker-compose.test`**. This replaces
+the earlier backend-only deployment design in `21c452495`. The operator
+confirmed that earlier command was not executed. The public entry point
+`deploy/scripts/deploy_testnet_v10.py` now delegates to `testnet_v10_layout.py`.
+The v9 preflight and the qualified f0 application revision remain applicable.
+
+The supplied preflight identified a 13.37 TB main database, a 6.20 TB historical
 internal-transaction relation and approximately 1.27 TB filesystem free space.
-Its initial migration relations totalled 490,905,600 bytes, the internal types
-matched the path that avoids a heap rewrite, and all selected drop/export
-tables were empty. The backend's test RPCs, contracts and data mounts are the
-configuration authority; the application revision is shared with dev.
+The initial migration relations totalled 490,905,600 bytes; the internal types
+matched the path that avoids a heap rewrite; selected drop/export tables were
+empty. This authorizes the reviewed initial schema path, not historical
+normalization or large index/primary-key conversion.
 
-`deploy/scripts/deploy_testnet_v10.py` implements this specific initial upgrade.
-Fetch the reviewed deployment-tool revision and extract its `deploy/scripts`
-and `deploy/upgrades` directories into a new mode-0700 directory under
-`/data/blockscout-test-private/`. Run its Python entry point with `-I` and:
+Fetch the deployment tools without first switching the server checkout:
 
-```text
---repo /data/blockscout
---preflight /data/blockscout-test-private/preflight-20261116T012142Z-2y46fkhi
---existing-backup
+```bash
+bash <<'UPGRADE_TEST_V10'
+set -euo pipefail
+umask 077
+cd /data/blockscout
+git fetch origin deriw-dev
+test_tools_revision=$(git rev-parse FETCH_HEAD)
+test_tools_directory=$(mktemp -d /data/blockscout-test-private/tools-XXXXXXXX)
+git archive "$test_tools_revision" deploy/scripts deploy/upgrades |
+  tar -xf - -C "$test_tools_directory"
+python3 -I "$test_tools_directory/deploy/scripts/deploy_testnet_v10.py" \
+  --repo /data/blockscout \
+  --preflight /data/blockscout-test-private/preflight-20261116T012142Z-2y46fkhi \
+  --existing-backup
+UPGRADE_TEST_V10
 ```
 
-`--existing-backup` records the operator's previously supplied backup/snapshot
-confirmation. It does not create or verify a recovery copy. `--prepare-only`
-optionally stops after the image and configuration checks, before the cursor
-handoff or any service stop. The deployment does the following:
+`--existing-backup` records the already supplied backup/snapshot confirmation.
+It does not create or verify a recovery copy. `--prepare-only` optionally builds
+and validates the plan without stopping services, moving directories, changing
+branches, saving live cursors or executing migrations.
 
-1. Compare the preflight container identities, environments and backend
-   attachments with the current stack. Require the same test chain, original
-   PostgreSQL route, reviewed schema path and resource reserves.
-2. Build `deriw-blockscout:test-v10.2.6-f0f40cd352d2` from a Git archive of the
-   exact qualified application commit. The server's `deriw-pre` checkout and
-   local environment files do not enter the build or change branches.
-3. Retain backend runtime configuration and numeric UID/GID. Enable native
-   bridge metrics, hold automatic background migrations, the empty-blocks
-   sanitizer and uncataloged token scans, and keep the heavy indexer metrics
-   collector disabled. Preserve the current internal-transaction fetcher policy.
-4. Probe the actual test parent RPC using stored event anchors: at most 68
-   sequential `eth_getLogs` reads, at most four per second, with completeness
-   checks. Only a passing probe enables 10,000-block deposit/withdrawal requests;
-   otherwise retain the original ranges. The original polling intervals stay.
-5. Read v9 deposits from `data.new_msg_to_l2_start_block` and withdrawals from
-   the buffered task state. Save monotonic, parent-chain/contract-scoped cursors
-   in `last_fetched_counters` before stopping the backend. A failed handoff
-   prevents the stop and schema phase.
-6. Disable automatic restart of the old backend and stop that container only.
-   Recheck the original database/heap, then run the 26 main, two account and
-   one Arbitrum migration versions. Each statement has a 120-second server
-   deadline and a two-second lock deadline. Monitor a 100 GiB remaining-free
-   reserve and a 20 GiB schema-phase consumption budget.
-7. Retain the legacy internal-transaction heap and primary key. Leave the two
-   custom covering indexes (`20260721000000`, `20260812000000`), historical
-   normalization and heavy index/primary-key workers deferred.
-8. Write a private, mode-0600 resolved Compose snapshot at
-   `/data/blockscout/docker-compose.test/docker-compose.yml`. Its bind mounts
-   still point at their original paths; no database directory is moved or
-   copied. The original Compose files stay in place. If the old branch does
-   not ignore this private directory, add a local `.git/info/exclude` rule.
-9. Recreate only `backend` with the built image and a start-only command.
-   Verify readiness, chain/version/source, held migrators, resumed scoped
-   cursors/ranges/intervals, all five native database metric sections and all
-   seven on-chain verification sections. Other service identities, images,
-   configuration and mounts must remain unchanged.
+The initial preparation requires the original `docker-compose` directory and
+an absent `docker-compose.test`. It compares the captured containers/settings,
+all service mounts, ports and networks, and confirms that DB/Redis writable
+binds and the inspected main data path are inside the original runtime tree.
+Symlinked bind sources, nested host filesystem mounts, another container using this tree, tracked database
+files, source edits outside the runtime tree, a diverged local `deriw-dev` or
+another worktree owning that branch stop preparation. Unrelated services are
+not adopted automatically. Existing private configuration stays on the server.
 
-The backend API is unavailable while its old container is stopped and the
-bounded schema change/new startup run. PostgreSQL, proxy, frontend, stats and
-the separately managed Prometheus exporter stay in place. This procedure does
-not change host metric port bindings or the already restarting user-ops service.
-The final successful report is `phase="test_v10_deployed"` and includes the
-private state path, source revision and verified cursors.
+The release performs these stages:
+
+1. Build `deriw-blockscout:test-v10.2.6-f0f40cd352d2` from a Git archive of the
+   exact qualified application commit while the old backend runs. Retain its
+   runtime environment and numeric UID/GID; hold automatic migrators, the
+   empty-blocks sanitizer and uncataloged-token scans; enable native bridge
+   metrics while keeping the heavy indexer collector disabled. Preserve the
+   test RPCs/contracts, chain 2885 and current internal-fetcher policy.
+2. Probe the actual test parent RPC against stored event anchors: at most 68
+   sequential log requests, at most four per second, checking wide/narrow
+   completeness. A passing probe permits 10,000-block deposit/withdrawal reads;
+   otherwise keep original ranges. Preserve polling intervals.
+3. Save completed v9 deposit and withdrawal callbacks into monotonic,
+   parent-chain/contract-scoped counters. A failed handoff prevents service
+   stops and schema writes.
+4. Stop the old backend, recheck the original database/heap and apply the 26
+   main, two account and one Arbitrum migration versions. Each SQL statement
+   has a 120-second deadline and two-second lock deadline. Keep 100 GiB free
+   and a 20 GiB schema-phase growth budget. Preserve the legacy historical
+   heap/primary key and defer versions `20260721000000` and `20260812000000`.
+5. Disable old containers' restart policies and stop the whole captured Compose
+   project. Require both PostgreSQL containers to exit cleanly and all project
+   containers to stop. Recheck foreign attachments and bind identities.
+6. Rename `docker-compose` to `docker-compose.test` on the **same filesystem**.
+   This is a directory rename, with no 13 TB copy. Compare device/inode values
+   for the root and every moved bind source. Retain ownership and permissions
+   inside the data tree; restrict the private runtime root to mode 0700.
+7. Restore only Git-tracked templates into the vacated `docker-compose` path,
+   then switch/fast-forward the source checkout to `deriw-dev`. The original
+   branch remains available. Never reset a diverged branch or discard edits
+   outside the moved runtime directory. Require the chosen branch's application
+   files to match qualified f0; newer operations-only commits are permitted.
+8. Select a resolved private Compose file in `docker-compose.test`. Remap bind
+   sources to their new paths, disallow automatic creation of missing source
+   paths, preserve existing non-backend image IDs, commands/environments/ports
+   and network definitions, and pin current container IPs. This avoids a dynamic
+   service claiming an old static database address. Preserve original config
+   files and a private backup of the moved main Compose file.
+9. Remove only the captured, already stopped DB initializer containers, retaining
+   their updated declarations. Recreate the databases/Redis first; check health
+   and the original database identity, heap and migration state; then recreate
+   remaining services and the new backend. Start the proxy after API readiness.
+10. Verify the new mount paths, image selections, environments, runtime version,
+    held migrators, resumed cursors/ranges/intervals, five native DB metric
+    sections and seven on-chain verification sections.
+
+The source checkout and deployed image can show different commit hashes when
+`deriw-dev` includes newer deployment-tool/documentation commits. Their
+application trees must match; the image retains its honest f0 source label.
+
+Successful layout:
+
+```text
+/data/blockscout/                         # Git branch: deriw-dev
+├── docker-compose/                      # tracked public defaults
+└── docker-compose.test/                 # ignored private runtime tree
+    ├── docker-compose.yml               # selected full runtime configuration
+    ├── envs/                            # preserved test environment files
+    ├── proxy/                           # preserved test proxy/cert configuration
+    └── services/
+        ├── blockscout-db-data/
+        ├── stats-db-data/
+        ├── redis-data/
+        ├── logs/
+        └── dets/
+```
+
+This deployment includes a maintenance window for the entire Compose project.
+The pre-existing restarting user-ops service is recorded separately; this
+release does not fix its unrelated error. A separately managed exporter with no
+bind into the moved tree stays outside the project and may report DB/API
+unavailability during maintenance. No metric host port is newly exposed.
+Final success is `phase="test_v10_deployed"`, including `source_branch`,
+`checkout_revision`, `runtime_and_data_directory` and the private journal path.
+Use `docker-compose.test/docker-compose.yml` for subsequent test operations.
 
 ## Resume and recovery
 
-Every stage is recorded atomically in a mode-0600 `state.json` within the private
-upgrade directory. Build, client, Compose and metric output remain in private
-logs. On a failure, share only the sanitized `STOP:`/phase report. Resolve the
-reported condition before resuming the **same** prepared journal:
+The private journal records stages atomically. On failure, share only the
+sanitized `STOP:`/phase report; command, schema and metrics details stay private.
+Resolve the stated condition and resume the same completed **v2 relocation**
+preparation:
 
 ```bash
 test_v10_state=/data/blockscout-test-private/upgrade-REPLACE/state.json
@@ -163,40 +219,47 @@ test_v10_tool=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[
 python3 -I "$test_v10_tool" --resume "$test_v10_state"
 ```
 
-A journal that did not finish image/configuration preparation cannot activate.
-An interrupted schema phase checks the same database, applied-version subset,
-heap and selected migration statuses before applying only the remaining
-versions. It removes only leftover schema clients belonging to that journal.
-After a completed schema stage, retries verify/start the prepared backend
-without repeating that stage.
+An incomplete preparation or earlier backend-only journal cannot activate this
+layout. The schema client accepts only the reviewed applied-version subset and
+resumes remaining versions. After schema completion, resume skips that stage.
+If a process exits between the atomic directory rename and journal update,
+resume identifies the original directory inode at its new path instead of
+moving/copying it again. Git switches use tracked-template restoration and
+fast-forward merges; data and private configuration stay in the moved tree.
+Compose reuses already selected containers on retry instead of forcing another
+recreation. No automatic rollback to v9 is performed after schema writes.
 
-After schema writes begin, do not start the old v9 backend or use its original
-startup migration command as an automatic rollback. The script leaves the old
-backend's restart policy disabled on failure. The existing database backup or
-snapshot and the captured old image/configuration are the recovery provision;
-restoring v9 requires restoring the corresponding database state too. The new
-v10 backend may remain running if a post-start metrics verification fails; its
-private logs distinguish this from a migration failure.
+The operator-confirmed database backup/snapshot plus captured images and
+configuration remain the recovery provision. Restoring the old v9 application
+requires the matching old database state. A post-start verification failure may
+leave new containers running; a failure during relocation may leave services
+stopped with their old restart policies disabled. The journal distinguishes
+those stages. Do not manually start old containers whose bind sources still
+refer to the original path after it has been repopulated with public templates.
 
 ## Validation and scope
 
-Run the Python control-flow fixtures and the integration fixture:
-
 ```bash
 python3 -m unittest discover -s deploy/tests -p 'test_deploy_testnet_v10.py' -v
+python3 -m unittest discover -s deploy/tests -p 'test_testnet_v10_layout.py' -v
 python3 deploy/tests/check_testnet_v10_upgrade.py
+python3 deploy/tests/check_testnet_v10_layout.py
 ```
 
-The integration uses the exact f0 release image, cached v9.0.1 and disposable
-PostgreSQL 15 with synthetic rows, internal Docker networking, tmpfs storage,
-no host mounts and no published ports. It exercises legacy cursor extraction,
-scoped monotonic persistence, the test-adapted v9 RPC probe, wrong-chain
-rejection, a deliberately blocked account migration after the main schema,
-partial/repeated migration runs, unchanged heap and selected migration statuses,
-deferred indexes, real test-chain backend startup and native database metrics.
-Representative block/transaction/internal-transaction API routes run against
-the retained legacy primary key. Compose round-tripping retains literal
-dollar signs and newlines. Full-application fixture bridge/block fetchers are
-paused and the parent transport is synthetic; the server's bounded RPC probe
-and post-start verification cover the actual test provider. This is not a
-full-size database rehearsal or proof of snapshot restoration.
+The first integration exercises real v9 callback extraction, monotonic scoped
+cursors, the v9-compatible bounded RPC probe, wrong-chain rejection, deliberately
+blocked/partial/repeated 29-version migrations, retained heap and held indexes,
+and actual chain-2885 backend/native metric/API startup with disposable PG15.
+Its Docker network is internal and its data uses tmpfs.
+
+The layout integration uses only its own labelled containers, private temporary
+Git clone and disposable synthetic bind-mounted PG15/Redis data. It performs a
+real directory rename, switches the temporary checkout from `deriw-pre` to
+`deriw-dev`, restores public defaults, recreates containers with the same IPs and
+non-backend images, and checks preserved PostgreSQL identity/heap, Redis data,
+private settings, native DB metrics and proxy readiness. Stopped initializer
+containers are removed and DB dependencies are satisfied without rerunning them.
+No live service or
+host port is used. Parent RPC verification is synthetic/omitted in this fixture;
+production readiness still requires all seven actual RPC metric sections.
+Neither fixture is a full-size database rehearsal or proof of snapshot restore.
