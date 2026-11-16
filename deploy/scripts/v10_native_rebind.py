@@ -62,6 +62,7 @@ def main(argv=None):
                 and previous.get('runtime_before') == runtime
                 and previous.get('database_anchor') == anchor,
                 'Existing current runtime binding differs from the live runtime')
+        binding['previous_source_root'] = previous.get('source_root')
         temporary = target.with_name('.current-runtime-binding-' + commit[:12] + '.tmp')
         R.write_new(temporary, data)
         os.replace(temporary, target)
