@@ -577,8 +577,8 @@ rows = for row <- handoff["cursors"] do
     interval_ok: interval == row["interval_ms"],
     range_ok: range == ''' + ('10000' if state['wide_reads_verified'] else 'row["blocks_per_request"]') + '''}
 end
-true = Enum.all?(rows, fn row -> row["cursor_key_matches"] and row["next_parent_block_ok"] and
-  row["durable_cursor_ok"] and row["interval_ok"] and row["range_ok"] end)
+true = Enum.all?(rows, fn row -> row.cursor_key_matches and row.next_parent_block_ok and
+  row.durable_cursor_ok and row.interval_ok and row.range_ok end)
 IO.puts("''' + MARKER + '''" <> Jason.encode!(%{version: "10.2.6", chain_id: "2885",
   background_migrators_held: true, bridge_cursors: rows}))
 '''
