@@ -57,7 +57,14 @@ def main(argv=None):
     target = path.parent / 'current-runtime-binding.json'
     data = R.encoded(binding)
     if target.exists():
-        require(target.read_bytes() == data, 'Existing current runtime binding differs')
+        previous = json.loads(target.read_text())
+        require(previous.get('format') == N.CURRENT_RUNTIME_FORMAT
+                and previous.get('runtime_before') == runtime
+                and previous.get('database_anchor') == anchor,
+                'Existing current runtime binding differs from the live runtime')
+        temporary = target.with_name('.current-runtime-binding-' + commit[:12] + '.tmp')
+        R.write_new(temporary, data)
+        os.replace(temporary, target)
     else:
         R.write_new(target, data)
     native.update(runtime_binding_file=target.name,
