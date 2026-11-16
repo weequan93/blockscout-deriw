@@ -555,19 +555,31 @@ rows = for row <- handoff["cursors"] do
     "deposits" -> {Indexer.Fetcher.Arbitrum.TrackingMessagesOnL1, :check_new, :l1_messages_scan_cursor_key}
     "withdrawals" -> {Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses, :new_executions, :l1_executions_scan_cursor_key}
   end
-  data = :sys.get_state(Process.whereis(module), 5000).callback_module_state
-  true = data.config[field] == row["counter_key"]
-  next = get_in(data, [:task_data, task, :start_block])
-  true = is_integer(next) and next >= row["saved_next_parent_block"]
+  raw = :sys.get_state(Process.whereis(module), 5000)
+  data = if is_map(raw), do: Map.get(raw, :callback_module_state, raw), else: %{}
+  config = if is_map(data), do: Map.get(data, :config, %{}), else: %{}
+  task_data = if is_map(data), do: Map.get(data, :task_data, %{}), else: %{}
+  next = if row["tracker"] == "deposits" and is_map(data) and Map.has_key?(data, :data),
+    do: get_in(data, [:data, :new_msg_to_l2_start_block]),
+    else: get_in(task_data, [task, :start_block])
+  actual_key = if is_map(config), do: Map.get(config, field), else: nil
+  intervals = if is_map(data), do: Map.get(data, :intervals, %{}), else: %{}
+  interval = if is_map(intervals), do: Map.get(intervals, task), else: nil
+  rpc_config = if is_map(config), do: Map.get(config, :l1_rpc, %{}), else: %{}
+  range = if row["tracker"] == "deposits", do: Map.get(rpc_config, :block_range),
+    else: Map.get(config, :l1_executions_block_range)
   saved = Explorer.Chain.Cache.Counters.LastFetchedCounter.get(row["counter_key"], nullable: true)
-  true = Decimal.compare(saved, Decimal.new(row["saved_next_parent_block"])) in [:eq, :gt]
-  range = if row["tracker"] == "deposits", do: data.config.l1_rpc_block_range,
-    else: data.config.l1_executions_block_range
-  true = data.intervals[task] == row["interval_ms"]
-  true = range == ''' + ('10000' if state['wide_reads_verified'] else 'row["blocks_per_request"]') + '''
-  %{tracker: row["tracker"], next_parent_block: next, durable_next_parent_block: Decimal.to_integer(saved),
-    blocks_per_request: range, interval_ms: data.intervals[task]}
+  durable = if is_nil(saved), do: nil, else: Decimal.to_integer(saved)
+  %{tracker: row["tracker"], cursor_key: actual_key, next_parent_block: next,
+    durable_next_parent_block: durable, blocks_per_request: range, interval_ms: interval,
+    cursor_key_matches: actual_key == row["counter_key"],
+    next_parent_block_ok: is_integer(next) and next >= row["saved_next_parent_block"],
+    durable_cursor_ok: is_integer(durable) and durable >= row["saved_next_parent_block"],
+    interval_ok: interval == row["interval_ms"],
+    range_ok: range == ''' + ('10000' if state['wide_reads_verified'] else 'row["blocks_per_request"]') + '''}
 end
+true = Enum.all?(rows, fn row -> row["cursor_key_matches"] and row["next_parent_block_ok"] and
+  row["durable_cursor_ok"] and row["interval_ok"] and row["range_ok"] end)
 IO.puts("''' + MARKER + '''" <> Jason.encode!(%{version: "10.2.6", chain_id: "2885",
   background_migrators_held: true, bridge_cursors: rows}))
 '''
