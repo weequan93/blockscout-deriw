@@ -309,9 +309,8 @@ def prepare_capacity_review(api, parent_path, previous, manifest):
 def verify_holds(api):
     # This reads two supervisor trees in the existing backend. It changes no
     # worker, configuration or database state and starts no application.
-    import v10_vacuum as V
-    report = C.marked_json(api, api.run(['docker', 'exec', '-i', 'backend', 'sh', '-c', V.RPC_SCRIPT],
-                                      input_text=HOLD_PROBE, timeout=15))
+    report = C.marked_json(api, api.run(['docker', 'exec', 'backend', 'bin/blockscout', 'rpc', HOLD_PROBE],
+                                      timeout=30))
     P.require(report == {'runtime_holds_verified': True}, 'Keep both reviewed runtime holds active')
 
 
