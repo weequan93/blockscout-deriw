@@ -185,7 +185,8 @@ true = Explorer.Migrator.StartupControl.disabled?()
 false = Application.get_env(:indexer, Indexer.Prometheus.Metrics)[:enabled]
 IO.puts("BLOCKSCOUT_DEPLOY_CHECK=" <> Jason.encode!(%{runtime_ok: true}))
 '''
-    probe = rpc(api, expression)
+    raw = api.run(['docker', 'exec', backend['Id'], 'bin/blockscout', 'rpc', expression], timeout=20)
+    probe = V.C.marked_json(api, raw)
     J.P.require(ready and probe.get('runtime_ok') is True, 'Current backend runtime is not qualified')
     return {'status': 'verified', 'backend_readiness_ok': ready, 'runtime_ok': True}
 
