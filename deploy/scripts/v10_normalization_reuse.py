@@ -29,15 +29,35 @@ CYCLE_STOPS = ('capacity_review_required', 'next_complete_batch_requires_capacit
                'batch_limit_reached', 'row_limit_reached', 'next_batch_wal_reserve_reached',
                'new_write_window_expired')
 HOLD_PROBE = '''
-held = fn parent, child ->
-  Enum.any?(Supervisor.which_children(parent), fn
-    {^child, :undefined, :worker, _} -> true
-    _ -> false
-  end) and is_nil(Process.whereis(child))
+held_worker = fn parent, child ->
+  case Process.whereis(parent) do
+    nil -> false
+    _ ->
+      Enum.any?(Supervisor.which_children(parent), fn
+        {^child, :undefined, :worker, _} -> true
+        _ -> false
+      end) and is_nil(Process.whereis(child))
+  end
 end
+
+held_supervisor = fn parent, child ->
+  case Process.whereis(parent) do
+    nil -> false
+    _ ->
+      Enum.any?(Supervisor.which_children(parent), fn
+        {^child, :undefined, :supervisor, _} -> true
+        _ -> false
+      end)
+  end
+end
+
 true = Explorer.Migrator.StartupControl.disabled?()
-true = held.(BlockScoutWeb.Supervisor, Indexer.Prometheus.Metrics)
-true = held.(Indexer.Fetcher.EmptyBlocksSanitizer.Supervisor, Indexer.Fetcher.EmptyBlocksSanitizer)
+true = held_worker.(BlockScoutWeb.Supervisor, Indexer.Prometheus.Metrics)
+sanitizer_held =
+  held_worker.(Indexer.Fetcher.EmptyBlocksSanitizer.Supervisor,
+               Indexer.Fetcher.EmptyBlocksSanitizer) or
+    held_supervisor.(Indexer.Supervisor, Indexer.Fetcher.EmptyBlocksSanitizer.Supervisor)
+true = sanitizer_held
 IO.puts("BLOCKSCOUT_DEPLOY_CHECK=" <> Jason.encode!(%{runtime_holds_verified: true}))
 '''
 
