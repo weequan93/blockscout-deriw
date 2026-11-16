@@ -83,12 +83,76 @@ def stable(state, rows):
     require(D.env_map(rows['backend']).get('CHAIN_ID') == '2885', 'The current backend is not test chain 2885.')
 
 
-def validate_topology(model, row, name='backend'):
+def declared_links(service):
+    result = []
+    for item in service.get('links') or []:
+        require(isinstance(item, str), 'Expected string entries in Compose links.')
+        peer, separator, alias = item.partition(':')
+        alias = alias if separator else peer
+        require(all(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', value) for value in (peer, alias)),
+                'An internal Compose link has an unsupported service/alias format.')
+        result.append((peer, alias))
+    require(len(result) == len(set(result)), 'Duplicate internal Compose links need review.')
+    return result
+
+
+def validate_links(model, row, service_name, rows):
+    wanted = declared_links(model['services'][service_name])
+    records = [(None, item) for item in row['HostConfig'].get('Links') or []]
+    records += [(network, item) for network, endpoint in row['NetworkSettings']['Networks'].items()
+                for item in endpoint.get('Links') or []]
+    if not wanted:
+        require(not records, 'Service ' + service_name + ' has undeclared Docker links.')
+        return
+    require(rows is not None, 'Internal link validation requires the current project service inventory.')
+    peers = {name for name, _ in wanted}
+    require(peers <= set(rows) and peers <= set(model['services']), 'An internal link points outside the captured Compose services.')
+    allowed = {}
+    for peer in peers:
+        target = rows[peer]
+        name = target['Name'].lstrip('/')
+        project = (target['Config'].get('Labels') or {}).get('com.docker.compose.project', model.get('name', ''))
+        aliases = {peer, name} | {alias for service, alias in wanted if service == peer}
+        number = str((target['Config'].get('Labels') or {}).get('com.docker.compose.container-number', ''))
+        if number.isdecimal() and int(number) > 0:
+            for separator in ('-', '_'):
+                aliases.add(peer + separator + number)
+                if project:
+                    aliases.add(project + separator + peer + separator + number)
+        for separator in ('-', '_'):
+            prefix = project + separator
+            if project and name.startswith(prefix):
+                aliases.add(name[len(prefix):])
+        allowed[peer] = aliases
+        require(set(row['NetworkSettings']['Networks']) & set(target['NetworkSettings']['Networks']),
+                'An internal link has no shared Docker network.')
+    observed = set()
+    for network, record in records:
+        require(isinstance(record, str) and ':' in record, 'Unexpected Docker link metadata.')
+        source, destination = record.split(':', 1)
+        source = source.lstrip('/')
+        matches = [name for name in peers if source in (
+            rows[name]['Name'].lstrip('/'), rows[name]['Id'], rows[name]['Id'][:12])]
+        require(len(matches) == 1, 'A Docker link points to an unexpected container.')
+        peer = matches[0]
+        alias = destination.rsplit('/', 1)[-1]
+        require(alias in allowed[peer] and (network is None or network in rows[peer]['NetworkSettings']['Networks']),
+                'A Docker link has an unexpected alias or network.')
+        observed.add((peer, alias))
+    for peer, alias in wanted:
+        shared = set(row['NetworkSettings']['Networks']) & set(rows[peer]['NetworkSettings']['Networks'])
+        registered_alias = any(alias in (rows[peer]['NetworkSettings']['Networks'][n].get('Aliases') or []) for n in shared)
+        require((peer, alias) in observed or registered_alias,
+                'A declared internal link alias is absent from the actual Docker configuration.')
+
+
+def validate_topology(model, row, name='backend', rows=None):
     """Reject stale backend mounts, addresses, ports and host settings before stopping it."""
     service = model['services'][name]
     host = row['HostConfig']
-    require(not any(service.get(k) for k in ('network_mode', 'volumes_from', 'configs', 'secrets', 'links', 'devices')),
-            'Backend topology uses an unsupported special attachment; review before rollout.')
+    unsupported = [k for k in ('network_mode', 'volumes_from', 'configs', 'secrets', 'external_links', 'devices') if service.get(k)]
+    require(not unsupported, 'Service ' + name + ' uses unsupported topology fields: ' + ', '.join(unsupported))
+    validate_links(model, row, name, rows)
     require(service.get('container_name', row['Name'].lstrip('/')) == row['Name'].lstrip('/'),
             'The backend container name differs from the captured Compose.')
     expected = []
@@ -148,7 +212,7 @@ def validate_topology(model, row, name='backend'):
     ):
         require((host.get(field) or default) == (service.get(setting) or default),
                 'Backend host settings differ from Compose: ' + setting)
-    require(not host.get('Devices') and not host.get('VolumesFrom') and not host.get('Links'),
+    require(not host.get('Devices') and not host.get('VolumesFrom'),
             'Undeclared backend attachments need review.')
 
 
@@ -291,6 +355,15 @@ def client(state, path, mode, baseline=None):
     name = 'deriw-test-v10-schema-' + uuid.uuid4().hex[:12]
     command = U.client_command(state['image_id'], state['network'], name, str(path))
     command[2:2] = ['--label', LABEL + '=' + str(path)]
+    if state.get('schema_links'):
+        live = current(state['project'])
+        for link in state['schema_links']:
+            require(link['service'] == 'db' and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', link['alias']),
+                    'Unexpected schema-client database link.')
+            peer = live['db']
+            require(peer['State']['Running'] and state['network'] in peer['NetworkSettings']['Networks'],
+                    'The linked database must run on the original schema-client network.')
+            command[2:2] = ['--link', peer['Name'].lstrip('/') + ':' + link['alias']]
     log = path.parent / (mode + '-' + uuid.uuid4().hex[:8] + '.private.log')
     process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
@@ -367,7 +440,7 @@ def prepare(repo, preflight, backup, journal=None):
         captured = captured.replace('$$', '$')
     model = json.loads(captured)
     require(not D.live_environment_differences(model, rows), 'The captured Compose environment differs from the running stack.')
-    validate_topology(model, rows['backend'])
+    validate_topology(model, rows['backend'], rows=rows)
     directory = repo / 'docker-compose.test'
     require(not (directory / 'docker-compose.yml').exists(), 'A private test Compose already exists; review it before the initial v10 rollout.')
     raw = observation((preflight / 'database-observation.private.txt').read_text(), P.MARKER)
@@ -429,6 +502,8 @@ def prepare(repo, preflight, backup, journal=None):
     common_networks = set(rows['backend']['NetworkSettings']['Networks']) & set(rows['db']['NetworkSettings']['Networks'])
     require(len(common_networks) == 1, 'One original shared database network is required for the schema client.')
     state['network'] = next(iter(common_networks))
+    state['schema_links'] = [{'service': peer, 'alias': alias}
+                             for peer, alias in declared_links(model['services']['backend']) if peer == 'db']
     state['wide_reads_verified'] = wide
     selected = root / 'candidate.compose.json'
     R.write_new(selected, R.snapshot_bytes(candidate))

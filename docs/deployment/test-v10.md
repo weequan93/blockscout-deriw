@@ -130,6 +130,15 @@ files, source edits outside the runtime tree, a diverged local `deriw-dev` or
 another worktree owning that branch stop preparation. Unrelated services are
 not adopted automatically. Existing private configuration stays on the server.
 
+Existing internal Compose links such as `db:database` are retained. Their peer
+containers, shared networks and aliases are checked against Docker metadata
+(both legacy host links and endpoint links). Missing aliases, unexpected peers
+and undeclared links stop preparation. Schema clients receive the same database
+alias, resolved against the current `db` container each time, so a database URL
+using `database` works before and after container recreation. This corrects the
+overly broad link rejection in `1e653dc11`, which stopped before any service or
+schema change on the supplied test deployment.
+
 The release performs these stages:
 
 1. Build `deriw-blockscout:test-v10.2.6-f0f40cd352d2` from a Git archive of the
@@ -257,7 +266,9 @@ Git clone and disposable synthetic bind-mounted PG15/Redis data. It performs a
 real directory rename, switches the temporary checkout from `deriw-pre` to
 `deriw-dev`, restores public defaults, recreates containers with the same IPs and
 non-backend images, and checks preserved PostgreSQL identity/heap, Redis data,
-private settings, native DB metrics and proxy readiness. Stopped initializer
+private settings, native DB metrics and proxy readiness. The backend and schema
+clients use the actual `db:database` link, with the database URL resolving through
+that alias across container replacement. Stopped initializer
 containers are removed and DB dependencies are satisfied without rerunning them.
 No live service or
 host port is used. Parent RPC verification is synthetic/omitted in this fixture;

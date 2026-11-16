@@ -90,7 +90,7 @@ def plan(repo, model, rows, project):
     source = check_git(repo, git(repo, 'rev-parse', 'refs/remotes/origin/deriw-dev'))
     mounts = {}
     for name, row in rows.items():
-        T.validate_topology(model, row, name)
+        T.validate_topology(model, row, name, rows=rows)
         labels = row['Config'].get('Labels') or {}
         for filename in labels.get('com.docker.compose.project.config_files', '').split(','):
             T.require(inside(filename, old), 'A test service uses Compose files outside the runtime directory.')
@@ -352,7 +352,7 @@ def verify_layout(state, rows):
         image = state['image_id'] if name == 'backend' else state['before'][name]['Image']
         T.require(row['Image'] == image and row['Config']['Labels'].get(LABEL) == str(state['state_path']),
                   'A service differs from its selected image/layout.')
-        T.validate_topology(model, row, name)
+        T.validate_topology(model, row, name, rows=rows)
         env = T.D.env_map(row)
         T.require(all(env.get(k) == v for k, v in service.get('environment', {}).items() if v is not None),
                   'A relocated service environment differs from its saved selection.')

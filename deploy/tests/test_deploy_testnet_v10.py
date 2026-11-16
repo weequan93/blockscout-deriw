@@ -35,6 +35,50 @@ def fixture():
 
 
 class TestnetUpgradeTests(unittest.TestCase):
+    def linked(self):
+        model, backend = fixture()
+        model['services']['backend']['links'] = ['db:database']
+        database = deepcopy(backend)
+        database.update(Id='3'*64, Name='/fixture-db-1')
+        database['Config']['Labels']['com.docker.compose.project'] = 'fixture'
+        database['NetworkSettings']['Networks']['fixture_default']['Aliases'] = ['db','fixture-db-1']
+        backend['NetworkSettings']['Networks']['fixture_default']['Links'] = [
+            'fixture-db-1:database','fixture-db-1:db-1','fixture-db-1:fixture-db-1']
+        return model, {'backend':backend,'db':database}
+
+    def test_internal_database_link_is_verified_from_real_endpoint_metadata(self):
+        model, rows = self.linked()
+        T.validate_topology(model,rows['backend'],rows=rows)
+        rows['backend']['HostConfig']['Links'] = ['/fixture-db-1:/backend/database']
+        rows['backend']['NetworkSettings']['Networks']['fixture_default']['Links'] = []
+        T.validate_topology(model,rows['backend'],rows=rows)
+
+    def test_custom_container_names_keep_generated_compose_link_aliases(self):
+        model,rows = self.linked()
+        rows['db']['Name'] = '/custom-db'
+        rows['db']['Config']['Labels']['com.docker.compose.container-number'] = '1'
+        rows['backend']['NetworkSettings']['Networks']['fixture_default']['Links'] = [
+            'custom-db:database','custom-db:db-1','custom-db:fixture-db-1']
+        T.validate_topology(model,rows['backend'],rows=rows)
+
+    def test_missing_alias_foreign_peer_and_undeclared_links_are_rejected(self):
+        for cause in ('missing','foreign','undeclared'):
+            model,rows = self.linked()
+            if cause == 'missing':
+                rows['backend']['NetworkSettings']['Networks']['fixture_default']['Links'] = ['fixture-db-1:db-1']
+            if cause == 'foreign':
+                rows['backend']['NetworkSettings']['Networks']['fixture_default']['Links'] = ['foreign-db:database']
+            if cause == 'undeclared':
+                model['services']['backend'].pop('links')
+            with self.subTest(cause=cause), self.assertRaises(T.P.PreflightError):
+                T.validate_topology(model,rows['backend'],rows=rows)
+
+    def test_unsupported_field_error_names_the_actual_service_and_field(self):
+        model,row = fixture()
+        model['services']['db']['network_mode'] = 'host'
+        with self.assertRaisesRegex(T.P.PreflightError,'Service db uses unsupported topology fields: network_mode'):
+            T.validate_topology(model,row,'db')
+
     def test_topology_rejects_stale_runtime_mount_network_and_port(self):
         model, row = fixture()
         T.validate_topology(model, row)

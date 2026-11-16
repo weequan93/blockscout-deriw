@@ -61,7 +61,7 @@ def main():
     proxy_file.write_text('events {}\nhttp { server { listen 8080; location / { proxy_pass http://backend:4000; } } }\n')
     proxy_file.chmod(0o644)
     (runtime / 'envs' / 'fixture.private.env').write_text('PRIVATE=literal$with$$pair\n')
-    environment = {'DATABASE_URL': 'postgresql://fixture:' + password + '@db:5432/fixture',
+    environment = {'DATABASE_URL': 'postgresql://fixture:' + password + '@database:5432/fixture',
         'ECTO_USE_SSL': 'false', 'POOL_SIZE': '2', 'ACCOUNT_POOL_SIZE': '2', 'POOL_SIZE_API': '2',
         'CHAIN_ID': '2885', 'CHAIN_TYPE': 'arbitrum', 'SECRET_KEY_BASE': 'a' * 64,
         'DISABLE_MARKET': 'true', 'DISABLE_INDEXER': 'false', 'DISABLE_CATCHUP_INDEXER': 'true',
@@ -80,12 +80,25 @@ def main():
     for name, folder in (('db','blockscout-db-data'), ('stats-db','stats-db-data')):
         initial['services'][name].update(environment={'POSTGRES_USER':'fixture','POSTGRES_PASSWORD':password,'POSTGRES_DB':'fixture'},
             volumes=[{'type':'bind','source':str(runtime / 'services' / folder),'target':'/var/lib/postgresql/data'}],
-            healthcheck={'test':['CMD-SHELL','pg_isready -q -U fixture -d fixture'], 'interval':'1s','timeout':'2s','retries':30})
+            healthcheck={'test':['CMD-SHELL',"PGPASSWORD=\"$POSTGRES_PASSWORD\" psql -h 127.0.0.1 -U fixture -d fixture -Atc 'SELECT 1' >/dev/null"],
+                         'interval':'1s','timeout':'2s','retries':30})
+        if sys.platform == 'darwin':
+            # Docker Desktop need not persist chown to a shared macOS folder.
+            # Run this disposable PG cluster as its actual host owner instead.
+            uid, gid = os.geteuid(), os.getegid()
+            assert uid > 0
+            bootstrap = (f"printf 'fixturehost:x:{uid}:{gid}:fixture:/tmp:/bin/sh\\n' >> /etc/passwd; "
+                         f'chown {uid}:{gid} /var/run/postgresql; '
+                         f'exec su-exec {uid}:{gid} /usr/local/bin/docker-entrypoint.sh "$@"')
+            initial['services'][name].update(entrypoint=['sh','-ec',bootstrap,'fixture-pg'],
+                command=['postgres'])
     initial['services']['redis-db'].update(command=['redis-server','--appendonly','yes'],
         volumes=[{'type':'bind','source':str(runtime / 'services/redis-data'),'target':'/data'}])
     initial['services']['backend'].update(environment=environment, entrypoint=[], working_dir='/app',
+        links=['db:database'], container_name='layout-backend-'+token,
         command=['node','-e',"const s=require('http').createServer((q,r)=>r.end('OK')).listen(4000,'0.0.0.0');process.on('SIGTERM',()=>s.close(()=>process.exit(0)))"],
         volumes=[{'type':'bind','source':str(runtime / 'services' / name),'target':'/app/'+name} for name in ('logs','dets')])
+    initial['services']['db']['container_name'] = 'layout-db-'+token
     initial['services']['proxy']['volumes'] = [{'type':'bind','source':str(proxy_file),'target':'/etc/nginx/nginx.conf','read_only':True}]
     for name, database in (('db-init','db'),('stats-db-init','stats-db')):
         # Exercise the completed-service dependency without a second Docker
@@ -105,6 +118,24 @@ def main():
         created = True
         F.run(['docker','compose','-p',project,'--project-directory',str(runtime),'--env-file',os.devnull,
                '-f',str(source),'up','-d','--no-build','--pull','never'])
+        if sys.platform == 'darwin':
+            # A Desktop ownership-cache race can interrupt the official image
+            # between initdb and CREATE DATABASE. Complete only our empty test
+            # database once the final server (PID 1) runs; never touch live data.
+            setup = '''test "$(head -n 1 "$PGDATA/postmaster.pid")" = 1
+export PGPASSWORD="$POSTGRES_PASSWORD"
+if [ "$(psql -h 127.0.0.1 -U fixture -d postgres -Atc "SELECT 1 FROM pg_database WHERE datname='fixture'")" != 1 ]; then
+  createdb -h 127.0.0.1 -U fixture fixture
+fi'''
+            for role in ('db','stats-db'):
+                deadline = time.monotonic()+90
+                while True:
+                    row = T.current(project)[role]
+                    assert row['Config']['Labels'].get(F.LABEL) == token
+                    result = subprocess.run(['docker','exec',row['Id'],'sh','-ec',setup],capture_output=True,timeout=10)
+                    if result.returncode == 0: break
+                    assert time.monotonic() < deadline, 'Disposable Desktop database setup failed'
+                    time.sleep(1)
         placeholder = {'project':project}
         L.wait_databases(placeholder)
         rows = T.current(project)
@@ -112,10 +143,12 @@ def main():
         F.evaluate(old_image['Id'],'baseline',token,network,password,versions,journal,db,defer_indexes=True)
         F.run(['docker','exec',rows['redis-db']['Id'],'redis-cli','SET','layout_sentinel',token])
         model = T.D.compose_model(runtime, {'compose_project':project},{},[source],True)
+        T.P.private_write(journal/'original-containers.private.json',T.R.encoded(rows))
         layout = L.plan(repo,model,rows,project)
         state = {'format':L.FORMAT,'repo':str(repo),'project':project,'before':deepcopy(rows),'layout':layout,
             'source':T.SOURCE,'environment':{**environment,'BLOCKSCOUT_VERSION':T.SOURCE},
             'network':network,'data_host_path':str(runtime / 'services/blockscout-db-data'),
+            'schema_links':[{'service':'db','alias':'database'}],
             'image_id':images['new-backend'],'image_tag':IMAGE,'preparation_complete':True,
             'handoff':{'cursors':[]}, 'wide_reads_verified':False}
         state['schema_before'] = T.client(state,path,'inspect')
@@ -164,6 +197,7 @@ IO.puts("TEST_V10_CHECK={\\"ready\\":true}")
             'data_copy_required':False,'all_bind_inodes_preserved':True,'postgres_database_and_heap_preserved':True,
             'redis_data_preserved':True,'private_configuration_preserved':True,'public_compose_defaults_restored':True,
             'backend_native_metrics_and_proxy_readiness':True,'other_image_ids_preserved':True,
+            'internal_database_link_preserved_for_backend_and_schema_clients':True,
             'stopped_initializers_removed_without_rerunning':True,
             'live_services_accessed':False,'full_database_rehearsal':False,'private_logs':str(base)}))
     finally:
