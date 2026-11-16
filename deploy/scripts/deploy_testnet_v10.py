@@ -577,8 +577,6 @@ rows = for row <- handoff["cursors"] do
     interval_ok: interval == row["interval_ms"],
     range_ok: range == ''' + ('10000' if state['wide_reads_verified'] else 'row["blocks_per_request"]') + '''}
 end
-true = Enum.all?(rows, fn row -> row.cursor_key_matches and row.next_parent_block_ok and
-  row.durable_cursor_ok and row.interval_ok and row.range_ok end)
 IO.puts("''' + MARKER + '''" <> Jason.encode!(%{version: "10.2.6", chain_id: "2885",
   background_migrators_held: true, bridge_cursors: rows}))
 '''
@@ -658,6 +656,19 @@ def verify_backend(path, state, stability=stable):
                            'http://127.0.0.1:4000/api/health/readiness'], timeout=10)
             require(ready.strip() == 'OK', 'Backend readiness has not passed.')
             runtime = rpc(live['backend'], runtime_expression(state), path.parent / ('runtime-' + uuid.uuid4().hex[:8] + '.private.log'))
+            expected_cursors = {row['tracker']: row for row in state['handoff']['cursors']}
+            observed_cursors = {row.get('tracker'): row for row in runtime.get('bridge_cursors', [])}
+            require(set(observed_cursors) == set(expected_cursors), 'Bridge tracker observations are incomplete.')
+            for tracker, expected in expected_cursors.items():
+                observed = observed_cursors[tracker]
+                require(observed.get('cursor_key') == expected['counter_key']
+                        and isinstance(observed.get('next_parent_block'), int)
+                        and observed['next_parent_block'] >= expected['saved_next_parent_block']
+                        and isinstance(observed.get('durable_next_parent_block'), int)
+                        and observed['durable_next_parent_block'] >= expected['saved_next_parent_block']
+                        and observed.get('interval_ok') is True
+                        and observed.get('range_ok') is True,
+                        'Bridge tracker did not resume its saved cursor configuration.')
             metrics = P.run(['docker', 'exec', live['backend']['Id'], 'curl', '-fsS', '--max-time', '10',
                              'http://127.0.0.1:4000/metrics'], timeout=15)
             P.private_write(path.parent / ('metrics-' + uuid.uuid4().hex[:8] + '.private.txt'), metrics)
