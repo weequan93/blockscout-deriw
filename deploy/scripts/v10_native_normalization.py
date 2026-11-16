@@ -20,6 +20,7 @@ import v10_normalization_session as J
 import v10_normalization_reuse as Q
 import v10_upgrade as U
 import v10_vacuum as V
+import v10_infrastructure_checks as K
 
 ROOT = Path(__file__).resolve().parents[2]
 BASE = Path('/data/blockscout-dev-private/v10-native-normalization')
@@ -34,6 +35,7 @@ LEASE_MS = 30000
 TERMINAL = ('completed', 'needs_attention')
 STOP_REQUESTED = False
 WORKER_PROCESSES = {}
+CURRENT_RUNTIME_FORMAT = 'blockscout-dev-current-runtime-binding-v1'
 
 METADATA = r'''
 true = Explorer.Migrator.StartupControl.disabled?()
@@ -114,6 +116,16 @@ def runtime_binding(path, state):
     if filename.startswith('frontend-runtime-binding-'):
         import v10_frontend_deploy as F
         return F.native_context(path, state)
+    if filename == 'current-runtime-binding.json':
+        raw = U.private(path.parent / filename)
+        binding = json.loads(raw)
+        J.P.require(R.digest(raw) == state.get('runtime_binding_sha256')
+                    and binding.get('format') == CURRENT_RUNTIME_FORMAT
+                    and binding.get('native_inputs_sha256') == state['inputs_sha256']
+                    and binding.get('native_worker_script_sha256') == state['inputs']['script_sha256']
+                    and binding.get('source_root') == str(ROOT),
+                    'Current runtime binding changed')
+        return binding
     J.P.require(filename == 'bridge-runtime-binding.json', 'Unexpected runtime binding file')
     raw = U.private(path.parent / filename)
     binding = json.loads(raw)
@@ -158,6 +170,24 @@ def public(path, state):
 def rpc(api, code):
     return V.C.marked_json(api, api.run(
         ['docker', 'exec', '-i', 'backend', 'sh', '-c', V.RPC_SCRIPT], input_text=code, timeout=20))
+
+
+def current_runtime_health(api, binding):
+    manifest, _, _ = api.configuration(ROOT, 'dev')
+    rows = api.inspect_project(manifest)
+    api.ensure_stable(binding['runtime_before'], rows, 'Runtime changed; native cursor retained')
+    backend = rows['backend']
+    ready = api.run(['docker', 'exec', backend['Id'], 'curl', '-fsS', '--max-time', '5',
+                     'http://127.0.0.1:4000/api/health/readiness'], timeout=10).strip() == 'OK'
+    expression = '''
+"10.2.6" = to_string(Application.spec(:explorer, :vsn))
+true = Explorer.Migrator.StartupControl.disabled?()
+false = Application.get_env(:indexer, Indexer.Prometheus.Metrics)[:enabled]
+IO.puts("BLOCKSCOUT_DEPLOY_CHECK=" <> Jason.encode!(%{runtime_ok: true}))
+'''
+    probe = rpc(api, expression)
+    J.P.require(ready and probe.get('runtime_ok') is True, 'Current backend runtime is not qualified')
+    return {'status': 'verified', 'backend_readiness_ok': ready, 'runtime_ok': True}
 
 
 def owned(api, path, inputs):
@@ -365,7 +395,9 @@ def run(api, root, path):
                 if time.monotonic() - last_health >= 15:
                     started = time.monotonic()
                     if binding:
-                        if 'infrastructure_release_state' in binding:
+                        if binding.get('format') == CURRENT_RUNTIME_FORMAT:
+                            health = current_runtime_health(api, binding)
+                        elif 'infrastructure_release_state' in binding:
                             import v10_infrastructure_deploy as I
                             health = I.verify_native(DeadlineAPI(api, started + 25), path, state, binding)
                         elif 'frontend_release_state' in binding:
