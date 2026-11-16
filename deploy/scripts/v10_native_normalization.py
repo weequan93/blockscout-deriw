@@ -94,6 +94,17 @@ def load(path):
                 'Native job policy changed')
     J.P.require(R.digest(U.private(path.parent / 'native.exs')) == inputs['script_sha256'],
                 'Frozen native worker source changed')
+    repair = state.get('worker_repair')
+    if repair is not None:
+        J.P.require(repair.get('format') == 'blockscout-dev-v10-oversized-block-repair-v1'
+                    and type(repair.get('block')) is int and repair['block'] >= 0
+                    and repair.get('script_file') == 'native-oversized-block.exs'
+                    and type(repair.get('max_rows')) is int and repair['max_rows'] == 12000
+                    and re.fullmatch(r'[a-f0-9]{64}', repair.get('script_sha256', '')),
+                    'Invalid oversized-block repair metadata')
+        repair_script = U.private(path.parent / repair['script_file'])
+        J.P.require(R.digest(repair_script) == repair['script_sha256'],
+                    'Oversized-block repair source changed')
     J.P.require(state['phase'] in ('prepared', 'launch_requested', 'running', 'waiting', 'paused', *TERMINAL)
                 and type(state['batch_blocks']) is int and 1 <= state['batch_blocks'] <= 1000,
                 'Invalid native job checkpoint')
@@ -272,6 +283,7 @@ def launch(api, path, state):
             return
         stop_client(api, path, inputs)
     save(path, state, 'launch_requested')
+    worker_script = path.parent / state.get('worker_repair', {}).get('script_file', 'native.exs')
     command = U.client_command(inputs['candidate_image'], inputs['network'], inputs['client_name'], str(path))
     command.remove('--rm')
     command[command.index(U.ROLE_LABEL + '=schema-client')] = U.ROLE_LABEL + '=native-normalizer'
@@ -280,7 +292,7 @@ def launch(api, path, state):
     process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     WORKER_PROCESSES[inputs['client_name']] = process
     try:
-        process.stdin.write(U.archive(inputs['backend_environment'], payload, U.private(path.parent / 'native.exs')))
+        process.stdin.write(U.archive(inputs['backend_environment'], payload, U.private(worker_script)))
         process.stdin.close()
     except BaseException:
         B.terminate(process)
