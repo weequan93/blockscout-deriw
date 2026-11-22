@@ -97,10 +97,12 @@ def load(path):
     repair = state.get('worker_repair')
     if repair is not None:
         J.P.require(repair.get('format') in ('blockscout-dev-v10-oversized-block-repair-v1',
-                                           'blockscout-dev-v10-oversized-block-repair-v2')
+                                           'blockscout-dev-v10-oversized-block-repair-v2',
+                                           'blockscout-dev-v10-oversized-block-repair-v3')
                     and type(repair.get('block')) is int
                     and 0 <= repair['block'] < inputs['payload']['start_before_block']
-                    and type(repair.get('max_rows')) is int and repair['max_rows'] == 12000
+                    and type(repair.get('max_rows')) is int
+                    and repair['max_rows'] in ((12000, 16000) if repair['format'].endswith('-v3') else (12000,))
                     and re.fullmatch(r'[a-f0-9]{64}', repair.get('script_sha256', '')),
                     'Invalid oversized-block repair metadata')
         expected_file = ('native-oversized-block.exs'
@@ -110,9 +112,10 @@ def load(path):
         repair_script = U.private(path.parent / repair['script_file'])
         J.P.require(R.digest(repair_script) == repair['script_sha256'],
                     'Oversized-block repair source changed')
-        if repair['format'].endswith('-v2'):
+        if not repair['format'].endswith('-v1'):
             from v10_native_oversized_block_repair import repair_source
-            J.P.require(repair_script == repair_source(U.private(path.parent / 'native.exs').decode(), repair['block']).encode(),
+            J.P.require(repair_script == repair_source(U.private(path.parent / 'native.exs').decode(),
+                                                       repair['block'], repair['max_rows']).encode(),
                         'Oversized-block repair differs from the bounded source template')
     J.P.require(state['phase'] in ('prepared', 'launch_requested', 'running', 'waiting', 'paused', *TERMINAL)
                 and type(state['batch_blocks']) is int and 1 <= state['batch_blocks'] <= 1000,

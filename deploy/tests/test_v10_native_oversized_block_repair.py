@@ -70,6 +70,17 @@ class RepairTests(unittest.TestCase):
         N.R.update_state(self.path, self.state)
         return record, source
 
+    def v2_repair(self):
+        source = R.repair_source(self.original.decode(), 9179901).encode()
+        digest = N.R.digest(source)
+        record = {'format': 'blockscout-dev-v10-oversized-block-repair-v2', 'block': 9179901,
+                  'max_rows': 12000, 'script_file': f'native-oversized-block-9179901-{digest[:12]}.exs',
+                  'script_sha256': digest}
+        N.R.write_new(self.directory / record['script_file'], source)
+        self.state['worker_repair'] = record
+        N.R.update_state(self.path, self.state)
+        return record, source
+
     def test_second_block_preserves_original_script_previous_repair_and_cursor(self):
         old, raw = self.legacy_repair()
         self.state['phase'] = 'paused'  # Rebind occurs before preparation.
@@ -95,6 +106,68 @@ class RepairTests(unittest.TestCase):
             R.prepare(self.api, ROOT, self.path, 9179901)
         self.assertEqual(first, sorted(p.name for p in self.directory.iterdir()))
         self.assertEqual(N.load(self.path)['worker_repair_history'], [old])
+
+    def test_explicit_16000_cap_passes_15297_and_boundary_preserving_v2_repair(self):
+        old, raw = self.v2_repair()
+        self.assertEqual(N.load(self.path)['worker_repair'], old)
+        block = 9179898
+        self.state['database']['native_meta']['max_block_number'] = block
+        self.anchor['native_status']['meta']['max_block_number'] = block
+        self.write_binding()
+        report = {**self.report, 'cursor': block, 'all_rows': 15297, 'target_rows': 15297,
+                  'all_bytes': 5000028, 'target_bytes': 5000028}
+        with self.prepare_context(report):
+            with self.assertRaisesRegex(N.D.ConfigError, 'bounded oversized-block'):
+                R.prepare(self.api, ROOT, self.path, block)
+            result = R.prepare(self.api, ROOT, self.path, block, max_rows=16000)
+        self.assertEqual(result['target_rows'], 15297)
+        self.assertEqual(result['max_rows'], 16000)
+        saved = N.load(self.path)
+        self.assertEqual(saved['worker_repair_history'], [old])
+        self.assertEqual((self.directory / old['script_file']).read_bytes(), raw)
+        self.assertEqual(saved['database'], self.state['database'])
+        self.assertEqual((self.directory / 'native.exs').read_bytes(), self.original)
+        self.assertEqual(saved['inputs'], self.inputs)
+        with self.prepare_context({**report, 'all_rows': 16000, 'target_rows': 16000}):
+            R.prepare(self.api, ROOT, self.path, block, max_rows=16000)
+        self.assertEqual(N.load(self.path)['worker_repair'], saved['worker_repair'])
+        self.assertEqual(N.load(self.path)['worker_repair_history'], [old])
+
+    def test_16000_cap_rejects_overflow_and_unsupported_limits_without_preparing(self):
+        before = self.path.read_bytes()
+        files = sorted(p.name for p in self.directory.iterdir())
+        for mutation in ({'all_rows': 16001, 'target_rows': 16001},
+                         {'all_bytes': 16777217, 'target_bytes': 16777217}):
+            with self.subTest(mutation=mutation), self.prepare_context({**self.report, **mutation}):
+                with self.assertRaisesRegex(N.D.ConfigError, 'bounded oversized-block'):
+                    R.prepare(self.api, ROOT, self.path, 9179901, max_rows=16000)
+            self.assertEqual(self.path.read_bytes(), before)
+            self.assertEqual(sorted(p.name for p in self.directory.iterdir()), files)
+        for cap in (True, 0, 12001, 15999, 16001, 50000):
+            with self.subTest(cap=cap), self.prepare_context():
+                with self.assertRaisesRegex(N.D.ConfigError, 'Unsupported'):
+                    R.prepare(self.api, ROOT, self.path, 9179901, max_rows=cap)
+                with self.assertRaisesRegex(N.D.ConfigError, 'Unsupported'):
+                    R.repair_source(self.original.decode(), 9179901, max_rows=cap)
+            self.assertEqual(self.path.read_bytes(), before)
+
+    def test_v2_metadata_cannot_claim_the_new_16000_cap(self):
+        self.v2_repair()
+        self.state['worker_repair']['max_rows'] = 16000
+        N.R.update_state(self.path, self.state)
+        with self.assertRaisesRegex(N.U.UpgradeError, 'Invalid oversized-block repair metadata'):
+            N.load(self.path)
+
+    def test_read_only_preparation_sample_uses_one_more_than_selected_cap(self):
+        for cap in R.ROW_LIMITS:
+            with self.subTest(cap=cap), patch.object(self.api, 'run', return_value='') as run, \
+                 patch.object(N.V.C, 'marked_json', return_value={}):
+                R.rpc(self.api, 9179898, cap)
+            code = run.call_args.args[0][-1]
+            self.assertIn(f'[block, {cap + 1}]', code)
+            self.assertIn('SET TRANSACTION READ ONLY', code)
+            self.assertIn("statement_timeout='10s'", code)
+            self.assertIn("lock_timeout='500ms'", code)
 
     def test_guard_rejects_excess_rows_bytes_wrong_token_or_checkpoint_without_preparing(self):
         mutations = [{'target_rows': 12001, 'all_rows': 12001},
@@ -137,6 +210,8 @@ class RepairTests(unittest.TestCase):
         self.assertIn('wal <= 134217728', source)
         self.assertIn("statement_timeout='30s'", source)
         self.assertIn('EmptyInternalTransactionsData.update_batch(blocks)', source)
+        expanded = R.repair_source(self.original.decode(), 9179898, max_rows=16000)
+        self.assertEqual(expanded, source.replace('[9179901], do: 12000', '[9179898], do: 16000'))
         with self.assertRaises(N.D.ConfigError):
             R.repair_source(source, 9179900)
         with self.assertRaises(N.D.ConfigError):
@@ -144,10 +219,10 @@ class RepairTests(unittest.TestCase):
 
     def test_load_rejects_a_rehashed_worker_that_widens_the_cap(self):
         with self.prepare_context():
-            R.prepare(self.api, ROOT, self.path, 9179901)
+            R.prepare(self.api, ROOT, self.path, 9179901, max_rows=16000)
         saved = N.load(self.path)
         record = saved['worker_repair']
-        raw = (self.directory / record['script_file']).read_bytes().replace(b'do: 12000', b'do: 999999')
+        raw = (self.directory / record['script_file']).read_bytes().replace(b'do: 16000', b'do: 999999')
         record['script_sha256'] = N.R.digest(raw)
         record['script_file'] = f"native-oversized-block-9179901-{record['script_sha256'][:12]}.exs"
         N.R.write_new(self.directory / record['script_file'], raw)

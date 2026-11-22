@@ -13,7 +13,8 @@ import v10_upgrade as U
 
 ROOT = Path(__file__).resolve().parents[2]
 MAX_ROWS = 12000
-REPAIR_FORMAT = 'blockscout-dev-v10-oversized-block-repair-v2'
+ROW_LIMITS = (12000, 16000)
+REPAIR_FORMAT = 'blockscout-dev-v10-oversized-block-repair-v3'
 
 
 def require(condition, message):
@@ -21,8 +22,13 @@ def require(condition, message):
         raise D.ConfigError(message)
 
 
-def repair_source(original, block):
+def require_row_limit(max_rows):
+    require(type(max_rows) is int and max_rows in ROW_LIMITS, 'Unsupported oversized-block row limit')
+
+
+def repair_source(original, block, max_rows=MAX_ROWS):
     require(type(block) is int and 0 <= block < 2**63, 'Invalid oversized-block identity')
+    require_row_limit(max_rows)
     sample = '''      [[rows, bytes]] = Explorer.Repo.query!(~S"""
       SELECT count(*),COALESCE(sum(pg_column_size(it)),0)::bigint
       FROM (SELECT it.* FROM public.internal_transactions it WHERE block_number=ANY($1::bigint[]) LIMIT 10001) it
@@ -34,13 +40,14 @@ def repair_source(original, block):
     # Read one extra row beyond the active cap before allowing the native update.
     # The previous repair kept LIMIT 10001 even when its cap was 12000.
     expanded_sample = sample.replace('LIMIT 10001', 'LIMIT $2').replace('[blocks],', '[blocks, limit + 1],')
-    source = original.replace(sample, f'      limit = if blocks == [{block}], do: {MAX_ROWS}, else: 10000\n' + expanded_sample)
+    source = original.replace(sample, f'      limit = if blocks == [{block}], do: {max_rows}, else: 10000\n' + expanded_sample)
     source = source.replace(first, 'unless rows <= limit and bytes <= 16777216, do: fail!("native_batch_requires_smaller_range")')
     source = source.replace(second, 'unless updated <= limit, do: fail!("native_batch_requires_smaller_range")')
     return source
 
 
-def rpc(api, block):
+def rpc(api, block, max_rows=MAX_ROWS):
+    require_row_limit(max_rows)
     code = f'''
 true = Explorer.Migrator.StartupControl.disabled?()
 "10.2.6" = to_string(Application.spec(:explorer, :vsn))
@@ -63,7 +70,7 @@ block = {block}
        (it.created_contract_address_hash IS NOT NULL AND it.to_address_hash IS NULL)
       ))
     FROM (SELECT * FROM public.internal_transactions WHERE block_number=$1 LIMIT $2) it
-  """, [block, {MAX_ROWS + 1}], log: false, timeout: 11000).rows
+  """, [block, {max_rows + 1}], log: false, timeout: 11000).rows
   %{{status: status, token: token, cursor: cursor, all_rows: all_rows, all_bytes: all_bytes,
      target_rows: target_rows, target_bytes: all_bytes}}
 end, timeout: 12000)
@@ -72,7 +79,8 @@ IO.puts("BLOCKSCOUT_DEPLOY_CHECK=" <> Jason.encode!(result))
     return N.V.C.marked_json(api, api.run(['docker', 'exec', 'backend', 'bin/blockscout', 'rpc', code], timeout=20))
 
 
-def prepare(api, root, path, block):
+def prepare(api, root, path, block, max_rows=MAX_ROWS):
+    require_row_limit(max_rows)
     state = N.load(path)
     stopped_on_guard = (state['phase'] == 'needs_attention'
                         and state.get('reason') == 'native_batch_requires_smaller_range')
@@ -99,16 +107,16 @@ def prepare(api, root, path, block):
     require(type(block) is int and 0 <= block < state['inputs']['payload']['start_before_block']
             and native.get('max_block_number') == block,
             'Select the exact stopped native cursor with --block')
-    report = rpc(api, block)
+    report = rpc(api, block, max_rows)
     require(report['status'] == 'started' and report['token'] == state['inputs']['payload']['token']
             and report['cursor'] == block, 'Native database checkpoint changed before repair')
-    require(type(report['target_rows']) is int and 10000 < report['target_rows'] <= MAX_ROWS
+    require(type(report['target_rows']) is int and 10000 < report['target_rows'] <= max_rows
             and type(report['target_bytes']) is int and report['target_bytes'] <= 16777216
             and report['target_rows'] == report['all_rows']
             and report['target_bytes'] == report['all_bytes'],
             'The cursor block does not match the bounded oversized-block repair')
     original = U.private(path.parent / 'native.exs').decode()
-    data = repair_source(original, block).encode()
+    data = repair_source(original, block, max_rows).encode()
     filename = f'native-oversized-block-{block}-{R.digest(data)[:12]}.exs'
     repair_path = path.parent / filename
     api.ensure_stable(current, api.inspect_project(manifest), 'Runtime changed during repair preparation')
@@ -116,7 +124,7 @@ def prepare(api, root, path, block):
         require(U.private(repair_path) == data, 'An existing oversized-block repair differs')
     else:
         R.write_new(repair_path, data)
-    record = {'format': REPAIR_FORMAT, 'block': block, 'max_rows': MAX_ROWS,
+    record = {'format': REPAIR_FORMAT, 'block': block, 'max_rows': max_rows,
               'script_file': filename, 'script_sha256': R.digest(data)}
     previous = state.get('worker_repair')
     if previous and previous != record:
@@ -125,18 +133,20 @@ def prepare(api, root, path, block):
     N.save(path, state, 'prepared', 'oversized_block_repair_prepared')
     return {'status': 'oversized_block_repair_prepared', 'state': str(path),
             'block': block, 'target_rows': report['target_rows'],
-            'target_bytes': report['target_bytes'], 'max_rows': MAX_ROWS}
+            'target_bytes': report['target_bytes'], 'max_rows': max_rows}
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--state', type=Path, required=True)
     parser.add_argument('--block', type=int, required=True)
+    parser.add_argument('--max-rows', type=int, choices=ROW_LIMITS, default=MAX_ROWS,
+                        help='Explicit row allowance for this block only (default: 12000)')
     args = parser.parse_args(argv)
     require(os.geteuid() == 0 and sys.platform.startswith('linux'), 'Run on the dev Linux server as root')
     path = args.state.resolve(strict=True)
     with N.M.global_lock(True), N.B.build_lock(D, D.MANAGED_RELEASES, ROOT):
-        result = prepare(D, ROOT, path, args.block)
+        result = prepare(D, ROOT, path, args.block, args.max_rows)
     print(json.dumps(result, indent=2))
 
 

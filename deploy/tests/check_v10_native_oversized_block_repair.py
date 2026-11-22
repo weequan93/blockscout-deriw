@@ -23,10 +23,12 @@ def check(image, network, token, environment, sql, pg, directory):
     existing = int(sql('SELECT count(*) FROM internal_transactions WHERE block_number=20').strip())
     clone(20, 10147 - existing, 100000)
     clone(19, 10147, 200000)
-    clone(18, 12001, 300000)
+    clone(18, 15297, 300000)
+    clone(17, 16000, 400000)
+    clone(16, 16001, 500000)
     sql('CREATE INDEX native_repair_fixture_block ON internal_transactions(block_number)')
     sql("CREATE FUNCTION native_repair_reject_overflow() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
-        "IF NEW.block_number IN (18,19) THEN RAISE EXCEPTION 'unapproved_callback_update'; END IF; RETURN NEW; END $$")
+        "IF NEW.block_number IN (16,17,18,19) THEN RAISE EXCEPTION 'unapproved_callback_update'; END IF; RETURN NEW; END $$")
     sql('CREATE TRIGGER native_repair_reject_overflow BEFORE UPDATE ON internal_transactions '
         'FOR EACH ROW EXECUTE FUNCTION native_repair_reject_overflow()')
     row = json.loads(G.run(['docker', 'inspect', pg]))[0]
@@ -45,7 +47,7 @@ def check(image, network, token, environment, sql, pg, directory):
     original = (ROOT / 'deploy/scripts/v10/native_normalization.exs').read_text()
     names, processes = [], []
 
-    def exercise(block):
+    def exercise(block, max_rows=12000):
         name = 'native-repair-fixture-' + uuid.uuid4().hex[:12]
         names.append(name)
         log = (directory / (name + '.log.private')).open('wb')
@@ -53,7 +55,7 @@ def check(image, network, token, environment, sql, pg, directory):
         command[2:2] = ['--label', G.LABEL + '=' + token]
         process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=log, stderr=log)
         processes.append((process, log))
-        source = R.repair_source(original, block).encode()
+        source = R.repair_source(original, block, max_rows).encode()
         process.stdin.write(U.archive(environment, payload, source))
         process.stdin.close()
         deadline = time.monotonic() + 90
@@ -90,18 +92,34 @@ def check(image, network, token, environment, sql, pg, directory):
         assert first['reason'] == 'native_batch_requires_smaller_range', first
         assert remaining(20) == 0 and remaining(19) == 10147 and cursor() == 19
         sql("CREATE OR REPLACE FUNCTION native_repair_reject_overflow() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
-            "IF NEW.block_number=18 THEN RAISE EXCEPTION 'unapproved_callback_update'; END IF; RETURN NEW; END $$")
+            "IF NEW.block_number IN (16,17,18) THEN RAISE EXCEPTION 'unapproved_callback_update'; END IF; RETURN NEW; END $$")
         second = exercise(19)
         assert second['reason'] == 'native_batch_requires_smaller_range', second
-        assert remaining(19) == 0 and remaining(18) == 12001 and cursor() == 18
+        assert remaining(19) == 0 and remaining(18) == 15297 and cursor() == 18
         third = exercise(18)
         assert third['reason'] == 'native_batch_requires_smaller_range', third
-        assert remaining(18) == 12001 and cursor() == 18
+        assert remaining(18) == 15297 and cursor() == 18
+        sql("CREATE OR REPLACE FUNCTION native_repair_reject_overflow() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
+            "IF NEW.block_number IN (16,17) THEN RAISE EXCEPTION 'unapproved_callback_update'; END IF; RETURN NEW; END $$")
+        fourth = exercise(18, max_rows=16000)
+        assert fourth['reason'] == 'native_batch_requires_smaller_range', fourth
+        assert remaining(18) == 0 and remaining(17) == 16000 and cursor() == 17
+        sql("CREATE OR REPLACE FUNCTION native_repair_reject_overflow() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
+            "IF NEW.block_number=16 THEN RAISE EXCEPTION 'unapproved_callback_update'; END IF; RETURN NEW; END $$")
+        fifth = exercise(17, max_rows=16000)
+        assert fifth['reason'] == 'native_batch_requires_smaller_range', fifth
+        assert remaining(17) == 0 and remaining(16) == 16001 and cursor() == 16
+        sixth = exercise(16, max_rows=16000)
+        assert sixth['reason'] == 'native_batch_requires_smaller_range', sixth
+        assert remaining(16) == 16001 and cursor() == 16
         return {'status': 'passed', 'local_pg15_only': True, 'live_services_accessed': False,
                 'first_10147_row_block_committed_and_checkpointed': True,
                 'second_10147_row_block_committed_and_checkpointed': True,
                 'unapproved_block_above_10000_rejected_before_update': True,
                 'approved_block_above_12000_rejected_before_update': True,
+                'explicit_16000_cap_committed_15297_rows_and_checkpointed': True,
+                'explicit_16000_cap_committed_16000_rows_and_checkpointed': True,
+                'approved_block_above_16000_rejected_before_update': True,
                 'rejected_block_rows_and_cursor_unchanged': True}
     finally:
         for name in names:
