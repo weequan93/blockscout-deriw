@@ -95,7 +95,10 @@ def load(path):
     J.P.require(R.digest(U.private(path.parent / 'native.exs')) == inputs['script_sha256'],
                 'Frozen native worker source changed')
     repair = state.get('worker_repair')
-    if repair is not None:
+    if repair is not None and repair.get('format') == 'blockscout-dev-v10-native-row-chunks-v1':
+        from v10_native_row_chunk_repair import validate_record
+        validate_record(path, inputs, repair)
+    elif repair is not None:
         J.P.require(repair.get('format') in ('blockscout-dev-v10-oversized-block-repair-v1',
                                            'blockscout-dev-v10-oversized-block-repair-v2',
                                            'blockscout-dev-v10-oversized-block-repair-v3')
@@ -284,7 +287,8 @@ def read_worker(api, inputs):
     report = json.loads(text)
     J.P.require(report.get('token') == inputs['payload']['token'], 'Native worker token changed')
     return {k: report[k] for k in ('phase', 'reason', 'last_batch_updated_rows',
-                                 'last_batch_wal_bytes', 'last_batch_rows') if k in report}
+                                 'last_batch_wal_bytes', 'last_batch_rows',
+                                 'row_chunk_block', 'row_chunk_committed_rows') if k in report}
 
 
 def launch(api, path, state):
