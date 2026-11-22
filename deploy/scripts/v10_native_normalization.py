@@ -102,7 +102,7 @@ def load(path):
                     and type(repair.get('block')) is int
                     and 0 <= repair['block'] < inputs['payload']['start_before_block']
                     and type(repair.get('max_rows')) is int
-                    and repair['max_rows'] in ((12000, 16000) if repair['format'].endswith('-v3') else (12000,))
+                    and repair['max_rows'] in ((12000, 16000, 20000) if repair['format'].endswith('-v3') else (12000,))
                     and re.fullmatch(r'[a-f0-9]{64}', repair.get('script_sha256', '')),
                     'Invalid oversized-block repair metadata')
         expected_file = ('native-oversized-block.exs'

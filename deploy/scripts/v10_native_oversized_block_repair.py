@@ -13,7 +13,7 @@ import v10_upgrade as U
 
 ROOT = Path(__file__).resolve().parents[2]
 MAX_ROWS = 12000
-ROW_LIMITS = (12000, 16000)
+ROW_LIMITS = (12000, 16000, 20000)
 REPAIR_FORMAT = 'blockscout-dev-v10-oversized-block-repair-v3'
 
 
@@ -114,7 +114,9 @@ def prepare(api, root, path, block, max_rows=MAX_ROWS):
             and type(report['target_bytes']) is int and report['target_bytes'] <= 16777216
             and report['target_rows'] == report['all_rows']
             and report['target_bytes'] == report['all_bytes'],
-            'The cursor block does not match the bounded oversized-block repair')
+            'The cursor block does not match the bounded oversized-block repair '
+            f"(sampled_rows={report['all_rows']}, target_rows={report['target_rows']}, "
+            f"sampled_bytes={report['all_bytes']}, max_rows={max_rows}; sample capped at {max_rows + 1} rows)")
     original = U.private(path.parent / 'native.exs').decode()
     data = repair_source(original, block, max_rows).encode()
     filename = f'native-oversized-block-{block}-{R.digest(data)[:12]}.exs'

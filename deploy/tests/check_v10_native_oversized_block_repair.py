@@ -26,9 +26,12 @@ def check(image, network, token, environment, sql, pg, directory):
     clone(18, 15297, 300000)
     clone(17, 16000, 400000)
     clone(16, 16001, 500000)
+    clone(15, 17015, 600000)
+    clone(14, 20000, 700000)
+    clone(13, 20001, 800000)
     sql('CREATE INDEX native_repair_fixture_block ON internal_transactions(block_number)')
     sql("CREATE FUNCTION native_repair_reject_overflow() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
-        "IF NEW.block_number IN (16,17,18,19) THEN RAISE EXCEPTION 'unapproved_callback_update'; END IF; RETURN NEW; END $$")
+        "IF NEW.block_number < 20 THEN RAISE EXCEPTION 'unapproved_callback_update'; END IF; RETURN NEW; END $$")
     sql('CREATE TRIGGER native_repair_reject_overflow BEFORE UPDATE ON internal_transactions '
         'FOR EACH ROW EXECUTE FUNCTION native_repair_reject_overflow()')
     row = json.loads(G.run(['docker', 'inspect', pg]))[0]
@@ -92,7 +95,7 @@ def check(image, network, token, environment, sql, pg, directory):
         assert first['reason'] == 'native_batch_requires_smaller_range', first
         assert remaining(20) == 0 and remaining(19) == 10147 and cursor() == 19
         sql("CREATE OR REPLACE FUNCTION native_repair_reject_overflow() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
-            "IF NEW.block_number IN (16,17,18) THEN RAISE EXCEPTION 'unapproved_callback_update'; END IF; RETURN NEW; END $$")
+            "IF NEW.block_number < 19 THEN RAISE EXCEPTION 'unapproved_callback_update'; END IF; RETURN NEW; END $$")
         second = exercise(19)
         assert second['reason'] == 'native_batch_requires_smaller_range', second
         assert remaining(19) == 0 and remaining(18) == 15297 and cursor() == 18
@@ -100,18 +103,36 @@ def check(image, network, token, environment, sql, pg, directory):
         assert third['reason'] == 'native_batch_requires_smaller_range', third
         assert remaining(18) == 15297 and cursor() == 18
         sql("CREATE OR REPLACE FUNCTION native_repair_reject_overflow() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
-            "IF NEW.block_number IN (16,17) THEN RAISE EXCEPTION 'unapproved_callback_update'; END IF; RETURN NEW; END $$")
+            "IF NEW.block_number < 18 THEN RAISE EXCEPTION 'unapproved_callback_update'; END IF; RETURN NEW; END $$")
         fourth = exercise(18, max_rows=16000)
         assert fourth['reason'] == 'native_batch_requires_smaller_range', fourth
         assert remaining(18) == 0 and remaining(17) == 16000 and cursor() == 17
         sql("CREATE OR REPLACE FUNCTION native_repair_reject_overflow() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
-            "IF NEW.block_number=16 THEN RAISE EXCEPTION 'unapproved_callback_update'; END IF; RETURN NEW; END $$")
+            "IF NEW.block_number < 17 THEN RAISE EXCEPTION 'unapproved_callback_update'; END IF; RETURN NEW; END $$")
         fifth = exercise(17, max_rows=16000)
         assert fifth['reason'] == 'native_batch_requires_smaller_range', fifth
         assert remaining(17) == 0 and remaining(16) == 16001 and cursor() == 16
         sixth = exercise(16, max_rows=16000)
         assert sixth['reason'] == 'native_batch_requires_smaller_range', sixth
         assert remaining(16) == 16001 and cursor() == 16
+        sql("CREATE OR REPLACE FUNCTION native_repair_reject_overflow() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
+            "IF NEW.block_number < 16 THEN RAISE EXCEPTION 'unapproved_callback_update'; END IF; RETURN NEW; END $$")
+        seventh = exercise(16, max_rows=20000)
+        assert seventh['reason'] == 'native_batch_requires_smaller_range', seventh
+        assert remaining(16) == 0 and remaining(15) == 17015 and cursor() == 15
+        sql("CREATE OR REPLACE FUNCTION native_repair_reject_overflow() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
+            "IF NEW.block_number < 15 THEN RAISE EXCEPTION 'unapproved_callback_update'; END IF; RETURN NEW; END $$")
+        eighth = exercise(15, max_rows=20000)
+        assert eighth['reason'] == 'native_batch_requires_smaller_range', eighth
+        assert remaining(15) == 0 and remaining(14) == 20000 and cursor() == 14
+        sql("CREATE OR REPLACE FUNCTION native_repair_reject_overflow() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
+            "IF NEW.block_number < 14 THEN RAISE EXCEPTION 'unapproved_callback_update'; END IF; RETURN NEW; END $$")
+        ninth = exercise(14, max_rows=20000)
+        assert ninth['reason'] == 'native_batch_requires_smaller_range', ninth
+        assert remaining(14) == 0 and remaining(13) == 20001 and cursor() == 13
+        tenth = exercise(13, max_rows=20000)
+        assert tenth['reason'] == 'native_batch_requires_smaller_range', tenth
+        assert remaining(13) == 20001 and cursor() == 13
         return {'status': 'passed', 'local_pg15_only': True, 'live_services_accessed': False,
                 'first_10147_row_block_committed_and_checkpointed': True,
                 'second_10147_row_block_committed_and_checkpointed': True,
@@ -120,6 +141,9 @@ def check(image, network, token, environment, sql, pg, directory):
                 'explicit_16000_cap_committed_15297_rows_and_checkpointed': True,
                 'explicit_16000_cap_committed_16000_rows_and_checkpointed': True,
                 'approved_block_above_16000_rejected_before_update': True,
+                'explicit_20000_cap_committed_17015_rows_and_checkpointed': True,
+                'explicit_20000_cap_committed_20000_rows_and_checkpointed': True,
+                'approved_block_above_20000_rejected_before_update': True,
                 'rejected_block_rows_and_cursor_unchanged': True}
     finally:
         for name in names:

@@ -143,13 +143,61 @@ class RepairTests(unittest.TestCase):
                     R.prepare(self.api, ROOT, self.path, 9179901, max_rows=16000)
             self.assertEqual(self.path.read_bytes(), before)
             self.assertEqual(sorted(p.name for p in self.directory.iterdir()), files)
-        for cap in (True, 0, 12001, 15999, 16001, 50000):
+        for cap in (True, 0, 12001, 15999, 16001, 20001, 50000):
             with self.subTest(cap=cap), self.prepare_context():
                 with self.assertRaisesRegex(N.D.ConfigError, 'Unsupported'):
                     R.prepare(self.api, ROOT, self.path, 9179901, max_rows=cap)
                 with self.assertRaisesRegex(N.D.ConfigError, 'Unsupported'):
                     R.repair_source(self.original.decode(), 9179901, max_rows=cap)
             self.assertEqual(self.path.read_bytes(), before)
+
+    def test_explicit_20000_cap_passes_17015_and_boundary_preserving_16000_repair(self):
+        with self.prepare_context():
+            R.prepare(self.api, ROOT, self.path, 9179901, max_rows=16000)
+        self.state = N.load(self.path)
+        old = deepcopy(self.state['worker_repair'])
+        old_script = (self.directory / old['script_file']).read_bytes()
+        block = 9179875
+        self.state.update(phase='needs_attention', reason='native_batch_requires_smaller_range')
+        self.state['database']['native_meta']['max_block_number'] = block
+        self.anchor['native_status']['meta']['max_block_number'] = block
+        self.write_binding()
+        report = {**self.report, 'cursor': block, 'all_rows': 17015, 'target_rows': 17015,
+                  'all_bytes': 5561556, 'target_bytes': 5561556}
+        with self.prepare_context(report):
+            with self.assertRaisesRegex(N.D.ConfigError, 'bounded oversized-block'):
+                R.prepare(self.api, ROOT, self.path, block, max_rows=16000)
+            result = R.prepare(self.api, ROOT, self.path, block, max_rows=20000)
+        self.assertEqual(result['target_rows'], 17015)
+        self.assertEqual(result['max_rows'], 20000)
+        saved = N.load(self.path)
+        self.assertEqual(saved['worker_repair_history'], [old])
+        self.assertEqual((self.directory / old['script_file']).read_bytes(), old_script)
+        self.assertEqual(saved['database'], self.state['database'])
+        self.assertEqual((self.directory / 'native.exs').read_bytes(), self.original)
+        self.assertEqual(saved['inputs'], self.inputs)
+        with self.prepare_context({**report, 'all_rows': 20000, 'target_rows': 20000}):
+            R.prepare(self.api, ROOT, self.path, block, max_rows=20000)
+        self.assertEqual(N.load(self.path)['worker_repair'], saved['worker_repair'])
+
+    def test_20000_cap_rejects_overflow_bytes_and_partial_target_with_bounded_counts(self):
+        before = self.path.read_bytes()
+        files = sorted(p.name for p in self.directory.iterdir())
+        for mutation in ({'all_rows': 20001, 'target_rows': 20001},
+                         {'all_bytes': 16777217, 'target_bytes': 16777217},
+                         {'all_rows': 17015, 'target_rows': 17014}):
+            report = {**self.report, **mutation}
+            with self.subTest(mutation=mutation), self.prepare_context(report):
+                with self.assertRaises(N.D.ConfigError) as error:
+                    R.prepare(self.api, ROOT, self.path, 9179901, max_rows=20000)
+            message = str(error.exception)
+            self.assertIn(f"sampled_rows={report['all_rows']}", message)
+            self.assertIn(f"target_rows={report['target_rows']}", message)
+            self.assertIn(f"sampled_bytes={report['all_bytes']}", message)
+            self.assertIn('sample capped at 20001 rows', message)
+            self.assertNotIn(self.report['token'], message)
+            self.assertEqual(self.path.read_bytes(), before)
+            self.assertEqual(sorted(p.name for p in self.directory.iterdir()), files)
 
     def test_v2_metadata_cannot_claim_the_new_16000_cap(self):
         self.v2_repair()
@@ -212,6 +260,8 @@ class RepairTests(unittest.TestCase):
         self.assertIn('EmptyInternalTransactionsData.update_batch(blocks)', source)
         expanded = R.repair_source(self.original.decode(), 9179898, max_rows=16000)
         self.assertEqual(expanded, source.replace('[9179901], do: 12000', '[9179898], do: 16000'))
+        expanded = R.repair_source(self.original.decode(), 9179875, max_rows=20000)
+        self.assertEqual(expanded, source.replace('[9179901], do: 12000', '[9179875], do: 20000'))
         with self.assertRaises(N.D.ConfigError):
             R.repair_source(source, 9179900)
         with self.assertRaises(N.D.ConfigError):
