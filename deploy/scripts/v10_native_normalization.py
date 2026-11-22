@@ -21,6 +21,7 @@ import v10_normalization_reuse as Q
 import v10_upgrade as U
 import v10_vacuum as V
 import v10_infrastructure_checks as K
+import v10_native_overlap_trial as O
 
 ROOT = Path(__file__).resolve().parents[2]
 BASE = Path('/data/blockscout-dev-private/v10-native-normalization')
@@ -48,7 +49,8 @@ true = Explorer.Migrator.StartupControl.disabled?()
     'native_status',(SELECT status FROM migrations_status WHERE migration_name='empty_internal_transactions_data'),
     'native_meta',(SELECT meta FROM migrations_status WHERE migration_name='empty_internal_transactions_data'),
     'dead_rows',(SELECT n_dead_tup FROM pg_stat_user_tables WHERE relid='public.internal_transactions'::regclass),
-    'autovacuum_running',(SELECT count(*) FROM pg_stat_progress_vacuum WHERE relid='public.internal_transactions'::regclass),
+    'autovacuum_running',(SELECT count(*) FROM pg_stat_progress_vacuum
+      WHERE relid='public.internal_transactions'::regclass AND datname=current_database()),
     'long_client_transactions',(SELECT count(*) FROM pg_stat_activity
       WHERE datname=current_database() AND backend_type='client backend'
         AND pid<>pg_backend_pid() AND application_name<>$1
@@ -124,6 +126,7 @@ def load(path):
                 and type(state['batch_blocks']) is int and 1 <= state['batch_blocks'] <= 1000,
                 'Invalid native job checkpoint')
     runtime_binding(path, state)
+    O.load_trial(path, state)
     return state
 
 
@@ -175,7 +178,7 @@ def runtime_binding(path, state):
 def public(path, state):
     inputs = state['inputs']
     meta = (state.get('database') or {}).get('native_meta') or {}
-    return {'status': 'native_normalization_' + state['phase'], 'state': str(path),
+    result = {'status': 'native_normalization_' + state['phase'], 'state': str(path),
             'reason': state.get('reason'), 'observed_at_utc': state.get('observed_at_utc'),
             'native_cursor': meta.get('max_block_number'),
             'native_migration_status': (state.get('database') or {}).get('native_status'),
@@ -190,6 +193,11 @@ def public(path, state):
             'deployment_handoff_applied': state.get('runtime_binding_file') is not None,
             'heavy_index_and_primary_key_migrations_started': False,
             'note': 'Native batching and database checkpoints. Automatic vacuum is configured only for internal_transactions. Other migrators remain held.'}
+    trial = O.load_trial(path, state)
+    if trial is not None:
+        result['overlap_trial'] = O.decision(trial, state.get('free_bytes'), state.get('overlap_trial_ended_reason'))
+        result['overlap_trial']['stop_requested'] = O.stop_requested(path, state)
+    return result
 
 
 def rpc(api, code):
@@ -386,7 +394,10 @@ def prepare(api, root, parent_path, vacuum_path):
     return public(path, state)
 
 
-def gate(state, free, database, health_ok):
+def gate(state, free, database, health_ok, trial=None):
+    overlap = O.decision(trial, free, state.get('overlap_trial_ended_reason'))
+    if trial is not None and overlap['status'] in O.ENDED:
+        state['overlap_trial_ended_reason'] = overlap['status']
     if free < PAUSE_FREE or (state.get('reason') == 'low_space' and free < RESUME_FREE):
         return 'low_space'
     if not health_ok:
@@ -395,7 +406,7 @@ def gate(state, free, database, health_ok):
         return 'autovacuum_disabled'
     if database.get('long_client_transactions', 0):
         return 'long_transaction'
-    if database.get('dead_rows', 0) > 10000000:
+    if database.get('dead_rows', 0) > overlap['dead_row_pause_threshold']:
         return 'waiting_for_autovacuum'
     return None
 
@@ -406,6 +417,7 @@ def run(api, root, path):
     if state['phase'] in TERMINAL:
         return public(path, state)
     inputs = state['inputs']
+    trial = O.load_trial(path, state)
     binding = runtime_binding(path, state)
     context = binding or inputs
     J.P.require(context.get('source_root') == str(root)
@@ -482,7 +494,9 @@ def run(api, root, path):
                 save(path, state, 'completed')
                 return public(path, state)
             fresh = time.monotonic() - last_health < 25
-            reason = gate(state, state['free_bytes'], database, fresh and health.get('status') == 'verified')
+            if O.stop_requested(path, state) and state.get('overlap_trial_ended_reason') is None:
+                state['overlap_trial_ended_reason'] = 'operator_ended'
+            reason = gate(state, state['free_bytes'], database, fresh and health.get('status') == 'verified', trial)
             if reason:
                 container = owned(api, path, inputs)
                 if container and container['State']['Running']:
@@ -528,6 +542,13 @@ def run(api, root, path):
                 if valid_ms <= 0:
                     save(path, state, 'waiting', 'application_health')
                     continue
+                if trial is not None and state.get('overlap_trial_ended_reason') is None:
+                    valid_ms = min(valid_ms, O.remaining_ms(trial))
+                    if valid_ms <= 0:
+                        state['overlap_trial_ended_reason'] = 'expired'
+                        lease(api, inputs, False)
+                        save(path, state, 'waiting', 'overlap_trial_expired')
+                        continue
                 lease(api, inputs, True, state['batch_blocks'], valid_ms)
                 save(path, state, 'running')
             time.sleep(POLL_SECONDS)
