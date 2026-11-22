@@ -96,15 +96,24 @@ def load(path):
                 'Frozen native worker source changed')
     repair = state.get('worker_repair')
     if repair is not None:
-        J.P.require(repair.get('format') == 'blockscout-dev-v10-oversized-block-repair-v1'
-                    and type(repair.get('block')) is int and repair['block'] >= 0
-                    and repair.get('script_file') == 'native-oversized-block.exs'
+        J.P.require(repair.get('format') in ('blockscout-dev-v10-oversized-block-repair-v1',
+                                           'blockscout-dev-v10-oversized-block-repair-v2')
+                    and type(repair.get('block')) is int
+                    and 0 <= repair['block'] < inputs['payload']['start_before_block']
                     and type(repair.get('max_rows')) is int and repair['max_rows'] == 12000
                     and re.fullmatch(r'[a-f0-9]{64}', repair.get('script_sha256', '')),
                     'Invalid oversized-block repair metadata')
+        expected_file = ('native-oversized-block.exs'
+                         if repair['format'].endswith('-v1') else
+                         f"native-oversized-block-{repair['block']}-{repair['script_sha256'][:12]}.exs")
+        J.P.require(repair.get('script_file') == expected_file, 'Invalid oversized-block repair filename')
         repair_script = U.private(path.parent / repair['script_file'])
         J.P.require(R.digest(repair_script) == repair['script_sha256'],
                     'Oversized-block repair source changed')
+        if repair['format'].endswith('-v2'):
+            from v10_native_oversized_block_repair import repair_source
+            J.P.require(repair_script == repair_source(U.private(path.parent / 'native.exs').decode(), repair['block']).encode(),
+                        'Oversized-block repair differs from the bounded source template')
     J.P.require(state['phase'] in ('prepared', 'launch_requested', 'running', 'waiting', 'paused', *TERMINAL)
                 and type(state['batch_blocks']) is int and 1 <= state['batch_blocks'] <= 1000,
                 'Invalid native job checkpoint')
@@ -582,7 +591,9 @@ def install_service(api, path, start=True):
                            'service-before-infrastructure-' + state['runtime_binding_sha256'][:12] + '.private'
                            if binding and 'infrastructure_release_state' in binding else
                            'service-before-frontend-' + state['runtime_binding_sha256'][:12] + '.private'
-                           if binding and 'frontend_release_state' in binding else 'service-before-bridge.private')
+                           if binding and 'frontend_release_state' in binding else
+                           'service-before-runtime-' + state['runtime_binding_sha256'][:12] + '.private'
+                           if binding and binding.get('format') == CURRENT_RUNTIME_FORMAT else 'service-before-bridge.private')
             backup = path.parent / backup_name
             if not backup.exists():
                 R.write_new(backup, previous)
@@ -612,9 +623,11 @@ def main():
     parser.add_argument('--state', type=Path)
     parser.add_argument('--after-session', type=Path)
     parser.add_argument('--after-vacuum', type=Path)
+    parser.add_argument('--no-start', action='store_true', help='Install the service without starting it.')
     args = parser.parse_args()
     try:
         J.P.require(sys.platform.startswith('linux') and os.geteuid() == 0, 'Run on the Linux dev server as root')
+        J.P.require(not args.no_start or args.install_service, '--no-start requires --install-service')
         if args.prepare or args.run:
             J.P.require(args.state is None and args.after_session and args.after_vacuum, 'Provide the finished session and qualified vacuum')
             with M.global_lock(True), B.build_lock(D, D.MANAGED_RELEASES, ROOT):
@@ -653,7 +666,7 @@ def main():
                 D.run(['systemctl', 'start', UNIT], timeout=30)
                 result = public(args.state, state)
             elif args.install_service:
-                result = install_service(D, args.state)
+                result = install_service(D, args.state, start=not args.no_start)
             else:
                 def stopping(*_):
                     global STOP_REQUESTED

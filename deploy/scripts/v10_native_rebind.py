@@ -85,7 +85,6 @@ def main(argv=None):
         'database_anchor': anchor,
     }
     target = path.parent / 'current-runtime-binding.json'
-    data = R.encoded(binding)
     if target.exists():
         previous = json.loads(target.read_text())
         require(previous.get('format') == N.CURRENT_RUNTIME_FORMAT
@@ -93,11 +92,17 @@ def main(argv=None):
                 and previous.get('database_anchor') is not None,
                 'Existing current runtime binding differs from the live runtime')
         K.check_anchor(previous['database_anchor'], anchor, progress=True)
-        binding['previous_source_root'] = previous.get('source_root')
+        binding['previous_source_root'] = (previous.get('previous_source_root')
+                                          if previous.get('source_root') == str(ROOT)
+                                          else previous.get('source_root'))
+        if not binding['previous_source_root']:
+            binding.pop('previous_source_root')
+        data = R.encoded(binding)
         temporary = target.with_name('.current-runtime-binding-' + commit[:12] + '.tmp')
         R.write_new(temporary, data)
         os.replace(temporary, target)
     else:
+        data = R.encoded(binding)
         R.write_new(target, data)
     native.update(runtime_binding_file=target.name,
                   runtime_binding_sha256=R.digest(data),
