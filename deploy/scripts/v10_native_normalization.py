@@ -518,7 +518,11 @@ def run(api, root, path):
                     save(path, state, 'needs_attention', state['worker'].get('reason'))
                     stop_client(api, path, inputs)
                     return public(path, state)
-                if state['worker'].get('last_batch_rows', 10001) <= 2000:
+                # A drained row-chunk block reports a final empty probe. Its
+                # committed rows still count as work when sizing the next range.
+                work_rows = max(state['worker'].get('last_batch_rows', 10001),
+                                state['worker'].get('row_chunk_committed_rows', 0))
+                if work_rows <= 2000:
                     state['batch_blocks'] = min(1000, state['batch_blocks'] * 2)
                 valid_ms = min(LEASE_MS, int((25 - (time.monotonic() - last_health)) * 1000))
                 if valid_ms <= 0:

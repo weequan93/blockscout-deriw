@@ -207,6 +207,33 @@ class NativeTests(unittest.TestCase):
         self.assertEqual(sleep.call_count, 5)
         leases.assert_not_called()
 
+    def test_batch_growth_counts_committed_block_rows_after_empty_chunk_probe(self):
+        cases = (
+            ({'last_batch_rows': 0, 'row_chunk_committed_rows': 13271}, 1),
+            ({'last_batch_rows': 0, 'row_chunk_committed_rows': 2001}, 1),
+            ({'last_batch_rows': 0, 'row_chunk_committed_rows': 2000}, 2),
+            ({'last_batch_rows': 5000, 'row_chunk_committed_rows': 5000}, 1),
+            ({'last_batch_rows': 0}, 2),  # Original worker's empty range.
+            ({}, 1),  # Starting/waiting worker has no work measurement yet.
+        )
+        initial = deepcopy(self.state)
+        initial['batch_blocks'] = 1
+        def sleeping(_):
+            N.STOP_REQUESTED = True
+        for measurement, expected in cases:
+            N.R.update_state(self.path, initial)
+            with self.subTest(measurement=measurement), self.run_context(), \
+                 patch.object(N, 'STOP_REQUESTED', False), \
+                 patch.object(N, 'rpc', return_value=self.database(20)), \
+                 patch.object(N.J.P, 'free_bytes', return_value=800 * 1024**3), \
+                 patch.object(N, 'read_worker', return_value={'phase': 'running', **measurement}), \
+                 patch.object(N, 'lease') as leases, patch.object(N, 'stop_client'), \
+                 patch.object(N.time, 'sleep', side_effect=sleeping):
+                result = N.run(self.api, ROOT, self.path)
+            self.assertEqual(leases.call_args.args[3], expected)
+            self.assertEqual(result['batch_blocks'], expected)
+            self.assertEqual(result['native_cursor'], 20)
+
     def test_lease_has_a_short_deadline_and_is_bound_to_its_job(self):
         captured = []
         self.api.run = lambda args, **kwargs: captured.append((args, kwargs)) or ''
