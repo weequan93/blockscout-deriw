@@ -22,6 +22,7 @@ import v10_upgrade as U
 import v10_vacuum as V
 import v10_infrastructure_checks as K
 import v10_native_overlap_trial as O
+import v10_native_overlap_window as W
 
 ROOT = Path(__file__).resolve().parents[2]
 BASE = Path('/data/blockscout-dev-private/v10-native-normalization')
@@ -51,6 +52,15 @@ true = Explorer.Migrator.StartupControl.disabled?()
     'dead_rows',(SELECT n_dead_tup FROM pg_stat_user_tables WHERE relid='public.internal_transactions'::regclass),
     'autovacuum_running',(SELECT count(*) FROM pg_stat_progress_vacuum
       WHERE relid='public.internal_transactions'::regclass AND datname=current_database()),
+    'vacuum_progress',COALESCE((SELECT jsonb_agg(jsonb_build_object(
+      'pid',p.pid,'phase',p.phase,'index_vacuum_count',p.index_vacuum_count,
+      'heap_blks_total',p.heap_blks_total,'heap_blks_scanned',p.heap_blks_scanned,
+      'heap_blks_vacuumed',p.heap_blks_vacuumed,
+      'vacuum_seconds',floor(extract(epoch FROM clock_timestamp()-a.query_start))::bigint,
+      'wait_event_type',a.wait_event_type,'wait_event',a.wait_event,
+      'blocking_pids',pg_blocking_pids(p.pid)))
+      FROM pg_stat_progress_vacuum p LEFT JOIN pg_stat_activity a ON a.pid=p.pid
+      WHERE p.relid='public.internal_transactions'::regclass AND p.datname=current_database()),'[]'::jsonb),
     'long_client_transactions',(SELECT count(*) FROM pg_stat_activity
       WHERE datname=current_database() AND backend_type='client backend'
         AND pid<>pg_backend_pid() AND application_name<>$1
@@ -127,6 +137,7 @@ def load(path):
                 'Invalid native job checkpoint')
     runtime_binding(path, state)
     O.load_trial(path, state)
+    W.load_window(path, state)
     return state
 
 
@@ -188,15 +199,30 @@ def public(path, state):
             'current_data_free_bytes': state.get('free_bytes'),
             'minimum_data_free_bytes': MIN_FREE, 'cumulative_growth_cap_bytes': None,
             'native_worker': state.get('worker'), 'batch_blocks': state['batch_blocks'],
+            'effective_dead_row_pause_threshold': O.DEFAULT_DEAD_ROWS,
             'database_checkpoint_persisted_by': 'Explorer.Migrator.FillingMigration',
             'normalization_complete': state['phase'] == 'completed',
             'deployment_handoff_applied': state.get('runtime_binding_file') is not None,
             'heavy_index_and_primary_key_migrations_started': False,
             'note': 'Native batching and database checkpoints. Automatic vacuum is configured only for internal_transactions. Other migrators remain held.'}
+    database = state.get('database') or {}
+    result['database_activity'] = {key: database.get(key) for key in (
+        'dead_rows', 'autovacuum_running', 'autovacuum_enabled', 'long_client_transactions')}
+    result['database_activity']['vacuum_progress'] = [
+        {key: row.get(key) for key in ('pid', 'phase', 'index_vacuum_count', 'heap_blks_total',
+            'heap_blks_scanned', 'heap_blks_vacuumed', 'vacuum_seconds', 'wait_event_type', 'wait_event',
+            'blocking_pids')}
+        for row in database.get('vacuum_progress', [])]
     trial = O.load_trial(path, state)
     if trial is not None:
         result['overlap_trial'] = O.decision(trial, state.get('free_bytes'), state.get('overlap_trial_ended_reason'))
         result['overlap_trial']['stop_requested'] = O.stop_requested(path, state)
+        result['effective_dead_row_pause_threshold'] = result['overlap_trial']['dead_row_pause_threshold']
+    window = W.load_window(path, state)
+    if window is not None:
+        result['overlap_window'] = W.decision(window, state.get('free_bytes'), state.get('overlap_window_ended_reason'))
+        result['overlap_window']['stop_requested'] = W.stop_requested(path, state)
+        result['effective_dead_row_pause_threshold'] = result['overlap_window']['dead_row_pause_threshold']
     return result
 
 
@@ -394,10 +420,14 @@ def prepare(api, root, parent_path, vacuum_path):
     return public(path, state)
 
 
-def gate(state, free, database, health_ok, trial=None):
+def gate(state, free, database, health_ok, trial=None, window=None):
     overlap = O.decision(trial, free, state.get('overlap_trial_ended_reason'))
     if trial is not None and overlap['status'] in O.ENDED:
         state['overlap_trial_ended_reason'] = overlap['status']
+    if window is not None:
+        overlap = W.decision(window, free, state.get('overlap_window_ended_reason'))
+        if overlap['status'] in W.ENDED:
+            state['overlap_window_ended_reason'] = overlap['status']
     if free < PAUSE_FREE or (state.get('reason') == 'low_space' and free < RESUME_FREE):
         return 'low_space'
     if not health_ok:
@@ -418,6 +448,7 @@ def run(api, root, path):
         return public(path, state)
     inputs = state['inputs']
     trial = O.load_trial(path, state)
+    window = W.load_window(path, state)
     binding = runtime_binding(path, state)
     context = binding or inputs
     J.P.require(context.get('source_root') == str(root)
@@ -491,12 +522,16 @@ def run(api, root, path):
                     time.sleep(POLL_SECONDS)
                     continue
                 stop_client(api, path, inputs)
+                if window is not None and state.get('overlap_window_ended_reason') is None:
+                    state['overlap_window_ended_reason'] = 'normalization_completed'
                 save(path, state, 'completed')
                 return public(path, state)
             fresh = time.monotonic() - last_health < 25
             if O.stop_requested(path, state) and state.get('overlap_trial_ended_reason') is None:
                 state['overlap_trial_ended_reason'] = 'operator_ended'
-            reason = gate(state, state['free_bytes'], database, fresh and health.get('status') == 'verified', trial)
+            if W.stop_requested(path, state) and state.get('overlap_window_ended_reason') is None:
+                state['overlap_window_ended_reason'] = 'operator_ended'
+            reason = gate(state, state['free_bytes'], database, fresh and health.get('status') == 'verified', trial, window)
             if reason:
                 container = owned(api, path, inputs)
                 if container and container['State']['Running']:
@@ -548,6 +583,13 @@ def run(api, root, path):
                         state['overlap_trial_ended_reason'] = 'expired'
                         lease(api, inputs, False)
                         save(path, state, 'waiting', 'overlap_trial_expired')
+                        continue
+                if window is not None and state.get('overlap_window_ended_reason') is None:
+                    valid_ms = min(valid_ms, W.remaining_ms(window))
+                    if valid_ms <= 0:
+                        state['overlap_window_ended_reason'] = 'expired'
+                        lease(api, inputs, False)
+                        save(path, state, 'waiting', 'overlap_window_expired')
                         continue
                 lease(api, inputs, True, state['batch_blocks'], valid_ms)
                 save(path, state, 'running')
